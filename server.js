@@ -60,6 +60,13 @@ db.exec(`
     checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS heartbeats_monitor_checked ON heartbeats(monitor_id, checked_at DESC);
+  CREATE TABLE IF NOT EXISTS incidents (
+    id INTEGER PRIMARY KEY,
+    monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
+  );
 `);
 
 const staticDir = __dirname;
@@ -192,6 +199,45 @@ function validateMonitor(input) {
   return { name, type, target, intervalSeconds, timeoutSeconds };
 }
 
+function getSetting(key, fallback = null) {
+  return db.prepare("SELECT value FROM settings WHERE key = ?").get(key)?.value ?? fallback;
+}
+
+function setSetting(key, value) {
+  db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
+
+function discordConfig() {
+  return {
+    enabled: getSetting("discord_enabled", "false") === "true",
+    webhookUrl: getSetting("discord_webhook_url", "")
+  };
+}
+
+function validDiscordWebhook(value) {
+  try {
+    const url = new URL(value);
+    return url.protocol === "https:" && ["discord.com", "discordapp.com"].includes(url.hostname) && url.pathname.startsWith("/api/webhooks/");
+  } catch {
+    return false;
+  }
+}
+
+async function sendDiscord(content) {
+  const config = discordConfig();
+  if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return;
+  try {
+    await fetch(config.webhookUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content, username: "NichHome Uptime" }),
+      signal: AbortSignal.timeout(10000)
+    });
+  } catch (error) {
+    console.error("Discord notification failed:", error.message);
+  }
+}
+
 async function checkHttp(target, timeoutSeconds) {
   const started = Date.now();
   const response = await fetch(target, { signal: AbortSignal.timeout(timeoutSeconds * 1000), redirect: "follow" });
@@ -231,13 +277,22 @@ async function runMonitor(id) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
   }
+  const previousStatus = monitor.status;
   db.transaction(() => {
     db.prepare("UPDATE monitors SET status = ?, response_ms = ?, last_error = ?, last_checked_at = CURRENT_TIMESTAMP, next_check_at = ? WHERE id = ?")
       .run(status, responseMs, message, Date.now() + monitor.interval_seconds * 1000, id);
     db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, message) VALUES (?, ?, ?, ?)")
       .run(id, status, responseMs, message);
     db.prepare("DELETE FROM heartbeats WHERE id IN (SELECT id FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT -1 OFFSET 1000)").run(id);
+    if (status === "down" && previousStatus !== "down") {
+      db.prepare("INSERT INTO incidents (monitor_id, cause) VALUES (?, ?)").run(id, message);
+    }
+    if (status === "up" && previousStatus === "down") {
+      db.prepare("UPDATE incidents SET resolved_at = CURRENT_TIMESTAMP WHERE monitor_id = ? AND resolved_at IS NULL").run(id);
+    }
   })();
+  if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **${monitor.name} is DOWN**\n${message || monitor.target}`);
+  if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **${monitor.name} recovered**\nResponse: ${responseMs} ms`);
   return db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
 }
 
@@ -320,6 +375,12 @@ app.get("/api/monitors", requireAuth, (req, res) => {
     lastError: monitor.last_error, lastCheckedAt: monitor.last_checked_at
   })));
 });
+app.get("/api/monitors/:id/history", requireAuth, (req, res) => {
+  const monitor = db.prepare("SELECT id, name, type, target FROM monitors WHERE id = ?").get(Number(req.params.id));
+  if (!monitor) return res.status(404).json({ error: "Monitor not found." });
+  const heartbeats = db.prepare("SELECT status, response_ms AS responseMs, message, checked_at AS checkedAt FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT 100").all(monitor.id);
+  res.json({ monitor, heartbeats });
+});
 app.post("/api/monitors", requireAuth, async (req, res) => {
   let monitor;
   try { monitor = validateMonitor(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
@@ -333,10 +394,58 @@ app.post("/api/monitors/:id/check", requireAuth, async (req, res) => {
   if (!monitor) return res.status(404).json({ error: "Monitor not found." });
   res.json({ ok: true, status: monitor.status });
 });
+app.put("/api/monitors/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Monitor not found." });
+  let monitor;
+  try { monitor = validateMonitor(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE monitors SET name = ?, type = ?, target = ?, interval_seconds = ?, timeout_seconds = ?, enabled = ?, next_check_at = 0 WHERE id = ?")
+    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds, enabled, id);
+  res.json({ ok: true });
+});
 app.delete("/api/monitors/:id", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM monitors WHERE id = ?").run(Number(req.params.id));
   if (!result.changes) return res.status(404).json({ error: "Monitor not found." });
   res.json({ ok: true });
+});
+app.get("/api/incidents", requireAuth, (req, res) => {
+  const incidents = db.prepare(`
+    SELECT incidents.id, incidents.started_at AS startedAt, incidents.resolved_at AS resolvedAt,
+      incidents.cause, monitors.name AS monitorName, monitors.target
+    FROM incidents JOIN monitors ON monitors.id = incidents.monitor_id
+    ORDER BY incidents.started_at DESC LIMIT 100
+  `).all();
+  res.json(incidents);
+});
+app.get("/api/notifications/discord", requireAuth, (req, res) => {
+  const config = discordConfig();
+  res.json({ enabled: config.enabled, configured: Boolean(config.webhookUrl), webhookUrl: config.webhookUrl });
+});
+app.put("/api/notifications/discord", requireAuth, (req, res) => {
+  const webhookUrl = String(req.body.webhookUrl || "").trim();
+  const enabled = Boolean(req.body.enabled);
+  if (webhookUrl && !validDiscordWebhook(webhookUrl)) return res.status(400).json({ error: "Enter a valid Discord webhook URL." });
+  if (enabled && !webhookUrl) return res.status(400).json({ error: "A Discord webhook URL is required when notifications are enabled." });
+  setSetting("discord_webhook_url", webhookUrl);
+  setSetting("discord_enabled", String(enabled));
+  res.json({ ok: true });
+});
+app.post("/api/notifications/discord/test", requireAuth, async (req, res) => {
+  const config = discordConfig();
+  if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return res.status(400).json({ error: "Enable and save a valid Discord webhook first." });
+  try {
+    const response = await fetch(config.webhookUrl, {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: "NichHome Uptime Discord notifications are working.", username: "NichHome Uptime" }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) return res.status(400).json({ error: `Discord returned HTTP ${response.status}.` });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: `Unable to reach Discord: ${error.message}` });
+  }
 });
 
 for (const asset of ["styles.css", "auth.css", "app.js", "auth.js"]) {

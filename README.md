@@ -18,6 +18,11 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Optional authenticator-app TOTP MFA
 - Protected dashboard and account security controls
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
+- Monitor editing, pause/resume, and heartbeat history
+- Incident tracking and Discord down/recovery alerts
+
+All NichHome Uptime features are free. Unfinished features are clearly marked
+as Coming soon and are not hidden behind a paid tier.
 
 ## Run with Docker
 

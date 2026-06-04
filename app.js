@@ -6,6 +6,7 @@ const monitorModal = document.getElementById("monitorModal");
 const monitorList = document.getElementById("monitorList");
 let currentUser;
 let monitors = [];
+let incidents = [];
 
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
@@ -28,6 +29,14 @@ function showToast(title, message) {
 
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", () => {
+    if (item.dataset.page === "Discord") {
+      openDiscord();
+      return;
+    }
+    if (item.dataset.page === "Incidents") {
+      openIncidents();
+      return;
+    }
     if (!["Overview", "Monitors"].includes(item.dataset.page)) {
       showToast(`${item.dataset.page} is coming next`, "This section is not implemented yet");
       return;
@@ -40,11 +49,14 @@ document.querySelectorAll(".nav-item").forEach((item) => {
 });
 
 document.getElementById("newMonitor").addEventListener("click", () => { monitorModal.hidden = false; });
+document.getElementById("manageMonitors").addEventListener("click", () => { monitorModal.hidden = false; });
 document.getElementById("closeMonitor").addEventListener("click", () => { monitorModal.hidden = true; });
 monitorModal.addEventListener("click", (event) => { if (event.target === monitorModal) monitorModal.hidden = true; });
 document.querySelector("#monitorForm select[name=type]").addEventListener("change", (event) => {
   document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : "https://home.example.com";
 });
+document.querySelector(".search input").addEventListener("input", (event) => renderMonitors(event.target.value));
+document.getElementById("timeRangeButton").addEventListener("click", () => showToast("Last 24 hours", "More reporting ranges are coming soon"));
 
 refreshButton.addEventListener("click", async () => {
   refreshButton.classList.add("spinning");
@@ -81,16 +93,17 @@ async function loadVersion() {
   document.getElementById("appVersion").textContent = `v${release.version}`;
 }
 
-function renderMonitors() {
+function renderMonitors(filter = "") {
   monitorList.replaceChildren();
-  if (!monitors.length) {
+  const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type}`.toLowerCase().includes(filter.toLowerCase()));
+  if (!visible.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "No real monitors yet. Add an HTTP or TCP monitor to begin.";
+    empty.textContent = monitors.length ? "No monitors match your search." : "No real monitors yet. Add an HTTP or TCP monitor to begin.";
     monitorList.append(empty);
     return;
   }
-  for (const monitor of monitors) {
+  for (const monitor of visible) {
     const row = document.createElement("div");
     row.className = "monitor-row real-monitor";
     const icon = document.createElement("span");
@@ -104,10 +117,16 @@ function renderMonitors() {
     copy.append(name, detail);
     const actions = document.createElement("div");
     actions.className = "monitor-actions";
+    const details = document.createElement("button");
+    details.className = "monitor-action";
+    details.title = "Edit and view history";
+    details.textContent = "i";
+    details.addEventListener("click", () => openMonitorDetails(monitor));
     const check = document.createElement("button");
     check.className = "monitor-action";
     check.title = "Check now";
     check.textContent = "↻";
+    check.disabled = !monitor.enabled;
     check.addEventListener("click", async () => {
       check.disabled = true;
       await api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" });
@@ -124,10 +143,10 @@ function renderMonitors() {
       await loadMonitors();
       showToast("Monitor deleted", monitor.name);
     });
-    actions.append(check, remove);
+    actions.append(details, check, remove);
     const status = document.createElement("span");
     status.className = `status-label ${monitor.status === "up" ? "up" : "warn"}`;
-    status.textContent = monitor.status.toUpperCase();
+    status.textContent = monitor.enabled ? monitor.status.toUpperCase() : "PAUSED";
     row.append(icon, copy, actions, status);
     monitorList.append(row);
   }
@@ -149,6 +168,88 @@ async function loadMonitors() {
     : "Add your first monitor to begin collecting real uptime data.";
   const monitorNavCount = document.querySelector('[data-page="Monitors"] .nav-count');
   if (monitorNavCount) monitorNavCount.textContent = monitors.length;
+  document.getElementById("totalMonitorCopy").textContent = `of ${monitors.length} total`;
+  document.querySelector(".progress-line:not(.warning) span").style.width = monitors.length ? `${(up.length / monitors.length) * 100}%` : "0%";
+  document.querySelector(".progress-line.warning span").style.width = monitors.length ? `${(down.length / monitors.length) * 100}%` : "0%";
+}
+
+function formatDate(value) {
+  if (!value) return "Open";
+  return new Date(`${value}Z`).toLocaleString();
+}
+
+function incidentElement(incident) {
+  const row = document.createElement("div");
+  row.className = "activity-item";
+  const icon = document.createElement("span");
+  icon.className = `event-icon ${incident.resolvedAt ? "resolved" : "warning"}`;
+  icon.textContent = incident.resolvedAt ? "✓" : "!";
+  const copy = document.createElement("div");
+  const title = document.createElement("strong");
+  title.textContent = incident.resolvedAt ? `${incident.monitorName} recovered` : `${incident.monitorName} is down`;
+  const detail = document.createElement("p");
+  detail.textContent = incident.cause || incident.target;
+  const date = document.createElement("small");
+  date.textContent = incident.resolvedAt ? `Resolved ${formatDate(incident.resolvedAt)}` : `Started ${formatDate(incident.startedAt)}`;
+  copy.append(title, detail, date);
+  row.append(icon, copy);
+  return row;
+}
+
+async function loadIncidents() {
+  incidents = await api("/api/incidents");
+  const open = incidents.filter((incident) => !incident.resolvedAt).length;
+  document.getElementById("incidentCount").textContent = open;
+  const list = document.getElementById("activityList");
+  list.replaceChildren();
+  if (!incidents.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No incidents recorded. That is a good thing.";
+    list.append(empty);
+  } else {
+    incidents.slice(0, 4).forEach((incident) => list.append(incidentElement(incident)));
+  }
+}
+
+async function openIncidents() {
+  await loadIncidents();
+  const list = document.getElementById("incidentsList");
+  list.replaceChildren();
+  incidents.forEach((incident) => list.append(incidentElement(incident)));
+  if (!incidents.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "No incidents recorded.";
+    list.append(empty);
+  }
+  document.getElementById("incidentsModal").hidden = false;
+}
+
+async function openMonitorDetails(monitor) {
+  const data = await api(`/api/monitors/${monitor.id}/history`);
+  const form = document.getElementById("editMonitorForm");
+  document.getElementById("detailsTitle").textContent = monitor.name;
+  for (const [key, value] of Object.entries(monitor)) {
+    if (!form.elements[key]) continue;
+    if (key === "enabled") form.elements[key].checked = value;
+    else form.elements[key].value = value ?? "";
+  }
+  const history = document.getElementById("historyList");
+  history.replaceChildren();
+  data.heartbeats.forEach((heartbeat) => {
+    const row = document.createElement("div");
+    row.className = "history-row";
+    const status = document.createElement("strong");
+    status.textContent = heartbeat.status.toUpperCase();
+    const message = document.createElement("span");
+    message.textContent = heartbeat.responseMs == null ? heartbeat.message || "No response" : `${heartbeat.responseMs} ms`;
+    const date = document.createElement("small");
+    date.textContent = formatDate(heartbeat.checkedAt);
+    row.append(status, message, date);
+    history.append(row);
+  });
+  document.getElementById("detailsModal").hidden = false;
 }
 
 document.getElementById("monitorForm").addEventListener("submit", async (event) => {
@@ -171,6 +272,50 @@ document.getElementById("monitorForm").addEventListener("submit", async (event) 
     button.disabled = false;
   }
 });
+
+document.getElementById("editMonitorForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.enabled = form.elements.enabled.checked;
+  try {
+    await api(`/api/monitors/${values.id}`, { method: "PUT", body: JSON.stringify(values) });
+    document.getElementById("detailsModal").hidden = true;
+    await loadMonitors();
+    showToast("Monitor updated", values.name);
+  } catch (err) { document.getElementById("editMonitorError").textContent = err.message; }
+});
+
+async function openDiscord() {
+  const config = await api("/api/notifications/discord");
+  const form = document.getElementById("discordForm");
+  form.elements.webhookUrl.value = config.webhookUrl;
+  form.elements.enabled.checked = config.enabled;
+  document.getElementById("discordDot").style.background = config.enabled ? "var(--green)" : "#6f7975";
+  document.getElementById("discordModal").hidden = false;
+}
+async function loadDiscordStatus() {
+  const config = await api("/api/notifications/discord");
+  document.getElementById("discordDot").style.background = config.enabled ? "var(--green)" : "#6f7975";
+}
+document.getElementById("discordForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  try {
+    await api("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ webhookUrl: form.elements.webhookUrl.value, enabled: form.elements.enabled.checked }) });
+    document.getElementById("discordModal").hidden = true;
+    showToast("Discord saved", form.elements.enabled.checked ? "Alerts are enabled" : "Alerts are disabled");
+  } catch (err) { document.getElementById("discordError").textContent = err.message; }
+});
+document.getElementById("testDiscord").addEventListener("click", async () => {
+  try {
+    await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
+    showToast("Discord test sent", "Check your Discord channel");
+  } catch (err) { document.getElementById("discordError").textContent = err.message; }
+});
+document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
+document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
+document.getElementById("incidentButton").addEventListener("click", openIncidents);
 
 document.getElementById("accountButton").addEventListener("click", () => { accountModal.hidden = false; });
 document.getElementById("closeAccount").addEventListener("click", () => { accountModal.hidden = true; });
@@ -213,3 +358,10 @@ document.getElementById("confirmDisable").addEventListener("click", async () => 
 loadAccount();
 loadVersion();
 loadMonitors();
+loadIncidents();
+loadDiscordStatus();
+    const details = document.createElement("button");
+    details.className = "monitor-action";
+    details.title = "Edit and view history";
+    details.textContent = "i";
+    details.addEventListener("click", () => openMonitorDetails(monitor));

@@ -20,19 +20,19 @@
 
       <nav class="main-nav" aria-label="Main navigation">
         <p class="nav-label">Workspace</p>
-        <button class="nav-item active" data-page="Overview"><span class="nav-icon">⌁</span>Overview<span class="nav-count">12</span></button>
-        <button class="nav-item" data-page="Monitors"><span class="nav-icon">◉</span>Monitors<span class="nav-count">48</span></button>
-        <button class="nav-item" data-page="Incidents"><span class="nav-icon">△</span>Incidents<span class="nav-alert">3</span></button>
-        <button class="nav-item" data-page="Status Pages"><span class="nav-icon">▱</span>Status Pages</button>
+        <button class="nav-item active" data-page="Overview"><span class="nav-icon">⌁</span>Overview</button>
+        <button class="nav-item" data-page="Monitors"><span class="nav-icon">◉</span>Monitors<span class="nav-count">0</span></button>
+        <button class="nav-item" data-page="Incidents"><span class="nav-icon">△</span>Incidents<span class="nav-alert" id="incidentCount">0</span></button>
+        <button class="nav-item" data-page="Status Pages"><span class="nav-icon">▱</span>Status Pages<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Infrastructure</p>
-        <button class="nav-item" data-page="SNMP Devices"><span class="nav-icon">⌘</span>SNMP Devices<span class="nav-pill">PRO</span></button>
-        <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-count">18</span></button>
-        <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map</button>
+        <button class="nav-item" data-page="SNMP Devices"><span class="nav-icon">⌘</span>SNMP Devices<span class="nav-pill">SOON</span></button>
+        <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-pill">SOON</span></button>
+        <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Connect</p>
-        <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications</button>
-        <button class="nav-item" data-page="Discord"><span class="nav-icon discord-icon">#</span>Discord<span class="status-dot"></span></button>
+        <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications<span class="nav-pill">SOON</span></button>
+        <button class="nav-item" data-page="Discord"><span class="nav-icon discord-icon">#</span>Discord<span class="status-dot" id="discordDot"></span></button>
       </nav>
 
       <div class="sidebar-footer">
@@ -50,7 +50,7 @@
           <kbd>⌘ K</kbd>
         </div>
         <div class="top-actions">
-          <button class="icon-button" aria-label="Notifications">♢<span class="notification-dot"></span></button>
+          <button class="icon-button" id="incidentButton" aria-label="Incidents">♢<span class="notification-dot"></span></button>
           <button class="command-button" id="newMonitor"><span>＋</span> Add monitor</button>
           <button class="profile-button" id="accountButton"><span class="avatar" id="avatar">NH</span><span class="profile-copy"><strong id="accountName">Administrator</strong><small id="accountSecurity">Account</small></span><span>⌄</span></button>
         </div>
@@ -64,22 +64,19 @@
             <p class="subhead" id="summaryText">Add your first monitor to begin collecting real uptime data.</p>
           </div>
           <div class="heading-actions">
-            <button class="soft-button">Last 24 hours <span>⌄</span></button>
+            <button class="soft-button" id="timeRangeButton">Last 24 hours</button>
             <button class="soft-button icon-only" aria-label="Refresh" id="refreshButton">↻</button>
           </div>
         </section>
 
         <section class="metric-grid">
           <article class="metric-card hero-metric">
-            <div class="metric-top"><span class="metric-icon good">↗</span><span class="trend good">+0.04%</span></div>
+            <div class="metric-top"><span class="metric-icon good">↗</span><span class="trend good">Live checks</span></div>
             <p>Overall uptime</p>
             <div class="metric-value"><span id="uptimeValue" class="metric-number">--</span><span>%</span></div>
-            <div class="spark-bars" aria-label="Uptime history">
-              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
-            </div>
           </article>
           <article class="metric-card">
-            <div class="metric-top"><span class="metric-icon good">●</span><span class="micro-copy">of 48 total</span></div>
+            <div class="metric-top"><span class="metric-icon good">●</span><span class="micro-copy" id="totalMonitorCopy">of 0 total</span></div>
             <p>Operational</p>
             <div class="metric-value" id="operationalValue">0</div>
             <div class="progress-line"><span style="width:95.8%"></span></div>
@@ -91,97 +88,42 @@
             <div class="progress-line warning"><span style="width:18%"></span></div>
           </article>
           <article class="metric-card">
-            <div class="metric-top"><span class="metric-icon coral">⌁</span><span class="trend good">−12 ms</span></div>
+            <div class="metric-top"><span class="metric-icon coral">⌁</span><span class="trend good">Latest checks</span></div>
             <p>Avg. response</p>
             <div class="metric-value"><span id="responseValue" class="metric-number">--</span><span>ms</span></div>
-            <svg class="mini-line" viewBox="0 0 180 38" preserveAspectRatio="none" aria-hidden="true"><path d="M0 30 C15 27 18 10 35 16 S55 33 72 23 S96 4 110 12 S130 34 145 21 S166 10 180 4"/></svg>
           </article>
         </section>
 
         <section class="dashboard-grid">
           <article class="panel uptime-panel">
             <div class="panel-heading">
-              <div><span class="section-tag">LIVE TELEMETRY</span><h2>Uptime performance</h2></div>
-              <div class="legend"><span><i class="legend-line coral"></i>Uptime</span><span><i class="legend-line cream"></i>Response</span></div>
+              <div><span class="section-tag">HISTORY</span><h2>Uptime performance</h2></div>
+              <span class="connected-pill">Coming soon</span>
             </div>
-            <div class="chart-wrap">
-              <div class="chart-y"><span>100%</span><span>99.9%</span><span>99.8%</span><span>99.7%</span></div>
-              <svg class="uptime-chart" viewBox="0 0 800 245" preserveAspectRatio="none" aria-label="Uptime performance graph">
-                <defs>
-                  <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff6b52" stop-opacity=".32"/><stop offset="100%" stop-color="#ff6b52" stop-opacity="0"/></linearGradient>
-                </defs>
-                <g class="grid-lines"><line x1="0" y1="20" x2="800" y2="20"/><line x1="0" y1="82" x2="800" y2="82"/><line x1="0" y1="144" x2="800" y2="144"/><line x1="0" y1="206" x2="800" y2="206"/></g>
-                <path class="area" d="M0 54 C35 46 50 62 84 48 S142 22 180 38 S235 72 272 60 S328 29 365 43 S426 87 463 65 S520 35 558 46 S624 83 660 58 S730 28 800 42 L800 235 L0 235Z"/>
-                <path class="line-primary" d="M0 54 C35 46 50 62 84 48 S142 22 180 38 S235 72 272 60 S328 29 365 43 S426 87 463 65 S520 35 558 46 S624 83 660 58 S730 28 800 42"/>
-                <path class="line-secondary" d="M0 128 C40 116 68 153 109 139 S166 110 208 126 S268 168 312 142 S382 98 427 119 S494 155 537 137 S604 104 652 121 S738 160 800 126"/>
-                <g class="chart-point"><circle cx="558" cy="46" r="5"/><line x1="558" y1="46" x2="558" y2="225"/></g>
-              </svg>
-              <div class="chart-tooltip"><strong>99.99%</strong><span>14:00 · 72 ms</span></div>
-              <div class="chart-x"><span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>Now</span></div>
-            </div>
+            <div class="coming-soon light"><strong>Historical uptime graphs are coming soon</strong><p>Heartbeat history is already being stored. Graphs and reporting ranges will be added in a future beta.</p></div>
           </article>
 
           <article class="panel activity-panel">
-            <div class="panel-heading"><div><span class="section-tag">EVENT STREAM</span><h2>Recent activity</h2></div><button class="text-button">View all</button></div>
-            <div class="activity-list">
-              <div class="activity-item">
-                <span class="event-icon resolved">✓</span>
-                <div><strong>Core switch recovered</strong><p>Packet loss returned to normal</p><small>2 minutes ago</small></div>
-              </div>
-              <div class="activity-item">
-                <span class="event-icon warning">!</span>
-                <div><strong>High interface usage</strong><p>SW-NR-CORE-01 · Gi0/24 at 91%</p><small>18 minutes ago</small></div>
-              </div>
-              <div class="activity-item">
-                <span class="event-icon discord">#</span>
-                <div><strong>Discord alert delivered</strong><p>#nichhome-operations</p><small>31 minutes ago</small></div>
-              </div>
-              <div class="activity-item">
-                <span class="event-icon docker">▣</span>
-                <div><strong>Container restarted</strong><p>paperless-ngx · healthy</p><small>1 hour ago</small></div>
-              </div>
-            </div>
+            <div class="panel-heading"><div><span class="section-tag">EVENT STREAM</span><h2>Recent activity</h2></div><button class="text-button" id="viewAllIncidents">View all</button></div>
+            <div class="activity-list" id="activityList"><p class="empty-state">No incidents recorded.</p></div>
           </article>
 
           <article class="panel snmp-panel">
             <div class="panel-heading">
               <div><span class="section-tag accent">SNMP PREVIEW</span><h2>Network intelligence</h2></div>
-              <button class="dark-button">Explore SNMP <span>→</span></button>
+              <span class="connected-pill">Coming soon</span>
             </div>
-            <div class="snmp-content">
-              <div class="network-map">
-                <svg viewBox="0 0 520 245" aria-label="SNMP network device map">
-                  <g class="connections"><path d="M250 120 L95 60"/><path d="M250 120 L105 190"/><path d="M250 120 L410 50"/><path d="M250 120 L425 177"/><path d="M250 120 L335 220"/></g>
-                  <g class="map-node online" transform="translate(250 120)"><circle r="35"/><circle class="pulse" r="46"/><text y="5">CORE</text></g>
-                  <g class="map-node online small" transform="translate(95 60)"><circle r="27"/><text y="4">NAS</text></g>
-                  <g class="map-node warning small" transform="translate(105 190)"><circle r="27"/><text y="4">AP-02</text></g>
-                  <g class="map-node online small" transform="translate(410 50)"><circle r="27"/><text y="4">FW</text></g>
-                  <g class="map-node online small" transform="translate(425 177)"><circle r="27"/><text y="4">SW-02</text></g>
-                  <g class="map-node online small" transform="translate(335 220)"><circle r="27"/><text y="4">UPS</text></g>
-                </svg>
-                <div class="map-legend"><span><i class="dot online"></i>11 online</span><span><i class="dot warning"></i>1 warning</span></div>
-              </div>
-              <div class="snmp-stats">
-                <div class="snmp-stat"><div class="radial" style="--value:68"><span>68<small>%</small></span></div><div><strong>Core CPU</strong><small>SW-NR-CORE-01</small></div></div>
-                <div class="snmp-stat"><div class="radial coral-ring" style="--value:91"><span>91<small>%</small></span></div><div><strong>Port Gi0/24</strong><small>Traffic utilization</small></div></div>
-                <div class="oid-strip"><span>OID POLLING</span><strong>1.3.6.1.2.1</strong><em>Every 60 sec</em></div>
-              </div>
-            </div>
+            <div class="coming-soon"><strong>SNMP monitoring is coming soon</strong><p>Device discovery, OID polling, interface traffic, and network mapping will arrive in a future beta. Nothing is locked behind Pro.</p></div>
           </article>
 
           <article class="panel monitor-panel">
-            <div class="panel-heading"><div><span class="section-tag">MONITORS</span><h2>Priority services</h2></div><button class="text-button">Manage</button></div>
+            <div class="panel-heading"><div><span class="section-tag">MONITORS</span><h2>Monitored services</h2></div><button class="text-button" id="manageMonitors">Add monitor</button></div>
             <div class="monitor-list" id="monitorList"><p class="empty-state">Loading your monitors...</p></div>
           </article>
 
           <article class="panel docker-panel">
               <div class="panel-heading"><div><span class="section-tag blue">DOCKER PREVIEW</span><h2>Container fleet</h2></div><span class="connected-pill">Coming next</span></div>
-            <div class="docker-summary"><div><strong>18</strong><span>Running</span></div><div><strong>02</strong><span>Stopped</span></div><div><strong>05</strong><span>Stacks</span></div></div>
-            <div class="container-stack">
-              <div class="container"><span class="cube">◇</span><div><strong>home-assistant</strong><small>Up 8 days · healthy</small></div><span class="cpu">12% CPU</span></div>
-              <div class="container"><span class="cube">◇</span><div><strong>paperless-ngx</strong><small>Up 1 hour · healthy</small></div><span class="cpu">04% CPU</span></div>
-              <div class="container"><span class="cube">◇</span><div><strong>traefik</strong><small>Up 21 days · healthy</small></div><span class="cpu">02% CPU</span></div>
-            </div>
+            <div class="coming-soon light"><strong>Docker monitoring is coming soon</strong><p>Container health, CPU, memory, restart alerts, and stack views are planned. Nothing is locked behind Pro.</p></div>
           </article>
         </section>
       </div>
@@ -227,6 +169,48 @@
         </div>
         <p class="modal-error" id="monitorError"></p>
         <button class="command-button" type="submit">Create and check monitor</button>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="detailsModal" hidden>
+    <section class="account-modal wide-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">MONITOR DETAILS</span><h2 id="detailsTitle">Monitor</h2></div><button class="modal-close" data-close="detailsModal" aria-label="Close">×</button></div>
+      <form class="monitor-form" id="editMonitorForm">
+        <input type="hidden" name="id">
+        <label>Name<input name="name" required minlength="2" maxlength="80"></label>
+        <label>Type<select name="type"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP port</option></select></label>
+        <label>Target<input name="target" required></label>
+        <div class="form-columns">
+          <label>Check every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60">1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
+          <label>Timeout<select name="timeoutSeconds"><option value="5">5 seconds</option><option value="10">10 seconds</option><option value="30">30 seconds</option></select></label>
+        </div>
+        <label class="toggle-label"><input name="enabled" type="checkbox"> Monitoring enabled</label>
+        <button class="command-button" type="submit">Save monitor</button>
+        <p class="modal-error" id="editMonitorError"></p>
+      </form>
+      <h3 class="modal-subtitle">Recent checks</h3>
+      <div class="history-list" id="historyList"></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="incidentsModal" hidden>
+    <section class="account-modal wide-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">REAL EVENTS</span><h2>Incidents</h2></div><button class="modal-close" data-close="incidentsModal" aria-label="Close">×</button></div>
+      <div class="activity-list" id="incidentsList"></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="discordModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">NOTIFICATIONS</span><h2>Discord webhook</h2></div><button class="modal-close" data-close="discordModal" aria-label="Close">×</button></div>
+      <form class="monitor-form" id="discordForm">
+        <p class="form-help">NichHome Uptime sends alerts when monitors go down and when they recover.</p>
+        <label>Webhook URL<input name="webhookUrl" type="url" placeholder="https://discord.com/api/webhooks/..."></label>
+        <label class="toggle-label"><input name="enabled" type="checkbox"> Enable Discord alerts</label>
+        <button class="command-button" type="submit">Save Discord settings</button>
+        <button class="soft-button" type="button" id="testDiscord">Send test notification</button>
+        <p class="modal-error" id="discordError"></p>
       </form>
     </section>
   </div>

@@ -252,6 +252,19 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .monitor-form input, .monitor-form select { height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; background: white; font-size: 9px; }
 .monitor-form input:focus, .monitor-form select:focus { border-color: var(--coral); }
 .form-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.coming-soon { display: grid; place-items: center; min-height: 220px; padding: 30px; border: 1px dashed #35403d; border-radius: 10px; text-align: center; }
+.coming-soon strong { color: #e1e5e2; font-size: 13px; }
+.coming-soon p { max-width: 480px; margin: 7px 0 0; color: #77827e; font-size: 8px; line-height: 1.7; }
+.coming-soon.light { min-height: 170px; border-color: var(--line); }
+.coming-soon.light strong { color: var(--ink); }
+.wide-modal { width: min(680px, 100%); max-height: 90vh; overflow: auto; }
+.toggle-label { display: flex !important; grid-template-columns: none; align-items: center; gap: 8px !important; }
+.toggle-label input { width: 15px; height: 15px; }
+.modal-subtitle { margin: 20px 0 8px; font-size: 10px; }
+.history-list { display: grid; max-height: 230px; overflow: auto; border-top: 1px solid var(--line); }
+.history-row { display: grid; grid-template-columns: 55px 1fr auto; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 8px; }
+.history-row small { color: #949b97; }
+.form-help { margin: 0; color: #7d8581; font-size: 8px; line-height: 1.6; }
 
 @media (max-width: 1120px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }

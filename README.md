@@ -17,6 +17,7 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Secure password hashing and cookie-backed sessions
 - Optional authenticator-app TOTP MFA
 - Protected dashboard and account security controls
+- Persistent HTTP/HTTPS and TCP monitors with automatic checks
 
 ## Run with Docker
 

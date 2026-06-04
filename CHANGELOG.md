@@ -14,6 +14,27 @@ include breaking changes while the monitoring engine and integrations mature.
 - Docker Engine integration
 - Discord webhook notifications
 
+## [1.0.0-beta.2] - 2026-06-04
+
+### Added
+
+- Real persisted HTTP/HTTPS uptime monitors
+- Real persisted TCP port monitors
+- Automatic background checks with configurable intervals and timeouts
+- Manual monitor checks, response times, last errors, and monitor deletion
+- SQLite heartbeat history foundation
+- Working Add Monitor dashboard flow
+- Live overview counts, availability percentage, and average response time from
+  real monitors
+
+### Changed
+
+- Reduced initial administrator password minimum from 12 to 8 characters
+- Clarified that the optional MFA authentication code comes from an
+  authenticator app
+- Unimplemented navigation items now clearly say they are coming next instead
+  of pretending to switch to a working view
+
 ## [1.0.0-beta.1] - 2026-06-04
 
 ### Added
@@ -44,5 +65,6 @@ include breaking changes while the monitoring engine and integrations mature.
 - Live SNMP, Docker, Discord, incident, and public status-page integrations are
   not yet implemented
 
-[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.1...HEAD
+[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.2...HEAD
+[1.0.0-beta.2]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.1

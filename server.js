@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const net = require("net");
 const path = require("path");
 const fs = require("fs");
 const express = require("express");
@@ -35,6 +36,30 @@ db.exec(`
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS monitors (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    type TEXT NOT NULL CHECK(type IN ('http', 'tcp')),
+    target TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    timeout_seconds INTEGER NOT NULL DEFAULT 10,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    response_ms INTEGER,
+    last_error TEXT,
+    last_checked_at TEXT,
+    next_check_at INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS heartbeats (
+    id INTEGER PRIMARY KEY,
+    monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    response_ms INTEGER,
+    message TEXT,
+    checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS heartbeats_monitor_checked ON heartbeats(monitor_id, checked_at DESC);
 `);
 
 const staticDir = __dirname;
@@ -151,6 +176,84 @@ function limited(req, res, next) {
   next();
 }
 
+function validateMonitor(input) {
+  const name = String(input.name || "").trim();
+  const type = String(input.type || "");
+  const target = String(input.target || "").trim();
+  const intervalSeconds = Math.max(20, Math.min(86400, Number(input.intervalSeconds || 60)));
+  const timeoutSeconds = Math.max(1, Math.min(60, Number(input.timeoutSeconds || 10)));
+  if (name.length < 2 || name.length > 80) throw new Error("Monitor name must be between 2 and 80 characters.");
+  if (!["http", "tcp"].includes(type)) throw new Error("Monitor type must be HTTP or TCP.");
+  if (type === "http") {
+    const url = new URL(target);
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error("HTTP targets must begin with http:// or https://.");
+  }
+  if (type === "tcp" && !/^(\[[^\]]+\]|[^:]+):\d{1,5}$/.test(target)) throw new Error("TCP targets must use host:port format.");
+  return { name, type, target, intervalSeconds, timeoutSeconds };
+}
+
+async function checkHttp(target, timeoutSeconds) {
+  const started = Date.now();
+  const response = await fetch(target, { signal: AbortSignal.timeout(timeoutSeconds * 1000), redirect: "follow" });
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  return Date.now() - started;
+}
+
+function checkTcp(target, timeoutSeconds) {
+  const separator = target.lastIndexOf(":");
+  const host = target.slice(0, separator).replace(/^\[|\]$/g, "");
+  const port = Number(target.slice(separator + 1));
+  if (port < 1 || port > 65535) return Promise.reject(new Error("Invalid TCP port."));
+  const started = Date.now();
+  return new Promise((resolve, reject) => {
+    const socket = net.createConnection({ host, port });
+    const done = (error) => {
+      socket.destroy();
+      error ? reject(error) : resolve(Date.now() - started);
+    };
+    socket.setTimeout(timeoutSeconds * 1000, () => done(new Error("Connection timed out")));
+    socket.once("connect", () => done());
+    socket.once("error", done);
+  });
+}
+
+async function runMonitor(id) {
+  const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
+  if (!monitor || !monitor.enabled) return null;
+  let status = "up";
+  let responseMs = null;
+  let message = null;
+  try {
+    responseMs = monitor.type === "http"
+      ? await checkHttp(monitor.target, monitor.timeout_seconds)
+      : await checkTcp(monitor.target, monitor.timeout_seconds);
+  } catch (error) {
+    status = "down";
+    message = String(error.message || error).slice(0, 300);
+  }
+  db.transaction(() => {
+    db.prepare("UPDATE monitors SET status = ?, response_ms = ?, last_error = ?, last_checked_at = CURRENT_TIMESTAMP, next_check_at = ? WHERE id = ?")
+      .run(status, responseMs, message, Date.now() + monitor.interval_seconds * 1000, id);
+    db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, message) VALUES (?, ?, ?, ?)")
+      .run(id, status, responseMs, message);
+    db.prepare("DELETE FROM heartbeats WHERE id IN (SELECT id FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT -1 OFFSET 1000)").run(id);
+  })();
+  return db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
+}
+
+let schedulerRunning = false;
+async function schedulerTick() {
+  if (schedulerRunning) return;
+  schedulerRunning = true;
+  try {
+    const due = db.prepare("SELECT id FROM monitors WHERE enabled = 1 AND next_check_at <= ? LIMIT 20").all(Date.now());
+    await Promise.all(due.map(({ id }) => runMonitor(id)));
+  } finally {
+    schedulerRunning = false;
+  }
+}
+setInterval(schedulerTick, 5000).unref();
+
 app.get("/healthz", (req, res) => res.type("text").send("healthy\n"));
 app.get("/api/version", (req, res) => res.json({
   name: "NichHome Uptime",
@@ -163,7 +266,7 @@ app.post("/api/setup", limited, (req, res) => {
   const username = String(req.body.username || "").trim();
   const password = String(req.body.password || "");
   if (!/^[a-zA-Z0-9._-]{3,32}$/.test(username)) return res.status(400).json({ error: "Username must be 3-32 letters, numbers, dots, dashes, or underscores." });
-  if (password.length < 12) return res.status(400).json({ error: "Password must be at least 12 characters." });
+  if (password.length < 8) return res.status(400).json({ error: "Password must be at least 8 characters." });
   const result = db.prepare("INSERT INTO users (username, password_hash) VALUES (?, ?)").run(username, hashPassword(password));
   createSession(res, result.lastInsertRowid);
   res.status(201).json({ ok: true });
@@ -176,7 +279,7 @@ app.post("/api/login", limited, (req, res) => {
   }
   if (user.mfa_enabled && !verifyTotp(user.mfa_secret, String(req.body.code || ""))) {
     req.rateState.count += 1;
-    return res.status(401).json({ error: req.body.code ? "Incorrect authentication code." : "MFA code required.", mfaRequired: true });
+    return res.status(401).json({ error: req.body.code ? "Incorrect authenticator-app code." : "Enter the six-digit code from your authenticator app.", mfaRequired: true });
   }
   attempts.delete(req.ip);
   createSession(res, user.id);
@@ -206,6 +309,33 @@ app.post("/api/mfa/disable", requireAuth, (req, res) => {
   const user = db.prepare("SELECT * FROM users WHERE id = ?").get(req.user.id);
   if (!verifyPassword(String(req.body.password || ""), user.password_hash)) return res.status(401).json({ error: "Password is incorrect." });
   db.prepare("UPDATE users SET mfa_secret = NULL, mfa_enabled = 0 WHERE id = ?").run(req.user.id);
+  res.json({ ok: true });
+});
+app.get("/api/monitors", requireAuth, (req, res) => {
+  const monitors = db.prepare("SELECT * FROM monitors ORDER BY created_at DESC").all();
+  res.json(monitors.map((monitor) => ({
+    id: monitor.id, name: monitor.name, type: monitor.type, target: monitor.target,
+    intervalSeconds: monitor.interval_seconds, timeoutSeconds: monitor.timeout_seconds,
+    enabled: Boolean(monitor.enabled), status: monitor.status, responseMs: monitor.response_ms,
+    lastError: monitor.last_error, lastCheckedAt: monitor.last_checked_at
+  })));
+});
+app.post("/api/monitors", requireAuth, async (req, res) => {
+  let monitor;
+  try { monitor = validateMonitor(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const result = db.prepare("INSERT INTO monitors (name, type, target, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?)")
+    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds);
+  await runMonitor(result.lastInsertRowid);
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.post("/api/monitors/:id/check", requireAuth, async (req, res) => {
+  const monitor = await runMonitor(Number(req.params.id));
+  if (!monitor) return res.status(404).json({ error: "Monitor not found." });
+  res.json({ ok: true, status: monitor.status });
+});
+app.delete("/api/monitors/:id", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM monitors WHERE id = ?").run(Number(req.params.id));
+  if (!result.changes) return res.status(404).json({ error: "Monitor not found." });
   res.json({ ok: true });
 });
 

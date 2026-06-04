@@ -27,9 +27,9 @@
         <h2 id="formTitle">Create your control room</h2>
         <p id="formIntro">Set up the first administrator account. You can enable MFA after signing in.</p>
         <label>Username<input name="username" autocomplete="username" required minlength="3" placeholder="admin"></label>
-        <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="12" placeholder="At least 12 characters"></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="8" placeholder="At least 8 characters"></label>
         <label id="confirmField">Confirm password<input name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat password"></label>
-        <label id="mfaField" hidden>Authentication code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000"></label>
+        <label id="mfaField" hidden>Six-digit code from your authenticator app<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000"></label>
         <p class="form-error" id="formError"></p>
         <button class="auth-submit" type="submit"><span id="submitText">Create administrator</span><b>→</b></button>
         <small class="auth-note" id="authNote">Credentials are encrypted and stored only in your local SQLite database.</small>

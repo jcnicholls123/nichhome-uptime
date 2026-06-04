@@ -61,7 +61,7 @@
           <div>
             <p class="eyebrow">CONTROL ROOM / <span id="pageName">OVERVIEW</span></p>
             <h1>Good evening, James.</h1>
-            <p class="subhead">Your infrastructure is steady. <strong>46 of 48</strong> monitors are operational.</p>
+            <p class="subhead" id="summaryText">Add your first monitor to begin collecting real uptime data.</p>
           </div>
           <div class="heading-actions">
             <button class="soft-button">Last 24 hours <span>⌄</span></button>
@@ -73,7 +73,7 @@
           <article class="metric-card hero-metric">
             <div class="metric-top"><span class="metric-icon good">↗</span><span class="trend good">+0.04%</span></div>
             <p>Overall uptime</p>
-            <div class="metric-value">99.98<span>%</span></div>
+            <div class="metric-value"><span id="uptimeValue" class="metric-number">--</span><span>%</span></div>
             <div class="spark-bars" aria-label="Uptime history">
               <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
             </div>
@@ -81,19 +81,19 @@
           <article class="metric-card">
             <div class="metric-top"><span class="metric-icon good">●</span><span class="micro-copy">of 48 total</span></div>
             <p>Operational</p>
-            <div class="metric-value">46</div>
+            <div class="metric-value" id="operationalValue">0</div>
             <div class="progress-line"><span style="width:95.8%"></span></div>
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-icon warning">!</span><span class="micro-copy">needs attention</span></div>
             <p>Degraded</p>
-            <div class="metric-value">02</div>
+            <div class="metric-value" id="degradedValue">0</div>
             <div class="progress-line warning"><span style="width:18%"></span></div>
           </article>
           <article class="metric-card">
             <div class="metric-top"><span class="metric-icon coral">⌁</span><span class="trend good">−12 ms</span></div>
             <p>Avg. response</p>
-            <div class="metric-value">84<span>ms</span></div>
+            <div class="metric-value"><span id="responseValue" class="metric-number">--</span><span>ms</span></div>
             <svg class="mini-line" viewBox="0 0 180 38" preserveAspectRatio="none" aria-hidden="true"><path d="M0 30 C15 27 18 10 35 16 S55 33 72 23 S96 4 110 12 S130 34 145 21 S166 10 180 4"/></svg>
           </article>
         </section>
@@ -145,7 +145,7 @@
 
           <article class="panel snmp-panel">
             <div class="panel-heading">
-              <div><span class="section-tag accent">SNMP COMMAND</span><h2>Network intelligence</h2></div>
+              <div><span class="section-tag accent">SNMP PREVIEW</span><h2>Network intelligence</h2></div>
               <button class="dark-button">Explore SNMP <span>→</span></button>
             </div>
             <div class="snmp-content">
@@ -171,16 +171,11 @@
 
           <article class="panel monitor-panel">
             <div class="panel-heading"><div><span class="section-tag">MONITORS</span><h2>Priority services</h2></div><button class="text-button">Manage</button></div>
-            <div class="monitor-list" id="monitorList">
-              <div class="monitor-row"><span class="service-icon web">W</span><div><strong>NichHome Web</strong><small>HTTPS · 19 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
-              <div class="monitor-row"><span class="service-icon api">A</span><div><strong>Production API</strong><small>HTTP · 42 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
-              <div class="monitor-row"><span class="service-icon dns">D</span><div><strong>Primary DNS</strong><small>DNS · 13 ms</small></div><div class="tiny-bars warning-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label warn">SLOW</span></div>
-              <div class="monitor-row"><span class="service-icon vpn">V</span><div><strong>Office VPN</strong><small>TCP · 86 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
-            </div>
+            <div class="monitor-list" id="monitorList"><p class="empty-state">Loading your monitors...</p></div>
           </article>
 
           <article class="panel docker-panel">
-            <div class="panel-heading"><div><span class="section-tag blue">DOCKER ENGINE</span><h2>Container fleet</h2></div><span class="connected-pill"><i></i>Connected</span></div>
+              <div class="panel-heading"><div><span class="section-tag blue">DOCKER PREVIEW</span><h2>Container fleet</h2></div><span class="connected-pill">Coming next</span></div>
             <div class="docker-summary"><div><strong>18</strong><span>Running</span></div><div><strong>02</strong><span>Stopped</span></div><div><strong>05</strong><span>Stacks</span></div></div>
             <div class="container-stack">
               <div class="container"><span class="cube">◇</span><div><strong>home-assistant</strong><small>Up 8 days · healthy</small></div><span class="cpu">12% CPU</span></div>
@@ -216,6 +211,23 @@
         <p class="modal-error" id="disableError"></p>
       </div>
       <button class="logout-button" id="logoutButton">Sign out of NichHome Uptime</button>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="monitorModal" hidden>
+    <section class="account-modal monitor-modal" role="dialog" aria-modal="true" aria-labelledby="monitorTitle">
+      <div class="modal-heading"><div><span class="section-tag accent">REAL MONITORING</span><h2 id="monitorTitle">Add a monitor</h2></div><button class="modal-close" id="closeMonitor" aria-label="Close">×</button></div>
+      <form class="monitor-form" id="monitorForm">
+        <label>Name<input name="name" required minlength="2" maxlength="80" placeholder="Home Assistant"></label>
+        <label>Type<select name="type"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP port</option></select></label>
+        <label>Target<input name="target" required placeholder="https://home.example.com"></label>
+        <div class="form-columns">
+          <label>Check every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
+          <label>Timeout<select name="timeoutSeconds"><option value="5">5 seconds</option><option value="10" selected>10 seconds</option><option value="30">30 seconds</option></select></label>
+        </div>
+        <p class="modal-error" id="monitorError"></p>
+        <button class="command-button" type="submit">Create and check monitor</button>
+      </form>
     </section>
   </div>
 

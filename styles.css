@@ -90,6 +90,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .metric-card p { margin: 14px 0 2px; color: #8d9691; font-size: 9px; }
 .metric-value { font-size: 30px; font-weight: 700; letter-spacing: -1.8px; }
 .metric-value span { margin-left: 2px; color: #9aa19e; font-family: "DM Mono"; font-size: 10px; letter-spacing: 0; }
+.metric-value .metric-number { margin-left: 0; color: inherit; font-family: inherit; font-size: inherit; letter-spacing: inherit; }
 .spark-bars, .tiny-bars { display: flex; align-items: center; gap: 2px; }
 .spark-bars { height: 15px; margin-top: 10px; }
 .spark-bars i { flex: 1; height: 100%; border-radius: 1px; background: var(--green); opacity: .75; }
@@ -180,6 +181,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 
 .monitor-list { display: grid; }
 .monitor-row { display: grid; grid-template-columns: 30px minmax(100px, 1fr) minmax(80px, .65fr) 36px; align-items: center; gap: 9px; padding: 11px 0; border-top: 1px solid var(--line); }
+.monitor-row.real-monitor { grid-template-columns: 30px minmax(100px, 1fr) auto auto; }
+.monitor-actions { display: flex; gap: 4px; }
+.monitor-action { width: 25px; height: 25px; padding: 0; border: 1px solid var(--line); border-radius: 5px; color: #737c78; background: transparent; font-size: 9px; }
+.monitor-action.delete { color: #c65b4b; }
+.empty-state { padding: 35px 10px; color: #959c98; font-size: 9px; text-align: center; }
 .monitor-row:first-child { border-top: 0; }
 .service-icon { display: grid; place-items: center; width: 27px; height: 27px; border-radius: 7px; font-size: 8px; font-weight: 800; }
 .service-icon.web { color: #bd5d4c; background: #f4d8cf; }
@@ -241,6 +247,11 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .mfa-setup input { height: 36px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; background: white; }
 .modal-error { min-height: 10px; color: #c84f40 !important; }
 .logout-button { width: 100%; margin-top: 18px; padding: 11px; border: 1px solid rgba(255,107,82,.22); border-radius: 8px; color: #c95746; background: rgba(255,107,82,.06); font-size: 8px; font-weight: 700; }
+.monitor-form { display: grid; gap: 11px; margin-top: 18px; }
+.monitor-form label { display: grid; gap: 5px; color: #68716d; font-size: 8px; font-weight: 700; }
+.monitor-form input, .monitor-form select { height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; background: white; font-size: 9px; }
+.monitor-form input:focus, .monitor-form select:focus { border-color: var(--coral); }
+.form-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
 
 @media (max-width: 1120px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }

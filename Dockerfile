@@ -1,9 +1,20 @@
-FROM nginxinc/nginx-unprivileged:1.27-alpine
+FROM node:22-bookworm-slim
 
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-COPY index.html styles.css app.js /usr/share/nginx/html/
+WORKDIR /app
 
+COPY package.json package-lock.json ./
+RUN npm ci --omit=dev && npm cache clean --force
+
+COPY server.js index.html auth.html styles.css auth.css app.js auth.js ./
+
+ENV NODE_ENV=production \
+    PORT=8080 \
+    DATA_DIR=/data
+
+VOLUME ["/data"]
 EXPOSE 8080
 
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
-  CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+  CMD node -e "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+
+CMD ["node", "server.js"]

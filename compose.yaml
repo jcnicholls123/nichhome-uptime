@@ -7,9 +7,14 @@ services:
     restart: unless-stopped
     ports:
       - "30080:8080"
+    volumes:
+      - nichhome-data:/data
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8080/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 3s
       retries: 3
       start_period: 5s
+
+volumes:
+  nichhome-data:

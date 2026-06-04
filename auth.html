@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NichHome Uptime · Sign in</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles.css">
+  <link rel="stylesheet" href="/auth.css">
+</head>
+<body class="auth-body">
+  <main class="auth-shell">
+    <section class="auth-story">
+      <div class="auth-brand"><span class="brand-mark">N<span>H</span></span><span><strong>NichHome</strong><small>UPTIME SYSTEMS</small></span></div>
+      <div class="story-copy">
+        <p class="eyebrow">YOUR INFRASTRUCTURE / IN FOCUS</p>
+        <h1>Know what is alive.<br><em>Before it matters.</em></h1>
+        <p>Uptime, SNMP telemetry, containers, and alerts in one calm control room.</p>
+      </div>
+      <div class="story-status"><i></i><span>Local-first · SQLite powered · Your data stays home</span></div>
+    </section>
+    <section class="auth-panel">
+      <form class="auth-form" id="authForm">
+        <span class="section-tag accent" id="formTag">INITIAL SETUP</span>
+        <h2 id="formTitle">Create your control room</h2>
+        <p id="formIntro">Set up the first administrator account. You can enable MFA after signing in.</p>
+        <label>Username<input name="username" autocomplete="username" required minlength="3" placeholder="admin"></label>
+        <label>Password<input name="password" type="password" autocomplete="new-password" required minlength="12" placeholder="At least 12 characters"></label>
+        <label id="confirmField">Confirm password<input name="confirmPassword" type="password" autocomplete="new-password" placeholder="Repeat password"></label>
+        <label id="mfaField" hidden>Authentication code<input name="code" inputmode="numeric" autocomplete="one-time-code" pattern="[0-9]{6}" placeholder="000000"></label>
+        <p class="form-error" id="formError"></p>
+        <button class="auth-submit" type="submit"><span id="submitText">Create administrator</span><b>→</b></button>
+        <small class="auth-note" id="authNote">Credentials are encrypted and stored only in your local SQLite database.</small>
+      </form>
+    </section>
+  </main>
+  <script src="/auth.js"></script>
+</body>
+</html>

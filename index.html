@@ -52,7 +52,7 @@
         <div class="top-actions">
           <button class="icon-button" aria-label="Notifications">♢<span class="notification-dot"></span></button>
           <button class="command-button" id="newMonitor"><span>＋</span> Add monitor</button>
-          <button class="profile-button"><span class="avatar">JN</span><span class="profile-copy"><strong>James Nicholls</strong><small>Administrator</small></span><span>⌄</span></button>
+          <button class="profile-button" id="accountButton"><span class="avatar" id="avatar">NH</span><span class="profile-copy"><strong id="accountName">Administrator</strong><small id="accountSecurity">Account</small></span><span>⌄</span></button>
         </div>
       </header>
 
@@ -191,6 +191,32 @@
         </section>
       </div>
     </main>
+  </div>
+
+  <div class="modal-backdrop" id="accountModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
+      <div class="modal-heading"><div><span class="section-tag accent">ACCOUNT SECURITY</span><h2 id="accountTitle">Your account</h2></div><button class="modal-close" id="closeAccount" aria-label="Close">×</button></div>
+      <div class="account-summary"><span class="avatar large" id="modalAvatar">NH</span><div><strong id="modalUsername">Administrator</strong><small>Local administrator</small></div></div>
+      <div class="security-card">
+        <div><strong>Authenticator MFA</strong><p id="mfaStatus">Checking security status...</p></div>
+        <button class="soft-button" id="mfaAction">Configure</button>
+      </div>
+      <div class="mfa-setup" id="mfaSetup" hidden>
+        <p>Add this secret to Google Authenticator, Microsoft Authenticator, 1Password, or another TOTP app.</p>
+        <code id="mfaSecret"></code>
+        <a id="mfaUri" href="#">Open authenticator link</a>
+        <label>Enter the six-digit code<input id="mfaCode" inputmode="numeric" maxlength="6" placeholder="000000"></label>
+        <button class="command-button" id="confirmMfa">Enable MFA</button>
+        <p class="modal-error" id="mfaError"></p>
+      </div>
+      <div class="mfa-setup" id="mfaDisable" hidden>
+        <p>Enter your password to disable authenticator MFA.</p>
+        <label>Password<input id="disablePassword" type="password" autocomplete="current-password"></label>
+        <button class="command-button" id="confirmDisable">Disable MFA</button>
+        <p class="modal-error" id="disableError"></p>
+      </div>
+      <button class="logout-button" id="logoutButton">Sign out of NichHome Uptime</button>
+    </section>
   </div>
 
   <div class="toast" id="toast"><span>✓</span><div><strong>Monitor created</strong><small>Initial heartbeat scheduled</small></div></div>

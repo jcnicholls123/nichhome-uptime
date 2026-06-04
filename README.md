@@ -1,12 +1,19 @@
 # NichHome Uptime
 
-NichHome Uptime is a responsive infrastructure dashboard focused on uptime,
+NichHome Uptime is a local-first infrastructure dashboard focused on uptime,
 SNMP network telemetry, Docker container health, and Discord alert visibility.
 
 > [!IMPORTANT]
-> The current release is a deployable dashboard interface populated with demo
-> telemetry. Live SNMP polling, Docker socket integration, persistent monitor
-> configuration, and Discord webhook delivery are planned backend features.
+> Authentication and account settings are operational. Dashboard telemetry is
+> currently demo data while live monitoring integrations are built.
+
+## Current Features
+
+- Guided first-run administrator setup
+- SQLite persistence in `/data`
+- Secure password hashing and cookie-backed sessions
+- Optional authenticator-app TOTP MFA
+- Protected dashboard and account security controls
 
 ## Run with Docker
 
@@ -14,7 +21,7 @@ Build and run locally:
 
 ```bash
 docker build -t nichhome-uptime .
-docker run -d --name nichhome-uptime --restart unless-stopped -p 8080:8080 nichhome-uptime
+docker run -d --name nichhome-uptime --restart unless-stopped -p 8080:8080 -v nichhome-data:/data nichhome-uptime
 ```
 
 Open `http://localhost:8080`. The container health endpoint is available at
@@ -27,6 +34,8 @@ docker compose up -d
 ```
 
 The Compose deployment exposes the dashboard at `http://localhost:30080`.
+On first launch, NichHome Uptime guides you through creating the initial
+administrator account. MFA can then be enabled from the account menu.
 
 GitHub Actions publishes multi-architecture images for AMD64 and ARM64 to:
 
@@ -42,17 +51,21 @@ ghcr.io/jcnicholls123/nichhome-uptime:latest
 2. Set the application name to `nichhome-uptime`.
 3. Use `ghcr.io/jcnicholls123/nichhome-uptime:latest` as the image.
 4. Add container port `8080` and expose it on host port `30080`.
-5. Set the restart policy to **Unless Stopped**.
-6. Save the app and open `http://TRUENAS-IP:30080`.
+5. Add persistent storage for container path `/data`.
+6. Set the restart policy to **Unless Stopped**.
+7. Save the app and open `http://TRUENAS-IP:30080`.
 
 ### Using YAML/Compose
 
 TrueNAS releases that provide an **Install via YAML** option can use the
 contents of `compose.yaml`, then install the app.
 
-No dataset mounts, environment variables, custom user IDs, or host-network
-access are required for this interface-only release. The container runs
-unprivileged and supports automatic health checks.
+Persistent storage at `/data` is required to retain the admin account, MFA
+secret, and application database across upgrades.
+
+When upgrading an existing interface-only installation, edit the TrueNAS app
+YAML to add the `/data` volume shown below, then redeploy using the latest
+image. The first launch after upgrading opens the initial administrator setup.
 
 ### TrueNAS Troubleshooting
 
@@ -67,17 +80,25 @@ services:
     restart: unless-stopped
     ports:
       - "30080:8080"
+    volumes:
+      - nichhome-data:/data
+volumes:
+  nichhome-data:
 ```
 
 The TrueNAS application name must be lowercase, such as `nichhome-uptime`.
 If port `30080` is already in use, change only the number before the colon.
-Do not configure storage, host networking, a custom user, or a read-only root
-filesystem.
+Do not configure host networking, a custom user, or a read-only root
+filesystem. Keep `/data` mounted to persistent storage.
 
 ## Development
 
-The dashboard is intentionally dependency-free. Open `index.html` directly or
-serve the project directory with any static web server.
+Install dependencies and start the Node service:
+
+```bash
+npm install
+npm start
+```
 
 ## Roadmap
 
@@ -85,4 +106,4 @@ serve the project directory with any static web server.
 - SNMP v2c/v3 polling and device discovery
 - Docker Engine API integration
 - Discord webhook notifications
-- Authentication, incidents, and public status pages
+- Incidents and public status pages

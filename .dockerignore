@@ -3,3 +3,6 @@
 .gitignore
 README.md
 compose.yaml
+node_modules
+data
+*.log

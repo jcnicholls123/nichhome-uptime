@@ -9,6 +9,7 @@ let monitors = [];
 let incidents = [];
 let snmpDevices = [];
 let searchFilter = "";
+let lastOpenIncidentCount = null;
 
 const sidebar = document.querySelector(".sidebar");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
@@ -125,10 +126,12 @@ document.getElementById("timeRangeButton").addEventListener("click", () => showT
 refreshButton.addEventListener("click", async () => {
   refreshButton.classList.add("spinning");
   try {
-    await Promise.all(monitors.map((monitor) => api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" })));
-    await loadMonitors();
-    await loadGraph();
-    showToast("Checks complete", `${monitors.length} monitor${monitors.length === 1 ? "" : "s"} checked`);
+    await Promise.all([
+      ...monitors.filter((monitor) => monitor.enabled).map((monitor) => api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" })),
+      ...snmpDevices.filter((device) => device.enabled).map((device) => api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }))
+    ]);
+    await Promise.all([loadMonitors(), loadSnmpDevices(), loadGraph(), loadIncidents()]);
+    showToast("Checks complete", `${monitors.length + snmpDevices.length} monitored services checked`);
   } finally {
     refreshButton.classList.remove("spinning");
   }
@@ -168,10 +171,11 @@ async function loadVersion() {
 function renderMonitors() {
   monitorList.replaceChildren();
   const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  if (!visible.length) {
+  const visibleSnmp = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
+  if (!visible.length && !visibleSnmp.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = monitors.length ? "No monitors match your search." : "No real monitors yet. Add an HTTP or TCP monitor to begin.";
+    empty.textContent = monitors.length || snmpDevices.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor or SNMP device to begin.";
     monitorList.append(empty);
     return;
   }
@@ -224,27 +228,61 @@ function renderMonitors() {
     row.append(icon, copy, actions, status);
     monitorList.append(row);
   }
+  for (const device of visibleSnmp) {
+    const row = document.createElement("div");
+    row.className = "monitor-row real-monitor";
+    const icon = document.createElement("span");
+    icon.className = "service-icon snmp";
+    icon.textContent = "S";
+    const copy = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = device.name;
+    const detail = document.createElement("small");
+    detail.textContent = `SNMP · ${device.profile?.label || "Network device"} · ${device.lastError || device.host}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const details = document.createElement("button"); details.className = "monitor-action"; details.title = "View SNMP details"; details.textContent = "i";
+    details.addEventListener("click", () => openSnmpDetails(device));
+    const poll = document.createElement("button"); poll.className = "monitor-action"; poll.title = "Poll now"; poll.textContent = "↻";
+    poll.disabled = !device.enabled;
+    poll.addEventListener("click", async () => {
+      poll.disabled = true;
+      await api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" });
+      await Promise.all([loadSnmpDevices(), loadIncidents(), loadGraph()]);
+    });
+    actions.append(details, poll);
+    const status = document.createElement("span");
+    status.className = `status-label ${device.status === "up" ? "up" : "warn"}`;
+    status.textContent = device.enabled ? device.status.toUpperCase() : "PAUSED";
+    row.append(icon, copy, actions, status);
+    monitorList.append(row);
+  }
+}
+
+function updateDashboardHealth() {
+  const services = [...monitors, ...snmpDevices];
+  const up = services.filter((item) => item.enabled && item.status === "up");
+  const down = services.filter((item) => item.enabled && item.status === "down");
+  const checked = up.length + down.length;
+  const responses = monitors.filter((monitor) => monitor.status === "up").map((monitor) => monitor.responseMs).filter((value) => value != null);
+  document.getElementById("operationalValue").textContent = up.length;
+  document.getElementById("degradedValue").textContent = down.length;
+  document.getElementById("uptimeValue").textContent = checked ? ((up.length / checked) * 100).toFixed(1) : "--";
+  document.getElementById("responseValue").textContent = responses.length ? Math.round(responses.reduce((sum, value) => sum + value, 0) / responses.length) : "--";
+  document.getElementById("summaryText").innerHTML = services.length
+    ? `Real checks are active. <strong>${up.length} of ${services.length}</strong> monitored services are operational.`
+    : "Add your first monitor or SNMP device to begin collecting real uptime data.";
+  const monitorNavCount = document.querySelector('[data-page="Monitors"] .nav-count');
+  if (monitorNavCount) monitorNavCount.textContent = services.length;
+  document.getElementById("totalMonitorCopy").textContent = `of ${services.length} total`;
+  document.querySelector(".progress-line:not(.warning) span").style.width = services.length ? `${(up.length / services.length) * 100}%` : "0%";
+  document.querySelector(".progress-line.warning span").style.width = services.length ? `${(down.length / services.length) * 100}%` : "0%";
+  document.querySelectorAll(".metric-card")[2].classList.toggle("alerting", down.length > 0);
 }
 
 async function loadMonitors() {
   monitors = await api("/api/monitors");
   renderMonitors();
-  const up = monitors.filter((monitor) => monitor.status === "up");
-  const down = monitors.filter((monitor) => monitor.status === "down");
-  const checked = up.length + down.length;
-  const responses = up.map((monitor) => monitor.responseMs).filter((value) => value != null);
-  document.getElementById("operationalValue").textContent = up.length;
-  document.getElementById("degradedValue").textContent = down.length;
-  document.getElementById("uptimeValue").textContent = checked ? ((up.length / checked) * 100).toFixed(1) : "--";
-  document.getElementById("responseValue").textContent = responses.length ? Math.round(responses.reduce((sum, value) => sum + value, 0) / responses.length) : "--";
-  document.getElementById("summaryText").innerHTML = monitors.length
-    ? `Real checks are active. <strong>${up.length} of ${monitors.length}</strong> monitors are operational.`
-    : "Add your first monitor to begin collecting real uptime data.";
-  const monitorNavCount = document.querySelector('[data-page="Monitors"] .nav-count');
-  if (monitorNavCount) monitorNavCount.textContent = monitors.length;
-  document.getElementById("totalMonitorCopy").textContent = `of ${monitors.length} total`;
-  document.querySelector(".progress-line:not(.warning) span").style.width = monitors.length ? `${(up.length / monitors.length) * 100}%` : "0%";
-  document.querySelector(".progress-line.warning span").style.width = monitors.length ? `${(down.length / monitors.length) * 100}%` : "0%";
+  updateDashboardHealth();
   renderSearchResults();
 }
 
@@ -274,7 +312,18 @@ function incidentElement(incident) {
 async function loadIncidents() {
   incidents = await api("/api/incidents");
   const open = incidents.filter((incident) => !incident.resolvedAt).length;
+  if (lastOpenIncidentCount !== null && open > lastOpenIncidentCount) {
+    const newest = incidents.find((incident) => !incident.resolvedAt);
+    showToast("New active alert", newest ? `${newest.monitorName} is down` : `${open} incidents need attention`);
+  }
+  lastOpenIncidentCount = open;
   document.getElementById("incidentCount").textContent = open;
+  document.getElementById("incidentCount").classList.toggle("alerting", open > 0);
+  document.querySelector(".notification-dot").classList.toggle("alerting", open > 0);
+  document.querySelector(".sidebar-footer").classList.toggle("alerting", open > 0);
+  document.getElementById("systemHealthText").textContent = open ? `${open} active alert${open === 1 ? "" : "s"}` : "All systems nominal";
+  document.getElementById("activeAlertCount").textContent = `${open} active alert${open === 1 ? "" : "s"}`;
+  document.getElementById("activeAlertStrip").hidden = open === 0;
   const list = document.getElementById("activityList");
   list.replaceChildren();
   if (!incidents.length) {
@@ -349,7 +398,7 @@ function renderSnmpDevices() {
     name.textContent = device.name;
     const status = document.createElement("span");
     status.className = `status-label ${device.status === "up" ? "up" : "warn"}`;
-    status.textContent = device.status.toUpperCase();
+    status.textContent = device.enabled ? device.status.toUpperCase() : "PAUSED";
     header.append(name, status);
     const identity = document.createElement("p");
     identity.textContent = device.sysName || `${device.host}:${device.port}`;
@@ -364,10 +413,11 @@ function renderSnmpDevices() {
     details.addEventListener("click", () => openSnmpDetails(device));
     const poll = document.createElement("button");
     poll.className = "dark-button"; poll.textContent = "Poll now";
-    poll.addEventListener("click", async () => { await api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }); await loadSnmpDevices(); });
+    poll.disabled = !device.enabled;
+    poll.addEventListener("click", async () => { await api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }); await Promise.all([loadSnmpDevices(), loadIncidents(), loadGraph()]); });
     const remove = document.createElement("button");
     remove.className = "dark-button"; remove.textContent = "Delete";
-    remove.addEventListener("click", async () => { if (window.confirm(`Delete ${device.name}?`)) { await api(`/api/snmp/devices/${device.id}`, { method: "DELETE" }); await loadSnmpDevices(); } });
+    remove.addEventListener("click", async () => { if (window.confirm(`Delete ${device.name}?`)) { await api(`/api/snmp/devices/${device.id}`, { method: "DELETE" }); await Promise.all([loadSnmpDevices(), loadIncidents(), loadGraph()]); } });
     actions.append(details, poll, remove);
     card.append(header, identity, description, actions);
     list.append(card);
@@ -377,6 +427,8 @@ function renderSnmpDevices() {
 async function loadSnmpDevices() {
   snmpDevices = await api("/api/snmp/devices");
   renderSnmpDevices();
+  renderMonitors();
+  updateDashboardHealth();
   renderSearchResults();
 }
 
@@ -391,12 +443,18 @@ function formatBytes(value) {
 
 async function openSnmpDetails(device) {
   const data = await api(`/api/snmp/devices/${device.id}/details`);
+  const profileType = data.device.profile.type;
+  const internalInterface = /^(lo|ifb|gre|gretap|sit|ip6tnl|teql|veth|docker|dummy|erspan|ip_vti|ip6_vti|tun|tap)/i;
+  const physical = data.interfaces.filter((item) => item.mac && item.mac !== "00:00:00:00:00:00" && !internalInterface.test(item.name || ""));
+  const shownInterfaces = profileType === "switch" || !physical.length ? data.interfaces : physical;
   document.getElementById("snmpDetailsTitle").textContent = data.device.name;
-  document.getElementById("snmpProfile").textContent = data.device.isUniFi ? "UNIFI SNMP PROFILE" : "SNMP DEVICE";
+  document.getElementById("snmpProfile").textContent = data.device.profile.label.toUpperCase();
   document.getElementById("refreshSnmpDetails").dataset.deviceId = device.id;
+  document.getElementById("editSnmpDevice").dataset.deviceId = device.id;
   const summary = document.getElementById("snmpDetailsSummary");
   summary.replaceChildren();
-  for (const [label, value] of [["Identity", data.device.sysName || data.device.host], ["Description", data.device.sysDescription || "--"], ["Address", `${data.device.host}:${data.device.port}`], ["Uptime", data.device.uptimeTicks == null ? "--" : `${Math.floor(data.device.uptimeTicks / 8640000)} days`], ["Interfaces", data.interfaces.length], ["Profile", data.device.isUniFi ? "UniFi / Ubiquiti" : "Standard SNMP"]]) {
+  const interfaceLabel = profileType === "access-point" ? "Useful AP interfaces" : profileType === "gateway" ? "Useful gateway interfaces" : "Interfaces";
+  for (const [label, value] of [["Device type", data.device.profile.label], ["Identity", data.device.sysName || data.device.host], ["Description", data.device.sysDescription || "--"], ["Address", `${data.device.host}:${data.device.port}`], ["Uptime", data.device.uptimeTicks == null ? "--" : `${Math.floor(data.device.uptimeTicks / 8640000)} days`], [interfaceLabel, `${shownInterfaces.filter((item) => item.operStatus === 1).length} up / ${shownInterfaces.length} shown`]]) {
     const stat = document.createElement("div");
     stat.className = "detail-stat";
     const small = document.createElement("small"); small.textContent = label;
@@ -405,9 +463,12 @@ async function openSnmpDetails(device) {
   }
   const interfaces = document.getElementById("snmpInterfaces");
   interfaces.replaceChildren();
-  for (const item of data.interfaces) {
+  document.getElementById("snmpInterfaceTitle").textContent = profileType === "switch" ? "Switch ports and interfaces" : profileType === "access-point" ? "AP uplink and radio interfaces" : profileType === "gateway" ? "Gateway physical interfaces" : "Interfaces";
+  document.getElementById("snmpInterfaceHelp").textContent = shownInterfaces.length < data.interfaces.length ? `Showing ${shownInterfaces.length} physical interfaces. ${data.interfaces.length - shownInterfaces.length} internal or virtual interfaces are hidden.` : "Interfaces reported by the device over standard IF-MIB.";
+  for (const item of shownInterfaces) {
     const row = document.createElement("tr");
-    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, item.operStatus === 1 ? "Up" : "Down", item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets)]) {
+    const interfaceStatus = item.operStatus === 1 ? "Up" : item.adminStatus === 2 ? "Disabled" : item.operStatus === 2 ? "Down" : "Unknown";
+    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, interfaceStatus, item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets)]) {
       const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
     }
     interfaces.append(row);
@@ -535,18 +596,46 @@ document.getElementById("testDiscord").addEventListener("click", async () => {
     showToast("Discord test sent", "Check your Discord channel");
   } catch (err) { document.getElementById("discordError").textContent = err.message; }
 });
-document.getElementById("addSnmpDevice").addEventListener("click", () => { document.getElementById("snmpModal").hidden = false; });
+function openSnmpForm(device = null) {
+  const form = document.getElementById("snmpForm");
+  form.reset();
+  form.elements.id.value = device?.id || "";
+  form.elements.name.value = device?.name || "";
+  form.elements.host.value = device?.host || "";
+  form.elements.port.value = device?.port || 161;
+  form.elements.community.value = device ? "" : "public";
+  form.elements.community.required = !device;
+  form.elements.community.placeholder = device ? "Leave blank to keep current community" : "public";
+  form.elements.intervalSeconds.value = String(device?.intervalSeconds || 60);
+  form.elements.timeoutSeconds.value = String(device?.timeoutSeconds || 5);
+  form.elements.enabled.checked = device?.enabled ?? true;
+  document.getElementById("snmpEnabledLabel").hidden = !device;
+  document.getElementById("snmpFormTitle").textContent = device ? `Edit ${device.name}` : "Add SNMP device";
+  document.getElementById("snmpSubmitButton").textContent = device ? "Save and poll device" : "Add and poll device";
+  document.getElementById("snmpModal").hidden = false;
+}
+document.getElementById("addSnmpDevice").addEventListener("click", () => openSnmpForm());
+document.getElementById("editSnmpDevice").addEventListener("click", () => {
+  const device = snmpDevices.find((item) => String(item.id) === document.getElementById("editSnmpDevice").dataset.deviceId);
+  if (device) {
+    document.getElementById("snmpDetailsModal").hidden = true;
+    openSnmpForm(device);
+  }
+});
 document.getElementById("snmpForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
   const error = document.getElementById("snmpError");
   error.textContent = "";
   try {
-    await api("/api/snmp/devices", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    const values = Object.fromEntries(new FormData(form));
+    values.enabled = form.elements.enabled.checked;
+    const editing = Boolean(values.id);
+    await api(editing ? `/api/snmp/devices/${values.id}` : "/api/snmp/devices", { method: editing ? "PUT" : "POST", body: JSON.stringify(values) });
     form.reset();
     document.getElementById("snmpModal").hidden = true;
-    await loadSnmpDevices();
-    showToast("SNMP device added", "Initial poll completed");
+    await Promise.all([loadSnmpDevices(), loadIncidents(), loadGraph()]);
+    showToast(editing ? "SNMP device updated" : "SNMP device added", editing ? "Settings saved and health refreshed" : "Initial poll completed");
   } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("refreshSnmpDetails").addEventListener("click", async (event) => {
@@ -558,6 +647,7 @@ document.getElementById("refreshSnmpDetails").addEventListener("click", async (e
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
+document.getElementById("activeAlertStrip").addEventListener("click", openIncidents);
 
 document.getElementById("accountButton").addEventListener("click", () => { accountModal.hidden = false; });
 document.getElementById("closeAccount").addEventListener("click", () => { accountModal.hidden = true; });
@@ -605,3 +695,6 @@ loadIncidents();
 loadDiscordStatus();
 loadGraph();
 loadSnmpDevices();
+setInterval(() => {
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadIncidents(), loadGraph()]).catch(() => {});
+}, 30000);

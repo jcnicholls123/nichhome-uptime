@@ -14,6 +14,27 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.7] - 2026-06-04
+
+### Added
+
+- SNMP devices in monitored services, overall uptime totals, and the 24-hour
+  uptime graph
+- Real SNMP incidents with automatic resolution and existing Discord
+  down/recovery alerts
+- Live flashing active-alert strip, incident indicator, degraded card, and
+  sidebar health state
+- Editable SNMP device name, address, port, community, polling interval,
+  timeout, and enabled state
+- UniFi gateway, access point, and switch profile detection
+
+### Changed
+
+- UCG and UniFi access point details now focus on useful physical interfaces
+  and hide obvious Linux tunnel, loopback, and virtual interfaces
+- Dashboard health and incidents refresh automatically every 30 seconds
+- Manual dashboard refresh now checks both service monitors and SNMP devices
+
 ## [1.0.0-beta.6] - 2026-06-04
 
 ### Added
@@ -129,7 +150,8 @@ include breaking changes while the monitoring engine and integrations mature.
 - Live SNMP, Docker, Discord, incident, and public status-page integrations are
   not yet implemented
 
-[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.6...HEAD
+[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.7...HEAD
+[1.0.0-beta.7]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.7
 [1.0.0-beta.6]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.6
 [1.0.0-beta.5]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.4

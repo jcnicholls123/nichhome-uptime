@@ -38,7 +38,7 @@
 
       <div class="sidebar-footer">
         <div class="pulse-orb"><span></span></div>
-        <div><strong>All systems nominal</strong><small><span id="appVersion">Loading version</span> · Beta channel</small></div>
+        <div><strong id="systemHealthText">All systems nominal</strong><small><span id="appVersion">Loading version</span> · Beta channel</small></div>
       </div>
     </aside>
     <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Close navigation" hidden></button>
@@ -58,6 +58,7 @@
           <button class="profile-button" id="accountButton"><span class="avatar" id="avatar">NH</span><span class="profile-copy"><strong id="accountName">Administrator</strong><small id="accountSecurity">Account</small></span><span>⌄</span></button>
         </div>
       </header>
+      <button class="active-alert-strip" id="activeAlertStrip" hidden><strong id="activeAlertCount">0 active alerts</strong><span>Open incidents</span></button>
 
       <div class="content">
         <section class="page-heading">
@@ -223,19 +224,21 @@
 
   <div class="modal-backdrop" id="snmpModal" hidden>
     <section class="account-modal" role="dialog" aria-modal="true">
-      <div class="modal-heading"><div><span class="section-tag accent">SNMP V2C</span><h2>Add SNMP device</h2></div><button class="modal-close" data-close="snmpModal" aria-label="Close">×</button></div>
+      <div class="modal-heading"><div><span class="section-tag accent">SNMP V2C</span><h2 id="snmpFormTitle">Add SNMP device</h2></div><button class="modal-close" data-close="snmpModal" aria-label="Close">×</button></div>
       <form class="monitor-form" id="snmpForm">
+        <input type="hidden" name="id">
         <label>Name<input name="name" required minlength="2" placeholder="Core switch"></label>
         <label>Hostname or IP<input name="host" required placeholder="192.168.1.1"></label>
         <div class="form-columns">
           <label>Port<input name="port" type="number" value="161" min="1" max="65535"></label>
-          <label>Community<input name="community" required value="public"></label>
+          <label>Community<input name="community" placeholder="public"></label>
         </div>
         <div class="form-columns">
           <label>Poll every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option></select></label>
           <label>Timeout<select name="timeoutSeconds"><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select></label>
         </div>
-        <button class="command-button" type="submit">Add and poll device</button>
+        <label class="toggle-label" id="snmpEnabledLabel" hidden><input name="enabled" type="checkbox" checked> SNMP monitoring enabled</label>
+        <button class="command-button" id="snmpSubmitButton" type="submit">Add and poll device</button>
         <p class="modal-error" id="snmpError"></p>
       </form>
     </section>
@@ -243,11 +246,11 @@
 
   <div class="modal-backdrop" id="snmpDetailsModal" hidden>
     <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true">
-      <div class="modal-heading"><div><span class="section-tag accent" id="snmpProfile">SNMP DEVICE</span><h2 id="snmpDetailsTitle">Device details</h2></div><button class="modal-close" data-close="snmpDetailsModal" aria-label="Close">×</button></div>
+      <div class="modal-heading"><div><span class="section-tag accent" id="snmpProfile">SNMP DEVICE</span><h2 id="snmpDetailsTitle">Device details</h2></div><div class="modal-heading-actions"><button class="soft-button" id="editSnmpDevice">Edit device</button><button class="modal-close" data-close="snmpDetailsModal" aria-label="Close">×</button></div></div>
       <div class="snmp-details-summary" id="snmpDetailsSummary"></div>
       <h3 class="modal-subtitle">System OIDs</h3>
       <div class="oid-details-list" id="snmpOids"></div>
-      <div class="panel-heading details-heading"><div><span class="section-tag">DISCOVERED DATA</span><h2>Interfaces</h2></div><button class="dark-button" id="refreshSnmpDetails">Refresh data</button></div>
+      <div class="panel-heading details-heading"><div><span class="section-tag">DISCOVERED DATA</span><h2 id="snmpInterfaceTitle">Interfaces</h2><p class="form-help" id="snmpInterfaceHelp"></p></div><button class="dark-button" id="refreshSnmpDetails">Refresh data</button></div>
       <div class="interface-table-wrap">
         <table class="interface-table">
           <thead><tr><th>Interface</th><th>Status</th><th>MAC</th><th>Speed</th><th>Received</th><th>Sent</th></tr></thead>

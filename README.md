@@ -23,6 +23,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Incident tracking and Discord down/recovery alerts
 - SNMP v2c device status, identity, uptime, and background polling
 - UniFi-focused SNMP details with system OIDs and discovered interfaces
+- Profile-aware UniFi gateway, access point, and switch details
+- Unified SNMP/service uptime, incidents, Discord alerts, and live fault state
 - Ping IP/hostname monitors
 - Real heartbeat uptime and response-time graphs
 

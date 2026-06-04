@@ -50,7 +50,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.6", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.7", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -87,11 +87,18 @@ async function waitForServer() {
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);
     assert.equal(snmpDevices[0].status, "down");
+    assert.equal(snmpDevices[0].profile.type, "network-device");
+    assert.equal((await (await request("/api/incidents")).json()).length, 2);
     const snmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.ok(Array.isArray(snmpDetails.interfaces));
     assert.ok(Array.isArray(snmpDetails.oids));
+    assert.equal(snmpDetails.device.profile.label, "Standard SNMP");
+    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "U7 Pro Max", community: "", enabled: true }) })).status, 200);
+    const editedSnmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
+    assert.equal(editedSnmpDetails.device.profile.type, "access-point");
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/poll`, { method: "POST", body: "{}" })).status, 200);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await (await request("/api/incidents")).json()).length, 1);
     const mfaSetup = await (await request("/api/mfa/start", { method: "POST", body: "{}" })).json();
     assert.match(mfaSetup.qr, /^data:image\/png;base64,/);
     assert.equal((await request("/api/mfa/confirm", { method: "POST", body: JSON.stringify({ code: totp(mfaSetup.secret) }) })).status, 200);

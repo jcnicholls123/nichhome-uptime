@@ -100,6 +100,14 @@ db.exec(`
     polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS snmp_metrics_device_polled ON snmp_metrics(device_id, polled_at DESC);
+  CREATE TABLE IF NOT EXISTS snmp_incidents (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
+  );
+  CREATE INDEX IF NOT EXISTS snmp_incidents_device_started ON snmp_incidents(device_id, started_at DESC);
   CREATE TABLE IF NOT EXISTS snmp_interfaces (
     device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
     interface_index INTEGER NOT NULL,
@@ -293,6 +301,17 @@ function validateSnmpDevice(input) {
   return { name, host, community, port, intervalSeconds, timeoutSeconds };
 }
 
+function snmpDeviceProfile(device) {
+  const identity = `${device.name || ""} ${device.sys_name || ""} ${device.sys_description || ""}`.toLowerCase();
+  const isUniFi = /unifi|ubiquiti|ucg-|u7 |u7-|usw-|udm-|uxg-/.test(identity);
+  let type = "network-device";
+  if (/\bucg|cloud gateway|\budm|dream machine|\buxg|security gateway/.test(identity)) type = "gateway";
+  else if (/\bu7\b|access point|\buap|wifi|wireless/.test(identity)) type = "access-point";
+  else if (/\busw\b|switch/.test(identity)) type = "switch";
+  const label = type === "gateway" ? "UniFi Gateway" : type === "access-point" ? "UniFi Access Point" : type === "switch" ? "UniFi Switch" : isUniFi ? "UniFi Device" : "Standard SNMP";
+  return { isUniFi, type, label };
+}
+
 function snmpGet(device, oids) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
@@ -414,6 +433,12 @@ async function pollSnmpDevice(id) {
     db.prepare("INSERT INTO snmp_metrics (device_id, status, uptime_ticks, response_ms, message) VALUES (?, ?, ?, ?, ?)")
       .run(id, status, uptimeTicks, responseMs, message);
     db.prepare("DELETE FROM snmp_metrics WHERE id IN (SELECT id FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
+    if (status === "down" && previousStatus !== "down") {
+      db.prepare("INSERT INTO snmp_incidents (device_id, cause) VALUES (?, ?)").run(id, message);
+    }
+    if (status === "up" && previousStatus === "down") {
+      db.prepare("UPDATE snmp_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
+    }
   })();
   if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **SNMP device ${device.name} is DOWN**\n${message || device.host}`);
   if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **SNMP device ${device.name} recovered**\n${sysName || device.host}`);
@@ -625,18 +650,27 @@ app.delete("/api/monitors/:id", requireAuth, (req, res) => {
 });
 app.get("/api/incidents", requireAuth, (req, res) => {
   const incidents = db.prepare(`
-    SELECT incidents.id, incidents.started_at AS startedAt, incidents.resolved_at AS resolvedAt,
-      incidents.cause, monitors.name AS monitorName, monitors.target
-    FROM incidents JOIN monitors ON monitors.id = incidents.monitor_id
-    ORDER BY incidents.started_at DESC LIMIT 100
+    SELECT id, startedAt, resolvedAt, cause, monitorName, target, source FROM (
+      SELECT incidents.id AS id, incidents.started_at AS startedAt, incidents.resolved_at AS resolvedAt,
+        incidents.cause AS cause, monitors.name AS monitorName, monitors.target AS target, 'monitor' AS source
+      FROM incidents JOIN monitors ON monitors.id = incidents.monitor_id
+      UNION ALL
+      SELECT -snmp_incidents.id AS id, snmp_incidents.started_at AS startedAt, snmp_incidents.resolved_at AS resolvedAt,
+        snmp_incidents.cause AS cause, snmp_devices.name AS monitorName, snmp_devices.host AS target, 'snmp' AS source
+      FROM snmp_incidents JOIN snmp_devices ON snmp_devices.id = snmp_incidents.device_id
+    ) ORDER BY startedAt DESC LIMIT 100
   `).all();
   res.json(incidents);
 });
 app.get("/api/dashboard/history", requireAuth, (req, res) => {
   const rows = db.prepare(`
-    SELECT checked_at AS checkedAt, status, response_ms AS responseMs
-    FROM heartbeats WHERE checked_at >= datetime('now', '-24 hours')
-    ORDER BY checked_at DESC LIMIT 200
+    SELECT checkedAt, status, responseMs FROM (
+      SELECT checked_at AS checkedAt, status, response_ms AS responseMs
+      FROM heartbeats WHERE checked_at >= datetime('now', '-24 hours')
+      UNION ALL
+      SELECT polled_at AS checkedAt, status, response_ms AS responseMs
+      FROM snmp_metrics WHERE polled_at >= datetime('now', '-24 hours')
+    ) ORDER BY checkedAt DESC LIMIT 400
   `).all();
   res.json(rows.reverse().map((row) => ({
     checkedAt: row.checkedAt,
@@ -646,13 +680,16 @@ app.get("/api/dashboard/history", requireAuth, (req, res) => {
 });
 app.get("/api/snmp/devices", requireAuth, (req, res) => {
   const devices = db.prepare("SELECT * FROM snmp_devices ORDER BY created_at DESC").all();
-  res.json(devices.map((device) => ({
-    id: device.id, name: device.name, host: device.host, port: device.port,
-    intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds,
-    enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name,
-    sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks,
-    lastError: device.last_error, lastPolledAt: device.last_polled_at
-  })));
+  res.json(devices.map((device) => {
+    const profile = snmpDeviceProfile(device);
+    return {
+      id: device.id, name: device.name, host: device.host, port: device.port,
+      intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds,
+      enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name,
+      sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks,
+      lastError: device.last_error, lastPolledAt: device.last_polled_at, profile
+    };
+  }));
 });
 app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
   const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(req.params.id));
@@ -660,8 +697,11 @@ app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
   const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, admin_status AS adminStatus, oper_status AS operStatus, speed_bps AS speedBps, in_octets AS inOctets, out_octets AS outOctets, updated_at AS updatedAt FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(device.id);
   const oids = db.prepare("SELECT oid, label, value, updated_at AS updatedAt FROM snmp_oids WHERE device_id = ? ORDER BY oid").all(device.id);
   const metrics = db.prepare("SELECT status, uptime_ticks AS uptimeTicks, response_ms AS responseMs, message, polled_at AS polledAt FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 100").all(device.id);
+  const profile = snmpDeviceProfile(device);
+  const upInterfaces = interfaces.filter((item) => item.operStatus === 1).length;
+  const physicalInterfaces = interfaces.filter((item) => item.mac && item.mac !== "00:00:00:00:00:00").length;
   res.json({
-    device: { id: device.id, name: device.name, host: device.host, port: device.port, status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, isUniFi: /unifi|ubiquiti/i.test(`${device.sys_name} ${device.sys_description}`) },
+    device: { id: device.id, name: device.name, host: device.host, port: device.port, intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds, enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, profile, interfaceSummary: { total: interfaces.length, up: upInterfaces, physical: physicalInterfaces } },
     interfaces, oids, metrics
   });
 });
@@ -677,6 +717,19 @@ app.post("/api/snmp/devices/:id/poll", requireAuth, async (req, res) => {
   const device = await pollSnmpDevice(Number(req.params.id));
   if (!device) return res.status(404).json({ error: "SNMP device not found." });
   res.json({ ok: true, status: device.status });
+});
+app.put("/api/snmp/devices/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "SNMP device not found." });
+  let device;
+  try { device = validateSnmpDevice({ ...req.body, community: req.body.community || current.community }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE snmp_devices SET name = ?, host = ?, port = ?, community = ?, interval_seconds = ?, timeout_seconds = ?, enabled = ?, next_poll_at = 0 WHERE id = ?")
+    .run(device.name, device.host, device.port, device.community, device.intervalSeconds, device.timeoutSeconds, enabled, id);
+  if (!enabled) db.prepare("UPDATE snmp_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
+  if (enabled) await pollSnmpDevice(id);
+  res.json({ ok: true });
 });
 app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM snmp_devices WHERE id = ?").run(Number(req.params.id));

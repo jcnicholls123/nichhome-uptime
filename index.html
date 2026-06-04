@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#121616">
+  <title>NichHome Uptime</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Manrope:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <a class="brand" href="#" aria-label="NichHome Uptime home">
+        <span class="brand-mark">N<span>H</span></span>
+        <span class="brand-copy"><strong>NichHome</strong><small>UPTIME SYSTEMS</small></span>
+      </a>
+
+      <nav class="main-nav" aria-label="Main navigation">
+        <p class="nav-label">Workspace</p>
+        <button class="nav-item active" data-page="Overview"><span class="nav-icon">⌁</span>Overview<span class="nav-count">12</span></button>
+        <button class="nav-item" data-page="Monitors"><span class="nav-icon">◉</span>Monitors<span class="nav-count">48</span></button>
+        <button class="nav-item" data-page="Incidents"><span class="nav-icon">△</span>Incidents<span class="nav-alert">3</span></button>
+        <button class="nav-item" data-page="Status Pages"><span class="nav-icon">▱</span>Status Pages</button>
+
+        <p class="nav-label">Infrastructure</p>
+        <button class="nav-item" data-page="SNMP Devices"><span class="nav-icon">⌘</span>SNMP Devices<span class="nav-pill">PRO</span></button>
+        <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-count">18</span></button>
+        <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map</button>
+
+        <p class="nav-label">Connect</p>
+        <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications</button>
+        <button class="nav-item" data-page="Discord"><span class="nav-icon discord-icon">#</span>Discord<span class="status-dot"></span></button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="pulse-orb"><span></span></div>
+        <div><strong>All systems nominal</strong><small>Checked 18 sec ago</small></div>
+      </div>
+    </aside>
+
+    <main>
+      <header class="topbar">
+        <div class="mobile-brand">NH</div>
+        <div class="search">
+          <span>⌕</span>
+          <input type="search" placeholder="Search monitors, devices, containers..." aria-label="Search">
+          <kbd>⌘ K</kbd>
+        </div>
+        <div class="top-actions">
+          <button class="icon-button" aria-label="Notifications">♢<span class="notification-dot"></span></button>
+          <button class="command-button" id="newMonitor"><span>＋</span> Add monitor</button>
+          <button class="profile-button"><span class="avatar">JN</span><span class="profile-copy"><strong>James Nicholls</strong><small>Administrator</small></span><span>⌄</span></button>
+        </div>
+      </header>
+
+      <div class="content">
+        <section class="page-heading">
+          <div>
+            <p class="eyebrow">CONTROL ROOM / <span id="pageName">OVERVIEW</span></p>
+            <h1>Good evening, James.</h1>
+            <p class="subhead">Your infrastructure is steady. <strong>46 of 48</strong> monitors are operational.</p>
+          </div>
+          <div class="heading-actions">
+            <button class="soft-button">Last 24 hours <span>⌄</span></button>
+            <button class="soft-button icon-only" aria-label="Refresh" id="refreshButton">↻</button>
+          </div>
+        </section>
+
+        <section class="metric-grid">
+          <article class="metric-card hero-metric">
+            <div class="metric-top"><span class="metric-icon good">↗</span><span class="trend good">+0.04%</span></div>
+            <p>Overall uptime</p>
+            <div class="metric-value">99.98<span>%</span></div>
+            <div class="spark-bars" aria-label="Uptime history">
+              <i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i>
+            </div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-icon good">●</span><span class="micro-copy">of 48 total</span></div>
+            <p>Operational</p>
+            <div class="metric-value">46</div>
+            <div class="progress-line"><span style="width:95.8%"></span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-icon warning">!</span><span class="micro-copy">needs attention</span></div>
+            <p>Degraded</p>
+            <div class="metric-value">02</div>
+            <div class="progress-line warning"><span style="width:18%"></span></div>
+          </article>
+          <article class="metric-card">
+            <div class="metric-top"><span class="metric-icon coral">⌁</span><span class="trend good">−12 ms</span></div>
+            <p>Avg. response</p>
+            <div class="metric-value">84<span>ms</span></div>
+            <svg class="mini-line" viewBox="0 0 180 38" preserveAspectRatio="none" aria-hidden="true"><path d="M0 30 C15 27 18 10 35 16 S55 33 72 23 S96 4 110 12 S130 34 145 21 S166 10 180 4"/></svg>
+          </article>
+        </section>
+
+        <section class="dashboard-grid">
+          <article class="panel uptime-panel">
+            <div class="panel-heading">
+              <div><span class="section-tag">LIVE TELEMETRY</span><h2>Uptime performance</h2></div>
+              <div class="legend"><span><i class="legend-line coral"></i>Uptime</span><span><i class="legend-line cream"></i>Response</span></div>
+            </div>
+            <div class="chart-wrap">
+              <div class="chart-y"><span>100%</span><span>99.9%</span><span>99.8%</span><span>99.7%</span></div>
+              <svg class="uptime-chart" viewBox="0 0 800 245" preserveAspectRatio="none" aria-label="Uptime performance graph">
+                <defs>
+                  <linearGradient id="areaFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#ff6b52" stop-opacity=".32"/><stop offset="100%" stop-color="#ff6b52" stop-opacity="0"/></linearGradient>
+                </defs>
+                <g class="grid-lines"><line x1="0" y1="20" x2="800" y2="20"/><line x1="0" y1="82" x2="800" y2="82"/><line x1="0" y1="144" x2="800" y2="144"/><line x1="0" y1="206" x2="800" y2="206"/></g>
+                <path class="area" d="M0 54 C35 46 50 62 84 48 S142 22 180 38 S235 72 272 60 S328 29 365 43 S426 87 463 65 S520 35 558 46 S624 83 660 58 S730 28 800 42 L800 235 L0 235Z"/>
+                <path class="line-primary" d="M0 54 C35 46 50 62 84 48 S142 22 180 38 S235 72 272 60 S328 29 365 43 S426 87 463 65 S520 35 558 46 S624 83 660 58 S730 28 800 42"/>
+                <path class="line-secondary" d="M0 128 C40 116 68 153 109 139 S166 110 208 126 S268 168 312 142 S382 98 427 119 S494 155 537 137 S604 104 652 121 S738 160 800 126"/>
+                <g class="chart-point"><circle cx="558" cy="46" r="5"/><line x1="558" y1="46" x2="558" y2="225"/></g>
+              </svg>
+              <div class="chart-tooltip"><strong>99.99%</strong><span>14:00 · 72 ms</span></div>
+              <div class="chart-x"><span>00:00</span><span>04:00</span><span>08:00</span><span>12:00</span><span>16:00</span><span>20:00</span><span>Now</span></div>
+            </div>
+          </article>
+
+          <article class="panel activity-panel">
+            <div class="panel-heading"><div><span class="section-tag">EVENT STREAM</span><h2>Recent activity</h2></div><button class="text-button">View all</button></div>
+            <div class="activity-list">
+              <div class="activity-item">
+                <span class="event-icon resolved">✓</span>
+                <div><strong>Core switch recovered</strong><p>Packet loss returned to normal</p><small>2 minutes ago</small></div>
+              </div>
+              <div class="activity-item">
+                <span class="event-icon warning">!</span>
+                <div><strong>High interface usage</strong><p>SW-NR-CORE-01 · Gi0/24 at 91%</p><small>18 minutes ago</small></div>
+              </div>
+              <div class="activity-item">
+                <span class="event-icon discord">#</span>
+                <div><strong>Discord alert delivered</strong><p>#nichhome-operations</p><small>31 minutes ago</small></div>
+              </div>
+              <div class="activity-item">
+                <span class="event-icon docker">▣</span>
+                <div><strong>Container restarted</strong><p>paperless-ngx · healthy</p><small>1 hour ago</small></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel snmp-panel">
+            <div class="panel-heading">
+              <div><span class="section-tag accent">SNMP COMMAND</span><h2>Network intelligence</h2></div>
+              <button class="dark-button">Explore SNMP <span>→</span></button>
+            </div>
+            <div class="snmp-content">
+              <div class="network-map">
+                <svg viewBox="0 0 520 245" aria-label="SNMP network device map">
+                  <g class="connections"><path d="M250 120 L95 60"/><path d="M250 120 L105 190"/><path d="M250 120 L410 50"/><path d="M250 120 L425 177"/><path d="M250 120 L335 220"/></g>
+                  <g class="map-node online" transform="translate(250 120)"><circle r="35"/><circle class="pulse" r="46"/><text y="5">CORE</text></g>
+                  <g class="map-node online small" transform="translate(95 60)"><circle r="27"/><text y="4">NAS</text></g>
+                  <g class="map-node warning small" transform="translate(105 190)"><circle r="27"/><text y="4">AP-02</text></g>
+                  <g class="map-node online small" transform="translate(410 50)"><circle r="27"/><text y="4">FW</text></g>
+                  <g class="map-node online small" transform="translate(425 177)"><circle r="27"/><text y="4">SW-02</text></g>
+                  <g class="map-node online small" transform="translate(335 220)"><circle r="27"/><text y="4">UPS</text></g>
+                </svg>
+                <div class="map-legend"><span><i class="dot online"></i>11 online</span><span><i class="dot warning"></i>1 warning</span></div>
+              </div>
+              <div class="snmp-stats">
+                <div class="snmp-stat"><div class="radial" style="--value:68"><span>68<small>%</small></span></div><div><strong>Core CPU</strong><small>SW-NR-CORE-01</small></div></div>
+                <div class="snmp-stat"><div class="radial coral-ring" style="--value:91"><span>91<small>%</small></span></div><div><strong>Port Gi0/24</strong><small>Traffic utilization</small></div></div>
+                <div class="oid-strip"><span>OID POLLING</span><strong>1.3.6.1.2.1</strong><em>Every 60 sec</em></div>
+              </div>
+            </div>
+          </article>
+
+          <article class="panel monitor-panel">
+            <div class="panel-heading"><div><span class="section-tag">MONITORS</span><h2>Priority services</h2></div><button class="text-button">Manage</button></div>
+            <div class="monitor-list" id="monitorList">
+              <div class="monitor-row"><span class="service-icon web">W</span><div><strong>NichHome Web</strong><small>HTTPS · 19 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
+              <div class="monitor-row"><span class="service-icon api">A</span><div><strong>Production API</strong><small>HTTP · 42 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
+              <div class="monitor-row"><span class="service-icon dns">D</span><div><strong>Primary DNS</strong><small>DNS · 13 ms</small></div><div class="tiny-bars warning-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label warn">SLOW</span></div>
+              <div class="monitor-row"><span class="service-icon vpn">V</span><div><strong>Office VPN</strong><small>TCP · 86 ms</small></div><div class="tiny-bars good-bars"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><span class="status-label up">UP</span></div>
+            </div>
+          </article>
+
+          <article class="panel docker-panel">
+            <div class="panel-heading"><div><span class="section-tag blue">DOCKER ENGINE</span><h2>Container fleet</h2></div><span class="connected-pill"><i></i>Connected</span></div>
+            <div class="docker-summary"><div><strong>18</strong><span>Running</span></div><div><strong>02</strong><span>Stopped</span></div><div><strong>05</strong><span>Stacks</span></div></div>
+            <div class="container-stack">
+              <div class="container"><span class="cube">◇</span><div><strong>home-assistant</strong><small>Up 8 days · healthy</small></div><span class="cpu">12% CPU</span></div>
+              <div class="container"><span class="cube">◇</span><div><strong>paperless-ngx</strong><small>Up 1 hour · healthy</small></div><span class="cpu">04% CPU</span></div>
+              <div class="container"><span class="cube">◇</span><div><strong>traefik</strong><small>Up 21 days · healthy</small></div><span class="cpu">02% CPU</span></div>
+            </div>
+          </article>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="toast" id="toast"><span>✓</span><div><strong>Monitor created</strong><small>Initial heartbeat scheduled</small></div></div>
+  <script src="app.js"></script>
+</body>
+</html>

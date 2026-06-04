@@ -335,6 +335,18 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .walk-summary { min-height: 34px; padding: 12px 0; color: #6f7975; font-size: 11px; }
 .inline-tool-form { grid-template-columns: minmax(160px, 1fr) minmax(180px, 1fr) auto; align-items: end; }
 .inline-tool-form .form-help, .inline-tool-form .modal-error { grid-column: 1 / -1; }
+.discovery-form { padding-bottom: 14px; border-bottom: 1px solid var(--line); }
+.discovery-form .command-button { align-self: end; }
+.discovery-summary { min-height: 40px; padding: 14px 0 8px; color: #727b77; font-size: 11px; }
+.discovery-results { display: grid; gap: 7px; max-height: 430px; overflow: auto; }
+.discovery-row { display: grid; grid-template-columns: auto minmax(150px, 1fr) minmax(180px, 1fr); align-items: center; gap: 11px; padding: 11px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.35); }
+.discovery-row.existing { opacity: .55; }
+.discovery-row > input[type="checkbox"] { width: 16px; height: 16px; }
+.discovery-row div { display: grid; gap: 3px; min-width: 0; }
+.discovery-row strong { font-size: 12px; }
+.discovery-row small { color: #8b938f; font-size: 10px; }
+.discovery-name { height: 36px; padding: 0 9px; border: 1px solid var(--line); border-radius: 7px; background: white; font-size: 11px; }
+.discovery-import { margin-top: 13px; }
 .extra-wide-modal { width: min(1000px, 100%); max-height: 92vh; overflow: auto; }
 .snmp-details-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 18px 0; }
 .detail-stat { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
@@ -419,6 +431,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .snmp-workspace .page-heading { display: block; }
   .inline-tool-form { grid-template-columns: 1fr; }
   .inline-tool-form .form-help, .inline-tool-form .modal-error { grid-column: auto; }
+  .discovery-row { grid-template-columns: auto 1fr; }
+  .discovery-name { grid-column: 2; width: 100%; }
 }
 
 @media (max-width: 560px) {

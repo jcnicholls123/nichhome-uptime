@@ -62,7 +62,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.10", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.11", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -77,6 +77,18 @@ async function waitForServer() {
     assert.equal((await request("/api/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "passw0rd" }) })).status, 200);
     assert.equal((await request("/api/me")).status, 200);
     assert.deepEqual(await (await request("/api/monitors")).json(), []);
+    assert.equal((await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "127.0.0.0/23", ports: String(dockerPort) }) })).status, 400);
+    assert.equal((await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "8.8.8.8", ports: "53" }) })).status, 400);
+    const scanResponse = await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "127.0.0.1", ports: String(dockerPort), timeoutMs: 300 }) });
+    assert.equal(scanResponse.status, 200);
+    const scan = await scanResponse.json();
+    assert.equal(scan.openCount, 1);
+    assert.equal(scan.results[0].target, `127.0.0.1:${dockerPort}`);
+    assert.equal((await request("/api/discovery/import", { method: "POST", body: JSON.stringify({ items: [{ name: "Discovered test service", target: scan.results[0].target }] }) })).status, 201);
+    const discoveredMonitors = await (await request("/api/monitors")).json();
+    assert.equal(discoveredMonitors[0].name, "Discovered test service");
+    assert.equal(discoveredMonitors[0].status, "up");
+    assert.equal((await request(`/api/monitors/${discoveredMonitors[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Self health", type: "http", target: `http://127.0.0.1:${port}/healthz`, intervalSeconds: 20, timeoutSeconds: 5 }) })).status, 201);
     const monitors = await (await request("/api/monitors")).json();
     assert.equal(monitors.length, 1);

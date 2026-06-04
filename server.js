@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const net = require("net");
+const dns = require("dns").promises;
 const http = require("http");
 const https = require("https");
 const { execFile } = require("child_process");
@@ -383,6 +384,87 @@ function validateMonitor(input) {
   if (type === "tcp" && !/^(\[[^\]]+\]|[^:]+):\d{1,5}$/.test(target)) throw new Error("TCP targets must use host:port format.");
   if (type === "ping" && (!target || target.length > 255 || /\s|:\/\//.test(target))) throw new Error("Ping targets must be a hostname or IP address.");
   return { name, type: type === "ping" ? "tcp" : type, target: type === "ping" ? `ping://${target}` : target, intervalSeconds, timeoutSeconds };
+}
+
+const knownTcpServices = {
+  20: "FTP Data", 21: "FTP", 22: "SSH", 23: "Telnet", 25: "SMTP", 53: "DNS", 80: "HTTP", 110: "POP3",
+  143: "IMAP", 443: "HTTPS", 445: "SMB", 465: "SMTPS", 587: "SMTP Submission", 631: "IPP Printer", 993: "IMAPS",
+  995: "POP3S", 1433: "Microsoft SQL", 1883: "MQTT", 2049: "NFS", 2375: "Docker API", 2376: "Docker TLS",
+  3000: "Web Service", 3306: "MySQL", 3389: "Remote Desktop", 5432: "PostgreSQL", 5672: "RabbitMQ", 6379: "Redis",
+  8000: "Web Service", 8080: "HTTP Alternate", 8123: "Home Assistant", 8443: "HTTPS Alternate", 9000: "Web Service",
+  9090: "Prometheus", 9443: "HTTPS Service", 10000: "Webmin", 27017: "MongoDB"
+};
+const defaultDiscoveryPorts = Object.keys(knownTcpServices).map(Number);
+let discoveryScanRunning = false;
+
+function ipv4Number(value) {
+  const parts = String(value).split(".").map(Number);
+  if (parts.length !== 4 || parts.some((part) => !Number.isInteger(part) || part < 0 || part > 255)) return null;
+  return parts.reduce((total, part) => total * 256 + part, 0) >>> 0;
+}
+
+function ipv4Text(value) {
+  return [24, 16, 8, 0].map((shift) => (value >>> shift) & 255).join(".");
+}
+
+function privateIpv4(value) {
+  const first = (value >>> 24) & 255;
+  const second = (value >>> 16) & 255;
+  return first === 10 || first === 127 || (first === 172 && second >= 16 && second <= 31) || (first === 192 && second === 168) || (first === 169 && second === 254);
+}
+
+function discoveryHosts(value) {
+  const range = String(value || "").trim();
+  let start;
+  let end;
+  if (range.includes("/")) {
+    const [address, prefixText] = range.split("/");
+    const number = ipv4Number(address);
+    const prefix = Number(prefixText);
+    if (number == null || !Number.isInteger(prefix) || prefix < 24 || prefix > 32) throw new Error("Use an IPv4 CIDR between /24 and /32.");
+    const size = 2 ** (32 - prefix);
+    start = (number & (0xffffffff << (32 - prefix))) >>> 0;
+    end = start + size - 1;
+  } else if (range.includes("-")) {
+    const [first, last] = range.split("-").map((item) => item.trim());
+    start = ipv4Number(first);
+    end = ipv4Number(last);
+    if (start == null || end == null || end < start) throw new Error("Use a valid IPv4 start-end range.");
+  } else {
+    start = ipv4Number(range);
+    end = start;
+  }
+  if (start == null || end == null || end - start + 1 > 256) throw new Error("Discovery scans are limited to 256 IPv4 addresses.");
+  if (!privateIpv4(start) || !privateIpv4(end)) throw new Error("Discovery scans are limited to private and local IPv4 networks.");
+  return Array.from({ length: end - start + 1 }, (_, index) => ipv4Text(start + index));
+}
+
+function discoveryPorts(value) {
+  if (!String(value || "").trim()) return defaultDiscoveryPorts;
+  const ports = new Set();
+  for (const part of String(value).split(",")) {
+    const trimmed = part.trim();
+    if (/^\d+$/.test(trimmed)) ports.add(Number(trimmed));
+    else if (/^\d+-\d+$/.test(trimmed)) {
+      const [start, end] = trimmed.split("-").map(Number);
+      if (end < start || end - start > 63) throw new Error("Individual port ranges are limited to 64 ports.");
+      for (let port = start; port <= end; port += 1) ports.add(port);
+    } else throw new Error("Ports must be comma-separated numbers or ranges.");
+  }
+  const result = [...ports].filter((port) => Number.isInteger(port) && port >= 1 && port <= 65535);
+  if (!result.length || result.length > 64) throw new Error("Choose between 1 and 64 TCP ports.");
+  return result.sort((a, b) => a - b);
+}
+
+async function scanTcpPort(host, port, timeoutMs) {
+  const started = Date.now();
+  return new Promise((resolve) => {
+    const socket = net.createConnection({ host, port });
+    const done = (open) => { socket.destroy(); resolve(open ? Date.now() - started : null); };
+    socket.setTimeout(timeoutMs, () => done(false));
+    socket.once("connect", () => done(true));
+    socket.once("error", () => done(false));
+  });
 }
 
 function getSetting(key, fallback = null) {
@@ -1032,6 +1114,65 @@ app.post("/api/monitors", requireAuth, async (req, res) => {
     .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds);
   await runMonitor(result.lastInsertRowid);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.post("/api/discovery/tcp-scan", requireAuth, async (req, res) => {
+  let hosts;
+  let ports;
+  try {
+    hosts = discoveryHosts(req.body.range);
+    ports = discoveryPorts(req.body.ports);
+  } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (hosts.length * ports.length > 8192) return res.status(400).json({ error: "This scan is too large. Use fewer ports or a smaller address range." });
+  if (discoveryScanRunning) return res.status(409).json({ error: "A network discovery scan is already running." });
+  discoveryScanRunning = true;
+  const timeoutMs = Math.max(150, Math.min(3000, Number(req.body.timeoutMs || 600)));
+  try {
+    const probes = hosts.flatMap((host) => ports.map((port) => ({ host, port })));
+    const open = [];
+    let next = 0;
+    const worker = async () => {
+      while (next < probes.length) {
+        const probe = probes[next++];
+        const responseMs = await scanTcpPort(probe.host, probe.port, timeoutMs);
+        if (responseMs != null) open.push({ ...probe, responseMs });
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(128, probes.length) }, worker));
+    const hostnames = {};
+    await Promise.all([...new Set(open.map((item) => item.host))].map(async (host) => {
+      try {
+        const names = await Promise.race([dns.reverse(host), new Promise((_, reject) => setTimeout(() => reject(new Error("Reverse DNS timed out")), 1000))]);
+        hostnames[host] = names[0] || "";
+      } catch { hostnames[host] = ""; }
+    }));
+    const existing = new Set(db.prepare("SELECT target FROM monitors").all().map((item) => item.target));
+    res.json({
+      range: String(req.body.range), scannedHosts: hosts.length, scannedPorts: ports.length, openCount: open.length,
+      results: open.sort((a, b) => ipv4Number(a.host) - ipv4Number(b.host) || a.port - b.port).map((item) => {
+        const service = knownTcpServices[item.port] || `TCP ${item.port}`;
+        const hostname = hostnames[item.host];
+        return { ...item, hostname, service, suggestedName: `${hostname || item.host} ${service}`, target: `${item.host}:${item.port}`, existing: existing.has(`${item.host}:${item.port}`) };
+      })
+    });
+  } finally {
+    discoveryScanRunning = false;
+  }
+});
+app.post("/api/discovery/import", requireAuth, async (req, res) => {
+  const items = Array.isArray(req.body.items) ? req.body.items.slice(0, 100) : [];
+  if (!items.length) return res.status(400).json({ error: "Select at least one discovered service." });
+  const created = [];
+  const skipped = [];
+  for (const item of items) {
+    let monitor;
+    try { monitor = validateMonitor({ name: item.name, type: "tcp", target: item.target, intervalSeconds: item.intervalSeconds || 60, timeoutSeconds: item.timeoutSeconds || 5 }); }
+    catch (error) { skipped.push({ target: item.target, error: error.message }); continue; }
+    if (db.prepare("SELECT 1 FROM monitors WHERE target = ?").get(monitor.target)) { skipped.push({ target: monitor.target, error: "Already monitored" }); continue; }
+    const result = db.prepare("INSERT INTO monitors (name, type, target, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?)").run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds);
+    await runMonitor(result.lastInsertRowid);
+    created.push({ id: Number(result.lastInsertRowid), name: monitor.name, target: monitor.target });
+  }
+  res.status(201).json({ ok: true, created, skipped });
 });
 app.post("/api/monitors/:id/check", requireAuth, async (req, res) => {
   const monitor = await runMonitor(Number(req.params.id));

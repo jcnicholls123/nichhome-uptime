@@ -19,6 +19,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Protected dashboard and account security controls
 - Mobile navigation and search across monitors and SNMP devices
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
+- Private-network TCP auto-discovery with editable service names and selective
+  monitor import
 - Monitor editing, pause/resume, and heartbeat history
 - Incident tracking and Discord down/recovery alerts
 - SNMP v2c and v3 device status, identity, uptime, and background polling
@@ -42,6 +44,18 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 
 All NichHome Uptime features are free. Unfinished features are clearly marked
 as Coming soon and are not hidden behind a paid tier.
+
+## Network Auto-Discovery
+
+Select **Add monitor > Auto-scan network** or **Auto-scan network** above the
+monitored services list. Enter a private IPv4 CIDR such as `192.168.1.0/24`, a
+range such as `192.168.1.10-192.168.1.40`, or one address. Leave ports blank
+to scan common services, or enter up to 64 comma-separated ports/ranges.
+
+Open ports receive suggested names from their service and reverse-DNS hostname.
+Rename and select the results you want, then import them as normal TCP
+monitors. Scans are restricted to private/local IPv4 networks and a maximum of
+256 addresses.
 
 ## Run with Docker
 

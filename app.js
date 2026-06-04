@@ -139,6 +139,12 @@ document.querySelector("#monitorForm select[name=type]").addEventListener("chang
     event.target.value = "http";
     return;
   }
+  if (event.target.value === "network-scan") {
+    monitorModal.hidden = true;
+    openNetworkScan();
+    event.target.value = "http";
+    return;
+  }
   document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : event.target.value === "ping" ? "192.168.1.10" : "https://home.example.com";
 });
 mobileMenuButton.addEventListener("click", () => setMobileMenu(!sidebar.classList.contains("open")));
@@ -150,6 +156,50 @@ globalSearch.addEventListener("input", (event) => {
   renderSearchResults();
 });
 document.getElementById("timeRangeButton").addEventListener("click", () => showToast("Last 24 hours", "More reporting ranges are coming soon"));
+
+function openNetworkScan() {
+  document.getElementById("networkScanError").textContent = "";
+  document.getElementById("networkScanModal").hidden = false;
+}
+document.getElementById("openNetworkScan").addEventListener("click", openNetworkScan);
+document.getElementById("networkScanForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = document.getElementById("networkScanError");
+  const results = document.getElementById("networkScanResults");
+  const summary = document.getElementById("networkScanSummary");
+  const importButton = document.getElementById("importDiscoveredServices");
+  const button = form.querySelector("button[type=submit]");
+  error.textContent = ""; results.replaceChildren(); summary.textContent = "Scanning reachable TCP services..."; importButton.hidden = true;
+  button.disabled = true; button.textContent = "Scanning...";
+  try {
+    const values = Object.fromEntries(new FormData(form));
+    const data = await api("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify(values) });
+    summary.textContent = `${data.openCount} open service${data.openCount === 1 ? "" : "s"} found across ${data.scannedHosts} hosts and ${data.scannedPorts} ports.`;
+    for (const item of data.results) {
+      const row = document.createElement("label"); row.className = `discovery-row ${item.existing ? "existing" : ""}`; row.dataset.target = item.target;
+      const checkbox = document.createElement("input"); checkbox.type = "checkbox"; checkbox.checked = !item.existing; checkbox.disabled = item.existing;
+      const copy = document.createElement("div");
+      const title = document.createElement("strong"); title.textContent = `${item.service} · ${item.target}`;
+      const detail = document.createElement("small"); detail.textContent = `${item.hostname || "No reverse DNS name"} · ${item.responseMs} ms${item.existing ? " · Already monitored" : ""}`;
+      copy.append(title, detail);
+      const name = document.createElement("input"); name.className = "discovery-name"; name.value = item.suggestedName; name.maxLength = 80; name.disabled = item.existing; name.setAttribute("aria-label", `Monitor name for ${item.target}`);
+      row.append(checkbox, copy, name); results.append(row);
+    }
+    importButton.hidden = !data.results.some((item) => !item.existing);
+  } catch (err) { error.textContent = err.message; summary.textContent = ""; }
+  finally { button.disabled = false; button.textContent = "Scan network"; }
+});
+document.getElementById("importDiscoveredServices").addEventListener("click", async () => {
+  const selected = [...document.querySelectorAll(".discovery-row")].filter((row) => row.querySelector('input[type="checkbox"]').checked).map((row) => ({ target: row.dataset.target, name: row.querySelector(".discovery-name").value }));
+  const error = document.getElementById("networkScanError"); error.textContent = "";
+  try {
+    const result = await api("/api/discovery/import", { method: "POST", body: JSON.stringify({ items: selected }) });
+    document.getElementById("networkScanModal").hidden = true;
+    await Promise.all([loadMonitors(), loadIncidents(), loadGraph()]);
+    showToast("Discovered services imported", `${result.created.length} monitors created${result.skipped.length ? ` · ${result.skipped.length} skipped` : ""}`);
+  } catch (err) { error.textContent = err.message; }
+});
 
 refreshButton.addEventListener("click", async () => {
   refreshButton.classList.add("spinning");

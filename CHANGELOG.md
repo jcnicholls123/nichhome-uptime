@@ -13,6 +13,26 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.11] - 2026-06-04
+
+### Added
+
+- Private-network TCP auto-discovery from Add Monitor and the monitored
+  services panel
+- IPv4 CIDR, start-end range, and single-host scan inputs
+- Common TCP service-name suggestions, reverse-DNS host naming, editable
+  monitor names, duplicate detection, and selective bulk import
+- Live integration coverage that discovers and imports a real TCP service
+
+### Security
+
+- Discovery is restricted to private/local IPv4 networks, 256 addresses, 64
+  ports, and 8,192 probes per scan
+- Only one discovery scan can run at a time, with bounded connection and
+  reverse-DNS timeouts
+- Discovery uses direct TCP probes and never executes user-provided shell or
+  Nmap arguments
+
 ## [1.0.0-beta.10] - 2026-06-04
 
 ### Added

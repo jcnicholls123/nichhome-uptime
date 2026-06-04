@@ -14,13 +14,15 @@ let dockerHosts = [];
 let dockerStatus = { available: false };
 let alertRules = [];
 let alertRuleOptions = { snmp: [], docker: [] };
+let alertTemplates = [];
+let adminSettings = null;
 let networkMap = { nodes: [], edges: [] };
 let reportingRange = "24h";
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage" };
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
@@ -29,6 +31,7 @@ function showWorkspace(name) {
   if (name === "Docker") renderDockerWorkspace();
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
+  if (name === "Admin Settings") loadAdminSettings();
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -127,6 +130,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "Network Map") {
       showWorkspace("Network Map");
+      return;
+    }
+    if (item.dataset.page === "Admin Settings") {
+      showWorkspace("Admin Settings");
       return;
     }
     if (!["Overview", "Monitors"].includes(item.dataset.page)) {
@@ -395,7 +402,8 @@ async function loadMonitors() {
 
 function formatDate(value) {
   if (!value) return "Open";
-  return new Date(`${value}Z`).toLocaleString();
+  const text = String(value);
+  return new Date(/[zZ]$|[+-]\d\d:\d\d$/.test(text) ? text : `${text}Z`).toLocaleString();
 }
 
 function incidentElement(incident) {
@@ -729,6 +737,37 @@ function renderDockerWorkspace() {
 async function loadAlertRules() {
   [alertRules, alertRuleOptions] = await Promise.all([api("/api/alert-rules"), api("/api/alert-rules/options")]);
   renderAlertRules();
+  renderAlertRuleDependencies();
+  renderAlertTemplates();
+}
+
+async function loadAlertTemplates() {
+  alertTemplates = await api("/api/alert-rules/templates");
+  renderAlertTemplates();
+}
+
+function renderAlertTemplates() {
+  const select = document.getElementById("alertTemplateSelect"); const target = document.getElementById("alertTemplateTarget"); const list = document.getElementById("alertTemplateList");
+  if (!select || !target || !list || !alertTemplates.length) return;
+  const current = select.value;
+  select.replaceChildren();
+  for (const template of alertTemplates) { const option = document.createElement("option"); option.value = template.id; option.textContent = template.name; option.dataset.targetType = template.targetType; select.append(option); }
+  if (current) select.value = current;
+  const template = alertTemplates.find((item) => item.id === select.value) || alertTemplates[0];
+  target.replaceChildren();
+  for (const item of alertRuleOptions[template.targetType] || []) { const option = document.createElement("option"); option.value = `${template.targetType}:${item.id}`; option.textContent = item.name; target.append(option); }
+  list.replaceChildren();
+  for (const item of alertTemplates) { const row = document.createElement("article"); row.className = "profile-row"; const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = item.name; const detail = document.createElement("small"); detail.textContent = item.description; copy.append(name, detail); const tag = document.createElement("small"); tag.textContent = item.targetType.toUpperCase(); row.append(copy, tag); list.append(row); }
+}
+
+function renderAlertRuleDependencies(selected = "") {
+  const select = document.getElementById("alertRuleDependency");
+  if (!select) return;
+  select.replaceChildren();
+  const none = document.createElement("option"); none.value = ""; none.textContent = "No dependency"; select.append(none);
+  const currentId = document.getElementById("alertRuleForm")?.elements.id.value;
+  for (const rule of alertRules.filter((item) => String(item.id) !== String(currentId))) { const option = document.createElement("option"); option.value = rule.id; option.textContent = rule.name; select.append(option); }
+  select.value = selected || "";
 }
 
 function renderAlertRules() {
@@ -740,11 +779,12 @@ function renderAlertRules() {
   for (const rule of alertRules) {
     const row = document.createElement("article"); row.className = `rule-row ${rule.active ? "active" : ""}`;
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = rule.name; const detail = document.createElement("small"); detail.textContent = `${rule.targetType.toUpperCase()} · ${rule.metricKey} ${rule.operator} ${rule.threshold} · Current ${rule.currentValue ?? "--"}`; copy.append(name, detail);
-    const meta = document.createElement("small"); meta.textContent = `${rule.severity.toUpperCase()} | Trigger ${rule.triggerCount} / recover ${rule.recoveryCount} checks`; copy.append(meta);
+    const meta = document.createElement("small"); meta.textContent = `${rule.severity.toUpperCase()} | Trigger ${rule.triggerCount} / recover ${rule.recoveryCount} checks${rule.dependencyName ? ` | Depends on ${rule.dependencyName}` : ""}${rule.acknowledged ? " | ACK" : ""}`; copy.append(meta);
     const state = document.createElement("span"); state.className = `status-label ${rule.active ? "warn" : "up"}`; state.textContent = rule.active ? "TRIGGERED" : "OK";
+    const ack = document.createElement("button"); ack.className = "monitor-action"; ack.textContent = "ack"; ack.disabled = !rule.active || rule.acknowledged; ack.addEventListener("click", async () => { await api(`/api/alert-rules/${rule.id}/acknowledge`, { method: "POST", body: "{}" }); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Alert acknowledged", rule.name); });
     const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openAlertRule(rule));
     const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete alert rule ${rule.name}?`)) { await api(`/api/alert-rules/${rule.id}`, { method: "DELETE" }); await Promise.all([loadAlertRules(), loadIncidents()]); } });
-    const actions = document.createElement("div"); actions.className = "monitor-actions"; actions.append(edit, remove);
+    const actions = document.createElement("div"); actions.className = "monitor-actions"; actions.append(ack, edit, remove);
     row.append(copy, state, actions); list.append(row);
   }
   if (!alertRules.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No variable alert rules yet."; list.append(empty); }
@@ -765,8 +805,9 @@ function openAlertRule(rule = null) {
   const form = document.getElementById("alertRuleForm"); form.reset(); form.elements.id.value = rule?.id || "";
   for (const name of ["targetType", "targetId", "metricKey", "operator", "threshold"]) form.elements[name].disabled = false;
   updateAlertRuleTargets();
+  renderAlertRuleDependencies(rule?.dependencyRuleId || "");
   if (rule) {
-    form.elements.targetType.value = rule.targetType; updateAlertRuleTargets(); form.elements.targetId.value = rule.targetId; updateAlertRuleMetrics(); form.elements.metricKey.value = rule.metricKey; form.elements.operator.value = rule.operator; form.elements.threshold.value = rule.threshold; form.elements.name.value = rule.name; form.elements.severity.value = rule.severity; form.elements.description.value = rule.description || ""; form.elements.actionText.value = rule.actionText || ""; form.elements.triggerCount.value = rule.triggerCount; form.elements.recoveryCount.value = rule.recoveryCount; form.elements.enabled.checked = rule.enabled;
+    form.elements.targetType.value = rule.targetType; updateAlertRuleTargets(); form.elements.targetId.value = rule.targetId; updateAlertRuleMetrics(); form.elements.metricKey.value = rule.metricKey; form.elements.operator.value = rule.operator; form.elements.threshold.value = rule.threshold; form.elements.name.value = rule.name; form.elements.severity.value = rule.severity; form.elements.description.value = rule.description || ""; form.elements.actionText.value = rule.actionText || ""; form.elements.triggerCount.value = rule.triggerCount; form.elements.recoveryCount.value = rule.recoveryCount; form.elements.dependencyRuleId.value = rule.dependencyRuleId || ""; form.elements.enabled.checked = rule.enabled;
   }
   for (const name of ["targetType", "targetId", "metricKey", "operator", "threshold"]) form.elements[name].disabled = Boolean(rule);
   document.getElementById("alertRuleEnabledLabel").hidden = !rule; document.getElementById("alertRuleError").textContent = ""; document.getElementById("alertRuleModal").hidden = false;
@@ -1055,6 +1096,23 @@ async function loadDiscordStatus() {
   const config = await api("/api/notifications/discord");
   document.getElementById("discordDot").style.background = config.enabled ? "var(--green)" : "#6f7975";
 }
+
+async function loadAdminSettings() {
+  adminSettings = await api("/api/admin/settings");
+  const metrics = document.getElementById("adminSettingsMetrics"); const list = document.getElementById("adminSystemList");
+  if (!metrics || !list) return;
+  metrics.replaceChildren(
+    metricCard("Maintenance", adminSettings.maintenance.active ? "ON" : "OFF", adminSettings.maintenance.active ? `Until ${formatDate(adminSettings.maintenance.until)}` : "alerts are live", adminSettings.maintenance.active),
+    metricCard("Enabled rules", adminSettings.alerts.enabledRules, "advanced alert rules"),
+    metricCard("Active rule alerts", adminSettings.alerts.activeRules, `${adminSettings.alerts.acknowledgedRules} acknowledged`, adminSettings.alerts.activeRules > 0),
+    metricCard("Discord", adminSettings.discord.enabled ? "ON" : "OFF", adminSettings.discord.webhookUrl || "not configured")
+  );
+  document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
+  list.replaceChildren();
+  for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
+    const row = document.createElement("article"); row.className = "profile-row"; const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = label; const detail = document.createElement("small"); detail.textContent = value; copy.append(name, detail); row.append(copy); list.append(row);
+  }
+}
 document.getElementById("discordForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget;
@@ -1263,6 +1321,17 @@ document.getElementById("openAllAlerts").addEventListener("click", openIncidents
 document.getElementById("accountSnmpAdmin").addEventListener("click", () => { accountModal.hidden = true; showWorkspace("SNMP Devices"); });
 document.getElementById("addAlertRule").addEventListener("click", () => openAlertRule());
 document.getElementById("addAlertRuleInline").addEventListener("click", () => openAlertRule());
+document.getElementById("alertTemplateSelect").addEventListener("change", renderAlertTemplates);
+document.getElementById("alertTemplateForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("alertTemplateError"); error.textContent = "";
+  const [targetType, targetId] = form.elements.target.value.split(":");
+  try {
+    const result = await api("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: form.elements.template.value, targetType, targetId }) });
+    await Promise.all([loadAlertRules(), loadIncidents()]);
+    showToast("Template applied", `${result.created.length} rules created, ${result.skipped.length} skipped`);
+  } catch (err) { error.textContent = err.message; }
+});
 document.querySelector("#alertRuleForm select[name=targetType]").addEventListener("change", updateAlertRuleTargets);
 document.getElementById("alertRuleTarget").addEventListener("change", updateAlertRuleMetrics);
 document.getElementById("alertRuleForm").addEventListener("submit", async (event) => {
@@ -1272,6 +1341,12 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
 document.getElementById("refreshNetworkMap").addEventListener("click", loadNetworkMap);
+document.getElementById("refreshAdminSettings").addEventListener("click", loadAdminSettings);
+document.getElementById("maintenanceForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("maintenanceError"); error.textContent = "";
+  try { await api("/api/admin/maintenance", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); await loadAdminSettings(); showToast("Maintenance updated", document.getElementById("maintenanceStatus").textContent); } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("snmpBandwidthRange").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("addMapNode").addEventListener("click", () => openMapNode());
 document.getElementById("mapNodeForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); try { await api(values.id ? `/api/network-map/nodes/${values.id}` : "/api/network-map/nodes", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) }); document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value); } catch (err) { document.getElementById("mapNodeError").textContent = err.message; } });
@@ -1331,7 +1406,9 @@ loadSnmpDevices();
 loadSnmpProfiles();
 loadDockerFleet();
 loadAlertRules();
+loadAlertTemplates();
 loadNetworkMap();
+loadAdminSettings();
 document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
 const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
 if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }

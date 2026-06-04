@@ -13,6 +13,19 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.18] - 2026-06-04
+
+### Added
+
+- Easy alert templates for Docker baselines and SNMP storage/health rules
+- Zabbix-style alert dependencies so child rules can be suppressed while a
+  parent rule is already active
+- Alert acknowledgements for active variable-rule incidents
+- Admin Settings workspace with maintenance mode, alert counts, Discord status,
+  runtime version, data directory, and SQLite database path
+- Maintenance mode for suppressing new variable-rule incidents during planned
+  work
+
 ## [1.0.0-beta.17] - 2026-06-04
 
 ### Fixed

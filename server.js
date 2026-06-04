@@ -231,6 +231,8 @@ db.exec(`
     rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
     current_value TEXT,
     cause TEXT,
+    acknowledged_at TEXT,
+    acknowledged_by TEXT,
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     resolved_at TEXT
   );
@@ -290,6 +292,9 @@ ensureColumn("alert_rules", "recovery_count", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn("alert_rules", "failure_streak", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("alert_rules", "recovery_streak", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("alert_rules", "last_evaluated_at", "TEXT");
+ensureColumn("alert_rules", "dependency_rule_id", "INTEGER");
+ensureColumn("alert_rule_incidents", "acknowledged_at", "TEXT");
+ensureColumn("alert_rule_incidents", "acknowledged_by", "TEXT");
 
 function repairDockerFleetData() {
   db.transaction(() => {
@@ -592,6 +597,25 @@ function alertRuleTriggered(value, operator, threshold) {
   return numeric ? leftNumber === rightNumber : String(value).toLowerCase() === String(threshold).toLowerCase();
 }
 
+function maintenanceSettings() {
+  const until = getSetting("maintenance_until", "");
+  const active = until && Date.parse(until) > Date.now();
+  return {
+    active: Boolean(active),
+    until: active ? until : "",
+    reason: active ? getSetting("maintenance_reason", "Planned maintenance") : ""
+  };
+}
+
+function alertRuleSuppressed(rule) {
+  const maintenance = maintenanceSettings();
+  if (maintenance.active) return `Maintenance mode until ${maintenance.until}: ${maintenance.reason}`;
+  if (!rule.dependency_rule_id) return null;
+  const parent = db.prepare("SELECT name FROM alert_rules WHERE id = ?").get(rule.dependency_rule_id);
+  const parentOpen = db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.dependency_rule_id);
+  return parentOpen ? `Suppressed by dependency: ${parent?.name || "parent rule"}` : null;
+}
+
 async function evaluateAlertRules(targetType, targetId) {
   const rules = db.prepare("SELECT * FROM alert_rules WHERE enabled = 1 AND target_type = ? AND target_id = ?").all(targetType, String(targetId));
   for (const rule of rules) {
@@ -604,6 +628,11 @@ async function evaluateAlertRules(targetType, targetId) {
     const recoveryStreak = triggered ? 0 : rule.recovery_streak + 1;
     db.prepare("UPDATE alert_rules SET failure_streak = ?, recovery_streak = ?, last_evaluated_at = CURRENT_TIMESTAMP WHERE id = ?").run(failureStreak, recoveryStreak, rule.id);
     if (triggered && !open && failureStreak >= rule.trigger_count) {
+      const suppressed = alertRuleSuppressed(rule);
+      if (suppressed) {
+        db.prepare("UPDATE alert_rules SET failure_streak = ?, last_evaluated_at = CURRENT_TIMESTAMP WHERE id = ?").run(failureStreak, rule.id);
+        continue;
+      }
       db.prepare("INSERT INTO alert_rule_incidents (rule_id, current_value, cause) VALUES (?, ?, ?)").run(rule.id, String(value), cause);
       await sendDiscordAlert(rule, value, cause, false);
     } else if (!triggered && open && recoveryStreak >= rule.recovery_count) {
@@ -1405,12 +1434,14 @@ app.delete("/api/monitors/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/alert-rules", requireAuth, (req, res) => {
-  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, severity, description, action_text AS actionText, trigger_count AS triggerCount, recovery_count AS recoveryCount, failure_streak AS failureStreak, recovery_streak AS recoveryStreak, last_evaluated_at AS lastEvaluatedAt, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
+  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, severity, description, action_text AS actionText, trigger_count AS triggerCount, recovery_count AS recoveryCount, failure_streak AS failureStreak, recovery_streak AS recoveryStreak, dependency_rule_id AS dependencyRuleId, last_evaluated_at AS lastEvaluatedAt, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
   res.json(rules.map((rule) => ({
     ...rule,
     enabled: Boolean(rule.enabled),
     currentValue: alertRuleValue({ target_type: rule.targetType, target_id: rule.targetId, metric_key: rule.metricKey }),
-    active: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id))
+    active: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id)),
+    acknowledged: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL AND acknowledged_at IS NOT NULL").get(rule.id)),
+    dependencyName: rule.dependencyRuleId ? db.prepare("SELECT name FROM alert_rules WHERE id = ?").get(rule.dependencyRuleId)?.name || null : null
   })));
 });
 app.get("/api/alert-rules/options", requireAuth, (req, res) => {
@@ -1429,6 +1460,63 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
   }));
   res.json({ snmp: snmpTargets, docker: dockerTargets });
 });
+app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
+  res.json([
+    { id: "snmp-storage", targetType: "snmp", name: "SNMP storage safety", description: "Creates high-usage rules for percentage storage/pool/dataset metrics.", severity: "high" },
+    { id: "snmp-health", targetType: "snmp", name: "SNMP health/state checks", description: "Creates text-state rules for status and health metrics when present.", severity: "warning" },
+    { id: "docker-baseline", targetType: "docker", name: "Docker baseline", description: "Creates CPU, memory, restart, and health rules for one running container.", severity: "warning" }
+  ]);
+});
+app.post("/api/alert-rules/templates/apply", requireAuth, async (req, res) => {
+  const template = String(req.body.template || "");
+  const targetType = String(req.body.targetType || "");
+  const targetId = String(req.body.targetId || "");
+  const created = [];
+  const skipped = [];
+  const addRule = (rule) => {
+    if (db.prepare("SELECT 1 FROM alert_rules WHERE target_type = ? AND target_id = ? AND metric_key = ? AND operator = ? AND threshold = ?").get(rule.targetType, rule.targetId, rule.metricKey, rule.operator, rule.threshold)) {
+      skipped.push(rule.name);
+      return;
+    }
+    db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, severity, description, action_text, trigger_count, recovery_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(rule.name, rule.targetType, rule.targetId, rule.metricKey, rule.operator, rule.threshold, rule.severity, rule.description, rule.actionText, rule.triggerCount, rule.recoveryCount);
+    created.push(rule.name);
+  };
+  if (template === "docker-baseline" && targetType === "docker") {
+    const container = db.prepare("SELECT container_id, name FROM docker_containers WHERE container_id = ? AND state = 'running'").get(targetId);
+    if (!container) return res.status(400).json({ error: "Choose a running Docker container." });
+    for (const rule of [
+      ["CPU high", "cpu_percent", ">", "90", "high", "CPU has stayed above 90%.", "Check the container workload and logs."],
+      ["Memory high", "memory_percent", ">", "90", "high", "Memory has stayed above 90%.", "Check memory limits and container leaks."],
+      ["Restarted", "restart_count", ">", "0", "warning", "The container has restarted.", "Inspect restart reason and recent logs."],
+      ["Unhealthy", "health", "!=", "healthy", "high", "Container health is not healthy.", "Inspect healthcheck output and dependencies."]
+    ]) addRule({ name: `${container.name} ${rule[0]}`, targetType, targetId, metricKey: rule[1], operator: rule[2], threshold: rule[3], severity: rule[4], description: rule[5], actionText: rule[6], triggerCount: 2, recoveryCount: 2 });
+  } else if (template.startsWith("snmp-") && targetType === "snmp") {
+    const device = db.prepare("SELECT id, name FROM snmp_devices WHERE id = ?").get(Number(targetId));
+    if (!device) return res.status(400).json({ error: "Choose an SNMP device." });
+    const metrics = db.prepare("SELECT category || '|' || metric_key AS key, label, unit, value FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, label LIMIT 3000").all(device.id);
+    const candidates = template === "snmp-storage"
+      ? metrics.filter((metric) => metric.unit === "%" && /storage|pool|dataset|filesystem|disk|usage|used|percent/i.test(`${metric.key} ${metric.label}`)).slice(0, 12)
+      : metrics.filter((metric) => /status|state|health|pool/i.test(`${metric.key} ${metric.label}`) && !Number.isFinite(Number(metric.value))).slice(0, 12);
+    for (const metric of candidates) addRule({
+      name: `${device.name} ${metric.label}`.slice(0, 100),
+      targetType,
+      targetId,
+      metricKey: metric.key,
+      operator: template === "snmp-storage" ? ">" : "!=",
+      threshold: template === "snmp-storage" ? "85" : "ONLINE",
+      severity: template === "snmp-storage" ? "high" : "warning",
+      description: template === "snmp-storage" ? "Storage utilisation is above the recommended safety threshold." : "SNMP health/state metric is not reporting the expected value.",
+      actionText: template === "snmp-storage" ? "Check the affected pool, dataset, filesystem, or disk." : "Check device health and profile metric details.",
+      triggerCount: 2,
+      recoveryCount: 2
+    });
+  } else {
+    return res.status(400).json({ error: "Choose a valid template and target." });
+  }
+  if (targetType && targetId) await evaluateAlertRules(targetType, targetId);
+  res.json({ ok: true, created, skipped });
+});
 app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const name = String(req.body.name || "").trim();
   const targetType = String(req.body.targetType || "");
@@ -1441,12 +1529,14 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const actionText = String(req.body.actionText || "").trim().slice(0, 500);
   const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || 1)));
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
+  const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
   if (!["snmp", "docker"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, severity, operator, and threshold." });
   const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
+  if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
-  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, severity, description, action_text, trigger_count, recovery_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold, severity, description, actionText, triggerCount, recoveryCount);
+  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, severity, description, action_text, trigger_count, recovery_count, dependency_rule_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId);
   await evaluateAlertRules(targetType, targetId);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -1460,9 +1550,11 @@ app.put("/api/alert-rules/:id", requireAuth, async (req, res) => {
   const actionText = String(req.body.actionText ?? rule.action_text ?? "").trim().slice(0, 500);
   const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || rule.trigger_count)));
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || rule.recovery_count)));
+  const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   const enabled = req.body.enabled === false ? 0 : 1;
   if (name.length < 2 || name.length > 100 || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name and severity." });
-  db.prepare("UPDATE alert_rules SET name = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, enabled = ? WHERE id = ?").run(name, severity, description, actionText, triggerCount, recoveryCount, enabled, id);
+  if (dependencyRuleId && (dependencyRuleId === id || !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId))) return res.status(400).json({ error: "Choose a valid dependency rule." });
+  db.prepare("UPDATE alert_rules SET name = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, dependency_rule_id = ?, enabled = ? WHERE id = ?").run(name, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId, enabled, id);
   if (!enabled) db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE rule_id = ? AND resolved_at IS NULL").run(id);
   if (enabled) await evaluateAlertRules(rule.target_type, rule.target_id);
   res.json({ ok: true });
@@ -1472,23 +1564,30 @@ app.delete("/api/alert-rules/:id", requireAuth, (req, res) => {
   if (!result.changes) return res.status(404).json({ error: "Alert rule not found." });
   res.json({ ok: true });
 });
+app.post("/api/alert-rules/:id/acknowledge", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const user = getUser(req);
+  const result = db.prepare("UPDATE alert_rule_incidents SET acknowledged_at = CURRENT_TIMESTAMP, acknowledged_by = ? WHERE rule_id = ? AND resolved_at IS NULL").run(user?.username || "admin", id);
+  if (!result.changes) return res.status(404).json({ error: "No active alert is open for this rule." });
+  res.json({ ok: true });
+});
 app.get("/api/incidents", requireAuth, (req, res) => {
   const incidents = db.prepare(`
-    SELECT id, startedAt, resolvedAt, cause, monitorName, target, source FROM (
+    SELECT id, startedAt, resolvedAt, acknowledgedAt, acknowledgedBy, cause, monitorName, target, source FROM (
       SELECT incidents.id AS id, incidents.started_at AS startedAt, incidents.resolved_at AS resolvedAt,
-        incidents.cause AS cause, monitors.name AS monitorName, monitors.target AS target, 'monitor' AS source
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, incidents.cause AS cause, monitors.name AS monitorName, monitors.target AS target, 'monitor' AS source
       FROM incidents JOIN monitors ON monitors.id = incidents.monitor_id
       UNION ALL
       SELECT -snmp_incidents.id AS id, snmp_incidents.started_at AS startedAt, snmp_incidents.resolved_at AS resolvedAt,
-        snmp_incidents.cause AS cause, snmp_devices.name AS monitorName, snmp_devices.host AS target, 'snmp' AS source
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, snmp_incidents.cause AS cause, snmp_devices.name AS monitorName, snmp_devices.host AS target, 'snmp' AS source
       FROM snmp_incidents JOIN snmp_devices ON snmp_devices.id = snmp_incidents.device_id
       UNION ALL
       SELECT -1000000-docker_incidents.id AS id, docker_incidents.started_at AS startedAt, docker_incidents.resolved_at AS resolvedAt,
-        docker_incidents.cause AS cause, docker_incidents.container_name AS monitorName, docker_incidents.container_id AS target, 'docker' AS source
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, docker_incidents.cause AS cause, docker_incidents.container_name AS monitorName, docker_incidents.container_id AS target, 'docker' AS source
       FROM docker_incidents
       UNION ALL
       SELECT -2000000-alert_rule_incidents.id AS id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.resolved_at AS resolvedAt,
-        alert_rule_incidents.cause AS cause, alert_rules.name AS monitorName, alert_rules.metric_key AS target, 'rule' AS source
+        alert_rule_incidents.acknowledged_at AS acknowledgedAt, alert_rule_incidents.acknowledged_by AS acknowledgedBy, alert_rule_incidents.cause AS cause, alert_rules.name AS monitorName, alert_rules.metric_key AS target, 'rule' AS source
       FROM alert_rule_incidents JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
     ) ORDER BY startedAt DESC LIMIT 100
   `).all();
@@ -1814,6 +1913,33 @@ app.post("/api/network-map/links", requireAuth, (req, res) => {
 });
 app.delete("/api/network-map/links/:id", requireAuth, (req, res) => {
   db.prepare("DELETE FROM map_links WHERE id = ?").run(Number(req.params.id)); res.json({ ok: true });
+});
+app.get("/api/admin/settings", requireAuth, (req, res) => {
+  const maintenance = maintenanceSettings();
+  res.json({
+    app: { name: packageInfo.name, version: packageInfo.version, dataDir: DATA_DIR, node: process.version },
+    maintenance,
+    alerts: {
+      enabledRules: db.prepare("SELECT COUNT(*) AS count FROM alert_rules WHERE enabled = 1").get().count,
+      activeRules: db.prepare("SELECT COUNT(*) AS count FROM alert_rule_incidents WHERE resolved_at IS NULL").get().count,
+      acknowledgedRules: db.prepare("SELECT COUNT(*) AS count FROM alert_rule_incidents WHERE resolved_at IS NULL AND acknowledged_at IS NOT NULL").get().count
+    },
+    discord: { ...discordConfig(), webhookUrl: discordConfig().webhookUrl ? "configured" : "" },
+    storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
+  });
+});
+app.put("/api/admin/maintenance", requireAuth, (req, res) => {
+  const minutes = Number(req.body.minutes || 0);
+  const reason = String(req.body.reason || "Planned maintenance").trim().slice(0, 160);
+  if (minutes <= 0) {
+    setSetting("maintenance_until", "");
+    setSetting("maintenance_reason", "");
+    return res.json({ ok: true, maintenance: maintenanceSettings() });
+  }
+  if (!Number.isFinite(minutes) || minutes > 10080) return res.status(400).json({ error: "Maintenance must be between 1 minute and 7 days." });
+  setSetting("maintenance_until", new Date(Date.now() + minutes * 60000).toISOString());
+  setSetting("maintenance_reason", reason || "Planned maintenance");
+  res.json({ ok: true, maintenance: maintenanceSettings() });
 });
 app.post("/api/docker/refresh", requireAuth, async (req, res) => {
   try {

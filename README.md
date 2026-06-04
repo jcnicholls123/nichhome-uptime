@@ -52,6 +52,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
 - Structured Discord embeds for monitor, SNMP, Docker, recovery, and test alerts
+- Easy alert templates, dependencies, acknowledgements, and admin maintenance
+  mode without Zabbix-style setup complexity
 - UniFi AP client totals and radio/VAP telemetry plus gateway WAN/LAN traffic,
   speed, error, and discard counters
 

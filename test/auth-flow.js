@@ -74,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.17", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.18", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -145,6 +145,17 @@ async function waitForServer() {
     const alertRules = await (await request("/api/alert-rules")).json();
     assert.equal(alertRules[0].active, true);
     assert.equal(alertRules[0].severity, "high");
+    assert.equal((await request(`/api/alert-rules/${alertRules[0].id}/acknowledge`, { method: "POST", body: "{}" })).status, 200);
+    assert.equal((await (await request("/api/alert-rules")).json()).find((rule) => rule.id === alertRules[0].id).acknowledged, true);
+    assert.equal((await request("/api/alert-rules/templates")).status, 200);
+    const templateResponse = await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "docker-baseline", targetType: "docker", targetId: containers[0].id }) });
+    assert.equal(templateResponse.status, 200);
+    assert.ok((await templateResponse.json()).created.length >= 1);
+    const adminSettings = await (await request("/api/admin/settings")).json();
+    assert.equal(adminSettings.app.version, "1.0.0-beta.18");
+    assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 30, reason: "Test window" }) })).status, 200);
+    assert.equal((await (await request("/api/admin/settings")).json()).maintenance.active, true);
+    assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 0 }) })).status, 200);
     assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "PUT", body: JSON.stringify({ name: "Updated restart rule", severity: "warning", triggerCount: 2, recoveryCount: 2, enabled: true }) })).status, 200);
     assert.equal((await (await request("/api/incidents")).json()).some((incident) => incident.source === "rule"), true);
     const networkMap = await (await request("/api/network-map")).json();

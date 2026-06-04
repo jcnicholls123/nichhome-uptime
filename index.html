@@ -27,7 +27,7 @@
 
         <p class="nav-label">Infrastructure</p>
         <button class="nav-item" data-page="SNMP Devices"><span class="nav-icon">⌘</span>SNMP Devices</button>
-        <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-pill">SOON</span></button>
+        <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-count" id="dockerNavCount">0</span></button>
         <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Connect</p>
@@ -127,8 +127,9 @@
           </article>
 
           <article class="panel docker-panel">
-              <div class="panel-heading"><div><span class="section-tag blue">DOCKER PREVIEW</span><h2>Container fleet</h2></div><span class="connected-pill">Coming next</span></div>
-            <div class="coming-soon light"><strong>Docker monitoring is coming soon</strong><p>Container health, CPU, memory, restart alerts, and stack views are planned. Nothing is locked behind Pro.</p></div>
+            <div class="panel-heading"><div><span class="section-tag blue">DOCKER ENGINE</span><h2>Container fleet</h2></div><button class="soft-button" id="refreshDocker">Refresh fleet</button></div>
+            <div class="docker-summary" id="dockerSummary"></div>
+            <div class="container-stack" id="dockerContainerList"><p class="empty-state">Checking Docker Engine access...</p></div>
           </article>
         </section>
       </div>
@@ -248,6 +249,12 @@
     <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true">
       <div class="modal-heading"><div><span class="section-tag accent" id="snmpProfile">SNMP DEVICE</span><h2 id="snmpDetailsTitle">Device details</h2></div><div class="modal-heading-actions"><button class="soft-button" id="editSnmpDevice">Edit device</button><button class="modal-close" data-close="snmpDetailsModal" aria-label="Close">×</button></div></div>
       <div class="snmp-details-summary" id="snmpDetailsSummary"></div>
+      <section id="truenasDetails" hidden>
+        <div class="panel-heading details-heading"><div><span class="section-tag blue">TRUENAS</span><h2>System and storage health</h2></div></div>
+        <div class="truenas-metric-grid" id="truenasMetricGrid"></div>
+        <h3 class="modal-subtitle">Storage, pools, and datasets</h3>
+        <div class="storage-list" id="truenasStorageList"></div>
+      </section>
       <h3 class="modal-subtitle">System OIDs</h3>
       <div class="oid-details-list" id="snmpOids"></div>
       <div class="panel-heading details-heading"><div><span class="section-tag">DISCOVERED DATA</span><h2 id="snmpInterfaceTitle">Interfaces</h2><p class="form-help" id="snmpInterfaceHelp"></p></div><button class="dark-button" id="refreshSnmpDetails">Refresh data</button></div>

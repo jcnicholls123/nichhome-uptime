@@ -8,6 +8,8 @@ let currentUser;
 let monitors = [];
 let incidents = [];
 let snmpDevices = [];
+let dockerContainers = [];
+let dockerStatus = { available: false };
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
@@ -31,7 +33,8 @@ function renderSearchResults() {
   const query = searchFilter.toLowerCase();
   const matches = [
     ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
-    ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) }))
+    ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })),
+    ...dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) }))
   ].slice(0, 8);
   if (!matches.length) {
     const empty = document.createElement("p");
@@ -95,6 +98,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       document.querySelector(".snmp-panel").scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
+    if (item.dataset.page === "Docker") {
+      document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
     if (!["Overview", "Monitors"].includes(item.dataset.page)) {
       showToast(`${item.dataset.page} is coming next`, "This section is not implemented yet");
       return;
@@ -130,8 +137,9 @@ refreshButton.addEventListener("click", async () => {
       ...monitors.filter((monitor) => monitor.enabled).map((monitor) => api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" })),
       ...snmpDevices.filter((device) => device.enabled).map((device) => api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }))
     ]);
-    await Promise.all([loadMonitors(), loadSnmpDevices(), loadGraph(), loadIncidents()]);
-    showToast("Checks complete", `${monitors.length + snmpDevices.length} monitored services checked`);
+    if (dockerStatus.available) await api("/api/docker/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadGraph(), loadIncidents()]);
+    showToast("Checks complete", `${monitors.length + snmpDevices.length + dockerContainers.length} monitored services checked`);
   } finally {
     refreshButton.classList.remove("spinning");
   }
@@ -259,7 +267,7 @@ function renderMonitors() {
 }
 
 function updateDashboardHealth() {
-  const services = [...monitors, ...snmpDevices];
+  const services = [...monitors, ...snmpDevices, ...dockerContainers.map((item) => ({ ...item, enabled: true }))];
   const up = services.filter((item) => item.enabled && item.status === "up");
   const down = services.filter((item) => item.enabled && item.status === "down");
   const checked = up.length + down.length;
@@ -432,6 +440,52 @@ async function loadSnmpDevices() {
   renderSearchResults();
 }
 
+function renderDockerFleet() {
+  document.getElementById("dockerNavCount").textContent = dockerContainers.length;
+  const summary = document.getElementById("dockerSummary");
+  const list = document.getElementById("dockerContainerList");
+  summary.replaceChildren();
+  list.replaceChildren();
+  if (!dockerStatus.available) {
+    const message = document.createElement("p");
+    message.className = "docker-unavailable";
+    message.textContent = dockerStatus.error || `Docker Engine is not connected. Mount the TrueNAS Docker socket at ${dockerStatus.socketPath || "/var/run/docker.sock"} to enable the fleet.`;
+    list.append(message);
+    return;
+  }
+  for (const [label, value] of [["Total", dockerStatus.total], ["Running", dockerStatus.running], ["Unhealthy", dockerStatus.unhealthy], ["Stopped", dockerStatus.stopped]]) {
+    const item = document.createElement("div");
+    const strong = document.createElement("strong"); strong.textContent = value;
+    const span = document.createElement("span"); span.textContent = label;
+    item.append(strong, span); summary.append(item);
+  }
+  if (!dockerContainers.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Docker Engine connected, but no containers were found."; list.append(empty);
+    return;
+  }
+  for (const item of dockerContainers) {
+    const row = document.createElement("article"); row.className = `container ${item.status === "down" ? "down" : ""}`;
+    const cube = document.createElement("span"); cube.className = "cube"; cube.textContent = "▣";
+    const copy = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = item.name;
+    const detail = document.createElement("small"); detail.textContent = `${item.image} · ${item.statusText || item.health}${item.composeProject ? ` · Stack ${item.composeProject}` : ""}`;
+    const metrics = document.createElement("div"); metrics.className = "container-metrics";
+    const cpu = document.createElement("small"); cpu.textContent = `CPU ${item.cpuPercent == null ? "--" : item.cpuPercent.toFixed(1) + "%"}`;
+    const memory = document.createElement("small"); memory.textContent = `RAM ${formatBytes(item.memoryBytes)}`;
+    const restarts = document.createElement("small"); restarts.textContent = `Restarts ${item.restartCount}`;
+    metrics.append(cpu, memory, restarts); copy.append(name, detail, metrics);
+    const status = document.createElement("span"); status.className = `status-label ${item.status === "up" ? "up" : "warn"}`; status.textContent = item.status === "paused" ? "STOPPED" : item.health.toUpperCase();
+    row.append(cube, copy, status); list.append(row);
+  }
+}
+
+async function loadDockerFleet() {
+  dockerStatus = await api("/api/docker/status");
+  dockerContainers = dockerStatus.available ? await api("/api/docker/containers") : [];
+  renderDockerFleet();
+  updateDashboardHealth();
+}
+
 function formatBytes(value) {
   if (value == null) return "--";
   const units = ["B", "KB", "MB", "GB", "TB"];
@@ -461,6 +515,7 @@ async function openSnmpDetails(device) {
     const strong = document.createElement("strong"); strong.textContent = value;
     stat.append(small, strong); summary.append(stat);
   }
+  renderTrueNasDetails(data);
   const interfaces = document.getElementById("snmpInterfaces");
   interfaces.replaceChildren();
   document.getElementById("snmpInterfaceTitle").textContent = profileType === "switch" ? "Switch ports and interfaces" : profileType === "access-point" ? "AP uplink and radio interfaces" : profileType === "gateway" ? "Gateway physical interfaces" : "Interfaces";
@@ -475,7 +530,9 @@ async function openSnmpDetails(device) {
   }
   const oids = document.getElementById("snmpOids");
   oids.replaceChildren();
-  for (const item of data.oids) {
+  const displayedOids = [...data.oids];
+  if (profileType === "truenas") displayedOids.push(...(data.profileMetrics || []).filter((item) => item.category === "truenas-mib").slice(0, 200).map((item) => ({ label: "TrueNAS MIB", oid: item.metricKey, value: item.value })));
+  for (const item of displayedOids) {
     const row = document.createElement("div"); row.className = "oid-detail";
     const label = document.createElement("small"); label.textContent = `${item.label} · ${item.oid}`;
     const value = document.createElement("strong"); value.textContent = item.value || "--";
@@ -491,6 +548,55 @@ async function openSnmpDetails(device) {
     history.append(row);
   });
   document.getElementById("snmpDetailsModal").hidden = false;
+}
+
+function renderTrueNasDetails(data) {
+  const section = document.getElementById("truenasDetails");
+  section.hidden = data.device.profile.type !== "truenas";
+  if (section.hidden) return;
+  const metricGrid = document.getElementById("truenasMetricGrid");
+  const storageList = document.getElementById("truenasStorageList");
+  metricGrid.replaceChildren();
+  storageList.replaceChildren();
+  const byCategory = (data.profileMetrics || []).reduce((groups, item) => {
+    (groups[item.category] ||= []).push(item);
+    return groups;
+  }, {});
+  const cpuValues = (byCategory.cpu || []).map((item) => Number(item.value)).filter(Number.isFinite);
+  const loads = (byCategory.load || []).map((item) => item.value).slice(0, 3);
+  const memory = Object.fromEntries((byCategory.memory || []).map((item) => [item.metricKey, Number(item.value)]));
+  const totalRam = memory["1.3.6.1.4.1.2021.4.5.0"];
+  const freeRam = memory["1.3.6.1.4.1.2021.4.6.0"];
+  const cards = [
+    ["Average CPU load", cpuValues.length ? `${(cpuValues.reduce((a, b) => a + b, 0) / cpuValues.length).toFixed(1)}%` : "--"],
+    ["Load averages", loads.length ? loads.join(" / ") : "--"],
+    ["Total memory", totalRam ? formatBytes(totalRam * 1024) : "--"],
+    ["Available memory", freeRam ? formatBytes(freeRam * 1024) : "--"],
+    ["TrueNAS MIB values", String((byCategory["truenas-mib"] || []).length)]
+  ];
+  for (const [label, value] of cards) {
+    const card = document.createElement("div"); card.className = "truenas-metric";
+    const small = document.createElement("small"); small.textContent = label;
+    const strong = document.createElement("strong"); strong.textContent = value;
+    card.append(small, strong); metricGrid.append(card);
+  }
+  const keyed = (category) => Object.fromEntries((byCategory[category] || []).map((item) => [item.metricKey.split(".").at(-1), item.value]));
+  const descriptions = keyed("storage-description");
+  const units = keyed("storage-units");
+  const sizes = keyed("storage-size");
+  const used = keyed("storage-used");
+  for (const [index, label] of Object.entries(descriptions)) {
+    const total = Number(units[index]) * Number(sizes[index]);
+    const usage = Number(units[index]) * Number(used[index]);
+    if (!total || !label) continue;
+    const percent = Math.min(100, (usage / total) * 100);
+    const row = document.createElement("div"); row.className = "storage-row";
+    const name = document.createElement("strong"); name.textContent = label;
+    const bar = document.createElement("div"); bar.className = "storage-bar";
+    const fill = document.createElement("span"); fill.style.width = `${percent}%`; fill.className = percent >= 90 ? "warn" : ""; bar.append(fill);
+    const amount = document.createElement("span"); amount.textContent = `${formatBytes(usage)} / ${formatBytes(total)} (${percent.toFixed(1)}%)`;
+    row.append(name, bar, amount); storageList.append(row);
+  }
 }
 
 async function openIncidents() {
@@ -596,6 +702,15 @@ document.getElementById("testDiscord").addEventListener("click", async () => {
     showToast("Discord test sent", "Check your Discord channel");
   } catch (err) { document.getElementById("discordError").textContent = err.message; }
 });
+document.getElementById("refreshDocker").addEventListener("click", async () => {
+  try {
+    await api("/api/docker/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadDockerFleet(), loadIncidents(), loadGraph()]);
+    showToast("Docker fleet refreshed", `${dockerContainers.length} containers discovered`);
+  } catch (err) {
+    showToast("Docker Engine unavailable", err.message);
+  }
+});
 function openSnmpForm(device = null) {
   const form = document.getElementById("snmpForm");
   form.reset();
@@ -695,6 +810,7 @@ loadIncidents();
 loadDiscordStatus();
 loadGraph();
 loadSnmpDevices();
+loadDockerFleet();
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

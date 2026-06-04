@@ -50,7 +50,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.7", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.8", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -83,6 +83,10 @@ async function waitForServer() {
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: false, webhookUrl: "" }) })).status, 200);
     assert.equal((await request("/api/dashboard/history")).status, 200);
+    const dockerStatus = await (await request("/api/docker/status")).json();
+    assert.equal(dockerStatus.available, false);
+    assert.deepEqual(await (await request("/api/docker/containers")).json(), []);
+    assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 400);
     assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Test SNMP", host: "127.0.0.1", port: 1161, community: "public", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);
@@ -96,6 +100,10 @@ async function waitForServer() {
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "U7 Pro Max", community: "", enabled: true }) })).status, 200);
     const editedSnmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.equal(editedSnmpDetails.device.profile.type, "access-point");
+    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "TrueNAS Storage", community: "", enabled: true }) })).status, 200);
+    const trueNasDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
+    assert.equal(trueNasDetails.device.profile.type, "truenas");
+    assert.ok(Array.isArray(trueNasDetails.profileMetrics));
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/poll`, { method: "POST", body: "{}" })).status, 200);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await (await request("/api/incidents")).json()).length, 1);

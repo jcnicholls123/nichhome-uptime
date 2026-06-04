@@ -1,5 +1,6 @@
 const crypto = require("crypto");
 const net = require("net");
+const http = require("http");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const path = require("path");
@@ -15,6 +16,7 @@ const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
 const COOKIE_SECURE = process.env.COOKIE_SECURE === "true";
 const SESSION_DAYS = Number(process.env.SESSION_DAYS || 14);
+const DOCKER_SOCKET = process.env.DOCKER_SOCKET || "/var/run/docker.sock";
 const app = express();
 
 fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -129,6 +131,49 @@ db.exec(`
     value TEXT,
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(device_id, oid)
+  );
+  CREATE TABLE IF NOT EXISTS snmp_profile_metrics (
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT,
+    unit TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(device_id, category, metric_key)
+  );
+  CREATE TABLE IF NOT EXISTS docker_containers (
+    container_id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    image TEXT,
+    state TEXT,
+    status_text TEXT,
+    health TEXT,
+    cpu_percent REAL,
+    memory_bytes INTEGER,
+    memory_limit_bytes INTEGER,
+    restart_count INTEGER,
+    compose_project TEXT,
+    created_at INTEGER,
+    last_seen_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS docker_metrics (
+    id INTEGER PRIMARY KEY,
+    container_id TEXT NOT NULL,
+    status TEXT NOT NULL,
+    cpu_percent REAL,
+    memory_bytes INTEGER,
+    message TEXT,
+    polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS docker_metrics_container_polled ON docker_metrics(container_id, polled_at DESC);
+  CREATE TABLE IF NOT EXISTS docker_incidents (
+    id INTEGER PRIMARY KEY,
+    container_id TEXT NOT NULL,
+    container_name TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
   );
 `);
 
@@ -302,14 +347,17 @@ function validateSnmpDevice(input) {
 }
 
 function snmpDeviceProfile(device) {
-  const identity = `${device.name || ""} ${device.sys_name || ""} ${device.sys_description || ""}`.toLowerCase();
+  const objectId = device.id ? db.prepare("SELECT value FROM snmp_oids WHERE device_id = ? AND oid = '1.3.6.1.2.1.1.2.0'").get(device.id)?.value || "" : "";
+  const identity = `${device.name || ""} ${device.sys_name || ""} ${device.sys_description || ""} ${objectId}`.toLowerCase();
+  const isTrueNas = /truenas|freenas|1\.3\.6\.1\.4\.1\.50536/.test(identity);
   const isUniFi = /unifi|ubiquiti|ucg-|u7 |u7-|usw-|udm-|uxg-/.test(identity);
   let type = "network-device";
-  if (/\bucg|cloud gateway|\budm|dream machine|\buxg|security gateway/.test(identity)) type = "gateway";
+  if (isTrueNas) type = "truenas";
+  else if (/\bucg|cloud gateway|\budm|dream machine|\buxg|security gateway/.test(identity)) type = "gateway";
   else if (/\bu7\b|access point|\buap|wifi|wireless/.test(identity)) type = "access-point";
   else if (/\busw\b|switch/.test(identity)) type = "switch";
-  const label = type === "gateway" ? "UniFi Gateway" : type === "access-point" ? "UniFi Access Point" : type === "switch" ? "UniFi Switch" : isUniFi ? "UniFi Device" : "Standard SNMP";
-  return { isUniFi, type, label };
+  const label = type === "truenas" ? "TrueNAS System" : type === "gateway" ? "UniFi Gateway" : type === "access-point" ? "UniFi Access Point" : type === "switch" ? "UniFi Switch" : isUniFi ? "UniFi Device" : "Standard SNMP";
+  return { isTrueNas, isUniFi, type, label };
 }
 
 function snmpGet(device, oids) {
@@ -394,6 +442,37 @@ async function discoverSnmpInterfaces(device) {
   save();
 }
 
+async function discoverTrueNasMetrics(device) {
+  const profile = snmpDeviceProfile(device);
+  if (!profile.isTrueNas) return;
+  const rows = [];
+  const walk = async (category, label, oid, unit = "") => {
+    try {
+      for (const varbind of await snmpSubtree(device, oid)) {
+        rows.push({ category, key: varbind.oid, label, value: valueText(varbind.value), unit });
+      }
+    } catch {}
+  };
+  await Promise.all([
+    walk("cpu", "Processor load", "1.3.6.1.2.1.25.3.3.1.2", "%"),
+    walk("storage-description", "Storage description", "1.3.6.1.2.1.25.2.3.1.3"),
+    walk("storage-units", "Allocation unit", "1.3.6.1.2.1.25.2.3.1.4", "bytes"),
+    walk("storage-size", "Storage size", "1.3.6.1.2.1.25.2.3.1.5", "units"),
+    walk("storage-used", "Storage used", "1.3.6.1.2.1.25.2.3.1.6", "units"),
+    walk("load", "System load", "1.3.6.1.4.1.2021.10.1.3"),
+    walk("memory", "UCD memory", "1.3.6.1.4.1.2021.4"),
+    walk("truenas-mib", "TrueNAS MIB", "1.3.6.1.4.1.50536")
+  ]);
+  const upsert = db.prepare(`
+    INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP
+  `);
+  db.transaction(() => {
+    for (const row of rows.slice(0, 3000)) upsert.run(device.id, row.category, row.key, row.label, row.value, row.unit);
+  })();
+}
+
 async function pollSnmpDevice(id) {
   const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
   if (!device || !device.enabled) return null;
@@ -423,6 +502,7 @@ async function pollSnmpDevice(id) {
       for (const [oid, label] of Object.entries(systemOids)) upsertOid.run(device.id, oid, label, String(result.values[oid] ?? ""));
     })();
     await discoverSnmpInterfaces(device);
+    await discoverTrueNasMetrics({ ...device, sys_name: sysName, sys_description: sysDescription });
   } catch (error) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
@@ -458,6 +538,113 @@ async function sendDiscord(content) {
   } catch (error) {
     console.error("Discord notification failed:", error.message);
   }
+}
+
+function dockerAvailable() {
+  return Boolean(DOCKER_SOCKET) && fs.existsSync(DOCKER_SOCKET);
+}
+let dockerFleetError = null;
+let dockerLastPolledAt = null;
+
+function dockerRequest(requestPath) {
+  return new Promise((resolve, reject) => {
+    if (!dockerAvailable()) return reject(new Error(`Docker socket is not mounted at ${DOCKER_SOCKET}`));
+    const request = http.request({ socketPath: DOCKER_SOCKET, path: requestPath, method: "GET" }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`Docker Engine returned HTTP ${response.statusCode}`));
+        try { resolve(body ? JSON.parse(body) : null); } catch { reject(new Error("Docker Engine returned invalid JSON")); }
+      });
+    });
+    request.setTimeout(10000, () => request.destroy(new Error("Docker Engine request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function dockerHealth(container) {
+  const text = String(container.Status || "").toLowerCase();
+  if (text.includes("(unhealthy)")) return "unhealthy";
+  if (text.includes("(healthy)")) return "healthy";
+  return container.State === "running" ? "running" : container.State || "unknown";
+}
+
+function dockerStatsPercent(stats) {
+  const cpuDelta = Number(stats?.cpu_stats?.cpu_usage?.total_usage || 0) - Number(stats?.precpu_stats?.cpu_usage?.total_usage || 0);
+  const systemDelta = Number(stats?.cpu_stats?.system_cpu_usage || 0) - Number(stats?.precpu_stats?.system_cpu_usage || 0);
+  const cpus = Number(stats?.cpu_stats?.online_cpus || stats?.cpu_stats?.cpu_usage?.percpu_usage?.length || 1);
+  return systemDelta > 0 && cpuDelta >= 0 ? (cpuDelta / systemDelta) * cpus * 100 : 0;
+}
+
+async function pollDockerFleet() {
+  if (!dockerAvailable()) {
+    dockerFleetError = `Mount ${DOCKER_SOCKET} to enable Docker fleet monitoring.`;
+    return { available: false, error: dockerFleetError };
+  }
+  let containers;
+  try {
+    containers = await dockerRequest("/containers/json?all=1");
+  } catch (error) {
+    dockerFleetError = error.message;
+    return { available: false, error: dockerFleetError };
+  }
+  const seen = new Set();
+  for (const container of containers) {
+    const id = container.Id;
+    seen.add(id);
+    const name = String(container.Names?.[0] || id.slice(0, 12)).replace(/^\//, "");
+    let inspect = null;
+    try { inspect = await dockerRequest(`/containers/${id}/json`); } catch {}
+    const state = inspect?.State?.Status || container.State || "unknown";
+    const health = inspect?.State?.Health?.Status || dockerHealth(container);
+    const previous = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(id);
+    const openIncident = db.prepare("SELECT 1 FROM docker_incidents WHERE container_id = ? AND resolved_at IS NULL").get(id);
+    const newFault = health === "unhealthy" || Boolean(previous && previous.state === "running" && state !== "running");
+    const status = state === "running" && health !== "unhealthy" ? "up" : newFault || openIncident ? "down" : "paused";
+    let cpuPercent = null;
+    let memoryBytes = null;
+    let memoryLimitBytes = null;
+    if (state === "running") {
+      try {
+        const stats = await dockerRequest(`/containers/${id}/stats?stream=false`);
+        cpuPercent = dockerStatsPercent(stats);
+        memoryBytes = Number(stats?.memory_stats?.usage || 0);
+        memoryLimitBytes = Number(stats?.memory_stats?.limit || 0);
+      } catch {}
+    }
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO docker_containers (container_id, name, image, state, status_text, health, cpu_percent, memory_bytes, memory_limit_bytes, restart_count, compose_project, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(container_id) DO UPDATE SET name=excluded.name, image=excluded.image, state=excluded.state, status_text=excluded.status_text,
+          health=excluded.health, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, memory_limit_bytes=excluded.memory_limit_bytes,
+          restart_count=excluded.restart_count, compose_project=excluded.compose_project, created_at=excluded.created_at, last_seen_at=CURRENT_TIMESTAMP
+      `).run(id, name, container.Image || "", state, container.Status || "", health, cpuPercent, memoryBytes, memoryLimitBytes, Number(inspect?.RestartCount || 0), container.Labels?.["com.docker.compose.project"] || "", container.Created || null);
+      db.prepare("INSERT INTO docker_metrics (container_id, status, cpu_percent, memory_bytes, message) VALUES (?, ?, ?, ?, ?)")
+        .run(id, status, cpuPercent, memoryBytes, status === "down" ? container.Status || health : null);
+      db.prepare("DELETE FROM docker_metrics WHERE id IN (SELECT id FROM docker_metrics WHERE container_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
+      if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) {
+        db.prepare("INSERT INTO docker_incidents (container_id, container_name, cause) VALUES (?, ?, ?)").run(id, name, container.Status || health);
+      }
+      if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) {
+        db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(id);
+      }
+    })();
+    if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) await sendDiscord(`🔴 **Docker container ${name} is DOWN**\n${container.Status || health}`);
+    if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) await sendDiscord(`🟢 **Docker container ${name} recovered**`);
+  }
+  const stale = db.prepare("SELECT container_id FROM docker_containers").all().filter((item) => !seen.has(item.container_id));
+  db.transaction(() => {
+    for (const { container_id } of stale) {
+      db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(container_id);
+      db.prepare("DELETE FROM docker_containers WHERE container_id = ?").run(container_id);
+    }
+  })();
+  dockerFleetError = null;
+  dockerLastPolledAt = new Date().toISOString();
+  return { available: true, count: containers.length };
 }
 
 async function checkHttp(target, timeoutSeconds) {
@@ -531,6 +718,7 @@ async function runMonitor(id) {
 }
 
 let schedulerRunning = false;
+let nextDockerPoll = 0;
 async function schedulerTick() {
   if (schedulerRunning) return;
   schedulerRunning = true;
@@ -539,6 +727,10 @@ async function schedulerTick() {
     await Promise.all(due.map(({ id }) => runMonitor(id)));
     const dueSnmp = db.prepare("SELECT id FROM snmp_devices WHERE enabled = 1 AND next_poll_at <= ? LIMIT 20").all(Date.now());
     await Promise.all(dueSnmp.map(({ id }) => pollSnmpDevice(id)));
+    if (Date.now() >= nextDockerPoll) {
+      nextDockerPoll = Date.now() + 30000;
+      try { await pollDockerFleet(); } catch (error) { console.error("Docker fleet poll failed:", error.message); }
+    }
   } finally {
     schedulerRunning = false;
   }
@@ -658,6 +850,10 @@ app.get("/api/incidents", requireAuth, (req, res) => {
       SELECT -snmp_incidents.id AS id, snmp_incidents.started_at AS startedAt, snmp_incidents.resolved_at AS resolvedAt,
         snmp_incidents.cause AS cause, snmp_devices.name AS monitorName, snmp_devices.host AS target, 'snmp' AS source
       FROM snmp_incidents JOIN snmp_devices ON snmp_devices.id = snmp_incidents.device_id
+      UNION ALL
+      SELECT -1000000-docker_incidents.id AS id, docker_incidents.started_at AS startedAt, docker_incidents.resolved_at AS resolvedAt,
+        docker_incidents.cause AS cause, docker_incidents.container_name AS monitorName, docker_incidents.container_id AS target, 'docker' AS source
+      FROM docker_incidents
     ) ORDER BY startedAt DESC LIMIT 100
   `).all();
   res.json(incidents);
@@ -670,6 +866,9 @@ app.get("/api/dashboard/history", requireAuth, (req, res) => {
       UNION ALL
       SELECT polled_at AS checkedAt, status, response_ms AS responseMs
       FROM snmp_metrics WHERE polled_at >= datetime('now', '-24 hours')
+      UNION ALL
+      SELECT polled_at AS checkedAt, status, NULL AS responseMs
+      FROM docker_metrics WHERE polled_at >= datetime('now', '-24 hours') AND status IN ('up', 'down')
     ) ORDER BY checkedAt DESC LIMIT 400
   `).all();
   res.json(rows.reverse().map((row) => ({
@@ -697,12 +896,13 @@ app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
   const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, admin_status AS adminStatus, oper_status AS operStatus, speed_bps AS speedBps, in_octets AS inOctets, out_octets AS outOctets, updated_at AS updatedAt FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(device.id);
   const oids = db.prepare("SELECT oid, label, value, updated_at AS updatedAt FROM snmp_oids WHERE device_id = ? ORDER BY oid").all(device.id);
   const metrics = db.prepare("SELECT status, uptime_ticks AS uptimeTicks, response_ms AS responseMs, message, polled_at AS polledAt FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 100").all(device.id);
+  const profileMetrics = db.prepare("SELECT category, metric_key AS metricKey, label, value, unit, updated_at AS updatedAt FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, metric_key").all(device.id);
   const profile = snmpDeviceProfile(device);
   const upInterfaces = interfaces.filter((item) => item.operStatus === 1).length;
   const physicalInterfaces = interfaces.filter((item) => item.mac && item.mac !== "00:00:00:00:00:00").length;
   res.json({
     device: { id: device.id, name: device.name, host: device.host, port: device.port, intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds, enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, profile, interfaceSummary: { total: interfaces.length, up: upInterfaces, physical: physicalInterfaces } },
-    interfaces, oids, metrics
+    interfaces, oids, metrics, profileMetrics
   });
 });
 app.post("/api/snmp/devices", requireAuth, async (req, res) => {
@@ -735,6 +935,40 @@ app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM snmp_devices WHERE id = ?").run(Number(req.params.id));
   if (!result.changes) return res.status(404).json({ error: "SNMP device not found." });
   res.json({ ok: true });
+});
+app.get("/api/docker/status", requireAuth, (req, res) => {
+  const containers = db.prepare("SELECT * FROM docker_containers ORDER BY name").all();
+  res.json({
+    available: dockerAvailable() && !dockerFleetError,
+    socketPath: DOCKER_SOCKET,
+    error: dockerFleetError,
+    lastPolledAt: dockerLastPolledAt,
+    total: containers.length,
+    running: containers.filter((item) => item.state === "running" && item.health !== "unhealthy").length,
+    unhealthy: containers.filter((item) => item.health === "unhealthy").length,
+    stopped: containers.filter((item) => item.state !== "running").length
+  });
+});
+app.get("/api/docker/containers", requireAuth, (req, res) => {
+  const containers = db.prepare("SELECT * FROM docker_containers ORDER BY name").all();
+  res.json(containers.map((item) => {
+    const openIncident = db.prepare("SELECT 1 FROM docker_incidents WHERE container_id = ? AND resolved_at IS NULL").get(item.container_id);
+    return {
+      id: item.container_id, name: item.name, image: item.image, state: item.state, statusText: item.status_text,
+      health: item.health, status: item.state === "running" && item.health !== "unhealthy" ? "up" : openIncident || item.health === "unhealthy" ? "down" : "paused",
+      cpuPercent: item.cpu_percent, memoryBytes: item.memory_bytes, memoryLimitBytes: item.memory_limit_bytes,
+      restartCount: item.restart_count, composeProject: item.compose_project, createdAt: item.created_at, lastSeenAt: item.last_seen_at
+    };
+  }));
+});
+app.post("/api/docker/refresh", requireAuth, async (req, res) => {
+  try {
+    const result = await pollDockerFleet();
+    if (!result.available) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
 });
 app.get("/api/notifications/discord", requireAuth, (req, res) => {
   const config = discordConfig();

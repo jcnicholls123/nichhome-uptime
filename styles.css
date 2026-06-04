@@ -238,6 +238,18 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .container div { display: grid; gap: 2px; }
 .container strong { font-size: 7px; }
 .container small, .cpu { color: #999f9c; font-family: "DM Mono"; font-size: 6px; }
+.container-stack .container.down { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.05); }
+.container-metrics { display: flex !important; flex-direction: row; gap: 9px !important; }
+.docker-unavailable { padding: 18px; border: 1px dashed var(--line); border-radius: 9px; color: #7d8581; font-size: 11px; line-height: 1.6; }
+.truenas-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+.truenas-metric { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.truenas-metric small { color: #8c9490; font-size: 10px; }
+.truenas-metric strong { font-size: 15px; }
+.storage-list { display: grid; gap: 7px; }
+.storage-row { display: grid; grid-template-columns: minmax(120px, 1fr) 2fr auto; align-items: center; gap: 10px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 11px; }
+.storage-bar { height: 6px; overflow: hidden; border-radius: 8px; background: #e2e1da; }
+.storage-bar span { display: block; height: 100%; background: var(--green); }
+.storage-bar span.warn { background: var(--coral); }
 
 .toast { position: fixed; right: 25px; bottom: 25px; z-index: 20; display: flex; align-items: center; gap: 10px; min-width: 220px; padding: 13px; color: white; background: var(--ink); border: 1px solid #303936; border-radius: 9px; box-shadow: 0 18px 40px rgba(0,0,0,.25); opacity: 0; transform: translateY(15px); pointer-events: none; transition: .25s ease; }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -379,6 +391,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .panel-heading h2 { font-size: 17px; }
   .activity-item strong, .monitor-row strong, .snmp-device-card strong { font-size: 14px; }
   .activity-item p, .activity-item small, .monitor-row small, .snmp-device-card p, .snmp-device-card small, .empty-state, .text-button, .dark-button { font-size: 12px; line-height: 1.5; }
+  .storage-row { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 560px) {

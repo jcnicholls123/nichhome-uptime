@@ -206,6 +206,25 @@ db.exec(`
     last_polled_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS alert_rules (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker')),
+    target_id TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    operator TEXT NOT NULL,
+    threshold TEXT NOT NULL,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS alert_rule_incidents (
+    id INTEGER PRIMARY KEY,
+    rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+    current_value TEXT,
+    cause TEXT,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT
+  );
 `);
 
 function ensureColumn(table, column, definition) {
@@ -492,6 +511,53 @@ function setSetting(key, value) {
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
 }
 
+function alertRuleValue(rule) {
+  if (rule.target_type === "snmp") {
+    const separator = rule.metric_key.indexOf("|");
+    if (separator < 1) return null;
+    return db.prepare("SELECT value FROM snmp_profile_metrics WHERE device_id = ? AND category = ? AND metric_key = ?")
+      .get(Number(rule.target_id), rule.metric_key.slice(0, separator), rule.metric_key.slice(separator + 1))?.value ?? null;
+  }
+  const container = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(rule.target_id);
+  if (!container) return null;
+  if (rule.metric_key === "memory_percent") return container.memory_limit_bytes > 0 ? (container.memory_bytes / container.memory_limit_bytes) * 100 : null;
+  return container[rule.metric_key] ?? null;
+}
+
+function alertRuleTriggered(value, operator, threshold) {
+  const leftNumber = Number(value);
+  const rightNumber = Number(threshold);
+  const numeric = Number.isFinite(leftNumber) && Number.isFinite(rightNumber);
+  if (operator === ">") return numeric && leftNumber > rightNumber;
+  if (operator === ">=") return numeric && leftNumber >= rightNumber;
+  if (operator === "<") return numeric && leftNumber < rightNumber;
+  if (operator === "<=") return numeric && leftNumber <= rightNumber;
+  if (operator === "contains") return String(value).toLowerCase().includes(String(threshold).toLowerCase());
+  if (operator === "not_contains") return !String(value).toLowerCase().includes(String(threshold).toLowerCase());
+  if (operator === "!=") return numeric ? leftNumber !== rightNumber : String(value).toLowerCase() !== String(threshold).toLowerCase();
+  return numeric ? leftNumber === rightNumber : String(value).toLowerCase() === String(threshold).toLowerCase();
+}
+
+async function evaluateAlertRules(targetType, targetId) {
+  const rules = db.prepare("SELECT * FROM alert_rules WHERE enabled = 1 AND target_type = ? AND target_id = ?").all(targetType, String(targetId));
+  for (const rule of rules) {
+    const value = alertRuleValue(rule);
+    if (value == null) continue;
+    const triggered = alertRuleTriggered(value, rule.operator, rule.threshold);
+    const open = db.prepare("SELECT id FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id);
+    const cause = `${rule.metric_key} is ${value}; expected ${rule.operator} ${rule.threshold}`;
+    if (triggered && !open) {
+      db.prepare("INSERT INTO alert_rule_incidents (rule_id, current_value, cause) VALUES (?, ?, ?)").run(rule.id, String(value), cause);
+      await sendDiscord(`[ALERT] **Alert rule ${rule.name} triggered**\n${cause}`);
+    } else if (!triggered && open) {
+      db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP, current_value = ? WHERE id = ?").run(String(value), open.id);
+      await sendDiscord(`[RECOVERED] **Alert rule ${rule.name} recovered**\nCurrent value: ${value}`);
+    } else if (triggered && open) {
+      db.prepare("UPDATE alert_rule_incidents SET current_value = ?, cause = ? WHERE id = ?").run(String(value), cause, open.id);
+    }
+  }
+}
+
 function discordConfig() {
   return {
     enabled: getSetting("discord_enabled", "false") === "true",
@@ -735,6 +801,17 @@ async function discoverTrueNasMetrics(device) {
     walk("memory", "UCD memory", "1.3.6.1.4.1.2021.4"),
     walk("truenas-mib", "TrueNAS MIB", "1.3.6.1.4.1.50536")
   ]);
+  const storage = {};
+  for (const row of rows.filter((item) => item.category.startsWith("storage-"))) {
+    const index = row.key.split(".").at(-1);
+    storage[index] ||= {};
+    storage[index][row.category] = row.value;
+  }
+  for (const [index, values] of Object.entries(storage)) {
+    const size = Number(values["storage-size"]);
+    const used = Number(values["storage-used"]);
+    if (Number.isFinite(size) && size > 0 && Number.isFinite(used)) rows.push({ category: "storage-usage", key: index, label: `${values["storage-description"] || `Storage ${index}`} usage`, value: ((used / size) * 100).toFixed(2), unit: "%" });
+  }
   const upsert = db.prepare(`
     INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -796,6 +873,7 @@ async function pollSnmpDevice(id) {
   })();
   if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **SNMP device ${device.name} is DOWN**\n${message || device.host}`);
   if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **SNMP device ${device.name} recovered**\n${sysName || device.host}`);
+  if (status === "up") await evaluateAlertRules("snmp", id);
   return db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
 }
 
@@ -933,11 +1011,13 @@ async function pollDockerHost(hostOrId) {
     })();
     if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) await sendDiscord(`🔴 **Docker container ${name} is DOWN**\n${container.Status || health}`);
     if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) await sendDiscord(`🟢 **Docker container ${name} recovered**`);
+    await evaluateAlertRules("docker", id);
   }
   const stale = db.prepare("SELECT container_id FROM docker_containers WHERE host_id = ?").all(host.id).filter((item) => !seen.has(item.container_id));
   db.transaction(() => {
     for (const { container_id } of stale) {
       db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(container_id);
+      db.prepare("DELETE FROM alert_rules WHERE target_type = 'docker' AND target_id = ?").run(container_id);
       db.prepare("DELETE FROM docker_metrics WHERE container_id = ?").run(container_id);
       db.prepare("DELETE FROM docker_containers WHERE container_id = ?").run(container_id);
     }
@@ -1217,6 +1297,52 @@ app.delete("/api/monitors/:id", requireAuth, (req, res) => {
   if (!result.changes) return res.status(404).json({ error: "Monitor not found." });
   res.json({ ok: true });
 });
+app.get("/api/alert-rules", requireAuth, (req, res) => {
+  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
+  res.json(rules.map((rule) => ({
+    ...rule,
+    enabled: Boolean(rule.enabled),
+    currentValue: alertRuleValue({ target_type: rule.targetType, target_id: rule.targetId, metric_key: rule.metricKey }),
+    active: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id))
+  })));
+});
+app.get("/api/alert-rules/options", requireAuth, (req, res) => {
+  const snmpTargets = db.prepare("SELECT id, name FROM snmp_devices ORDER BY name").all().map((target) => ({
+    ...target,
+    metrics: db.prepare("SELECT category || '|' || metric_key AS key, label, value, unit FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, label LIMIT 3000").all(target.id)
+  }));
+  const dockerTargets = db.prepare("SELECT container_id AS id, name FROM docker_containers WHERE state = 'running' ORDER BY name").all().map((target) => ({
+    ...target,
+    metrics: [
+      { key: "cpu_percent", label: "CPU usage", unit: "%", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "cpu_percent" }) },
+      { key: "memory_percent", label: "Memory usage", unit: "%", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "memory_percent" }) },
+      { key: "restart_count", label: "Restart count", unit: "", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "restart_count" }) },
+      { key: "health", label: "Container health", unit: "", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "health" }) }
+    ]
+  }));
+  res.json({ snmp: snmpTargets, docker: dockerTargets });
+});
+app.post("/api/alert-rules", requireAuth, async (req, res) => {
+  const name = String(req.body.name || "").trim();
+  const targetType = String(req.body.targetType || "");
+  const targetId = String(req.body.targetId || "");
+  const metricKey = String(req.body.metricKey || "").trim();
+  const operator = String(req.body.operator || "");
+  const threshold = String(req.body.threshold ?? "").trim();
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
+  if (!["snmp", "docker"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold) return res.status(400).json({ error: "Choose a valid target, metric, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
+  if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
+  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold) VALUES (?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold);
+  await evaluateAlertRules(targetType, targetId);
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.delete("/api/alert-rules/:id", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM alert_rules WHERE id = ?").run(Number(req.params.id));
+  if (!result.changes) return res.status(404).json({ error: "Alert rule not found." });
+  res.json({ ok: true });
+});
 app.get("/api/incidents", requireAuth, (req, res) => {
   const incidents = db.prepare(`
     SELECT id, startedAt, resolvedAt, cause, monitorName, target, source FROM (
@@ -1231,6 +1357,10 @@ app.get("/api/incidents", requireAuth, (req, res) => {
       SELECT -1000000-docker_incidents.id AS id, docker_incidents.started_at AS startedAt, docker_incidents.resolved_at AS resolvedAt,
         docker_incidents.cause AS cause, docker_incidents.container_name AS monitorName, docker_incidents.container_id AS target, 'docker' AS source
       FROM docker_incidents
+      UNION ALL
+      SELECT -2000000-alert_rule_incidents.id AS id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.resolved_at AS resolvedAt,
+        alert_rule_incidents.cause AS cause, alert_rules.name AS monitorName, alert_rules.metric_key AS target, 'rule' AS source
+      FROM alert_rule_incidents JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
     ) ORDER BY startedAt DESC LIMIT 100
   `).all();
   res.json(incidents);
@@ -1365,7 +1495,9 @@ app.put("/api/snmp/devices/:id", requireAuth, async (req, res) => {
   res.json({ ok: true });
 });
 app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
-  const result = db.prepare("DELETE FROM snmp_devices WHERE id = ?").run(Number(req.params.id));
+  const id = Number(req.params.id);
+  db.prepare("DELETE FROM alert_rules WHERE target_type = 'snmp' AND target_id = ?").run(String(id));
+  const result = db.prepare("DELETE FROM snmp_devices WHERE id = ?").run(id);
   if (!result.changes) return res.status(404).json({ error: "SNMP device not found." });
   res.json({ ok: true });
 });
@@ -1421,6 +1553,7 @@ app.put("/api/docker/hosts/:id", requireAuth, async (req, res) => {
 app.delete("/api/docker/hosts/:id", requireAuth, (req, res) => {
   const id = Number(req.params.id);
   db.transaction(() => {
+    db.prepare("DELETE FROM alert_rules WHERE target_type = 'docker' AND target_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
     db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
     db.prepare("DELETE FROM docker_incidents WHERE host_id = ?").run(id);
     db.prepare("DELETE FROM docker_containers WHERE host_id = ?").run(id);
@@ -1439,6 +1572,44 @@ app.get("/api/docker/containers", requireAuth, (req, res) => {
       restartCount: item.restart_count, composeProject: item.compose_project, createdAt: item.created_at, lastSeenAt: item.last_seen_at
     };
   }));
+});
+app.get("/api/docker/containers/:id/details", requireAuth, (req, res) => {
+  const container = db.prepare("SELECT docker_containers.*, docker_hosts.name AS host_name FROM docker_containers JOIN docker_hosts ON docker_hosts.id = docker_containers.host_id WHERE docker_containers.container_id = ?").get(req.params.id);
+  if (!container) return res.status(404).json({ error: "Docker container not found." });
+  const metrics = db.prepare("SELECT status, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, message, polled_at AS polledAt FROM docker_metrics WHERE container_id = ? ORDER BY polled_at DESC LIMIT 100").all(container.container_id);
+  res.json({ container: { ...container, hostName: container.host_name }, metrics });
+});
+app.get("/api/network-map", requireAuth, (req, res) => {
+  const nodes = [];
+  const edges = [];
+  const subnetIds = new Set();
+  const addSubnet = (address, childId) => {
+    const match = String(address || "").match(/^(\d+\.\d+\.\d+)\.\d+$/);
+    if (!match) return;
+    const id = `subnet:${match[1]}`;
+    if (!subnetIds.has(id)) {
+      subnetIds.add(id);
+      nodes.push({ id, type: "subnet", name: `${match[1]}.0/24`, status: "up", detail: "Inferred local subnet" });
+    }
+    edges.push({ from: id, to: childId, type: "network" });
+  };
+  for (const device of db.prepare("SELECT id, name, host, status, sys_description FROM snmp_devices ORDER BY name").all()) {
+    const id = `snmp:${device.id}`;
+    nodes.push({ id, type: "snmp", name: device.name, status: device.status, detail: device.sys_description || device.host });
+    addSubnet(device.host, id);
+  }
+  for (const host of db.prepare("SELECT id, name, endpoint, status FROM docker_hosts ORDER BY name").all()) nodes.push({ id: `docker-host:${host.id}`, type: "docker-host", name: host.name, status: host.status, detail: host.endpoint });
+  for (const container of db.prepare("SELECT container_id, host_id, name, image, health FROM docker_containers WHERE state = 'running' ORDER BY name").all()) {
+    nodes.push({ id: `docker:${container.container_id}`, type: "docker", name: container.name, status: container.health === "unhealthy" ? "down" : "up", detail: container.image });
+    edges.push({ from: `docker-host:${container.host_id}`, to: `docker:${container.container_id}`, type: "contains" });
+  }
+  for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
+    const id = `monitor:${monitor.id}`;
+    nodes.push({ id, type: "monitor", name: monitor.name, status: monitor.status, detail: monitor.target });
+    const address = monitor.target.match(/(?:https?:\/\/)?(\d+\.\d+\.\d+\.\d+)/)?.[1];
+    addSubnet(address, id);
+  }
+  res.json({ nodes, edges });
 });
 app.post("/api/docker/refresh", requireAuth, async (req, res) => {
   try {

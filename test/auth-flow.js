@@ -74,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.13", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.14", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -136,9 +136,20 @@ async function waitForServer() {
     assert.equal(containers.length, 1);
     assert.equal(containers[0].hostName, "Test Docker");
     assert.equal(containers[0].status, "up");
+    assert.equal((await request(`/api/docker/containers/${encodeURIComponent(containers[0].id)}/details`)).status, 200);
+    const alertOptions = await (await request("/api/alert-rules/options")).json();
+    assert.equal(alertOptions.docker[0].metrics.some((metric) => metric.key === "restart_count"), true);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Test restart rule", targetType: "docker", targetId: containers[0].id, metricKey: "restart_count", operator: ">", threshold: "-1" }) })).status, 201);
+    const alertRules = await (await request("/api/alert-rules")).json();
+    assert.equal(alertRules[0].active, true);
+    assert.equal((await (await request("/api/incidents")).json()).some((incident) => incident.source === "rule"), true);
+    const networkMap = await (await request("/api/network-map")).json();
+    assert.equal(networkMap.nodes.some((node) => node.type === "docker"), true);
+    assert.equal(networkMap.edges.some((edge) => edge.type === "contains"), true);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);
     assert.equal((await (await request("/api/docker/containers")).json()).length, 1);
     assert.ok(dockerContainerListRequests.length >= 2);
+    assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();
     assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));

@@ -12,17 +12,22 @@ let snmpProfiles = [];
 let dockerContainers = [];
 let dockerHosts = [];
 let dockerStatus = { available: false };
+let alertRules = [];
+let alertRuleOptions = { snmp: [], docker: [] };
+let networkMap = { nodes: [], edges: [] };
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const snmp = name === "SNMP Devices";
-  document.getElementById("overviewPage").hidden = snmp;
-  document.getElementById("snmpPage").hidden = !snmp;
-  pageName.textContent = snmp ? "SNMP FLEET" : "OVERVIEW";
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage" };
+  for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
+  pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
-  document.querySelector(`[data-page="${snmp ? "SNMP Devices" : "Overview"}"]`)?.classList.add("active");
-  if (snmp) renderSnmpWorkspace();
+  document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
+  if (name === "SNMP Devices") renderSnmpWorkspace();
+  if (name === "Docker") renderDockerWorkspace();
+  if (name === "Alert Rules") renderAlertRules();
+  if (name === "Network Map") renderNetworkMap();
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -112,8 +117,15 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       return;
     }
     if (item.dataset.page === "Docker") {
-      showWorkspace("Overview");
-      document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+      showWorkspace("Docker");
+      return;
+    }
+    if (item.dataset.page === "Alert Rules") {
+      showWorkspace("Alert Rules");
+      return;
+    }
+    if (item.dataset.page === "Network Map") {
+      showWorkspace("Network Map");
       return;
     }
     if (!["Overview", "Monitors"].includes(item.dataset.page)) {
@@ -393,7 +405,7 @@ function incidentElement(incident) {
   icon.textContent = incident.resolvedAt ? "✓" : "!";
   const copy = document.createElement("div");
   const title = document.createElement("strong");
-  title.textContent = incident.resolvedAt ? `${incident.monitorName} recovered` : `${incident.monitorName} is down`;
+  title.textContent = incident.resolvedAt ? `${incident.monitorName} recovered` : incident.source === "rule" ? `${incident.monitorName} triggered` : `${incident.monitorName} is down`;
   const detail = document.createElement("p");
   detail.textContent = incident.cause || incident.target;
   const date = document.createElement("small");
@@ -638,9 +650,101 @@ function renderDockerFleet() {
 async function loadDockerFleet() {
   [dockerStatus, dockerHosts, dockerContainers] = await Promise.all([api("/api/docker/status"), api("/api/docker/hosts"), api("/api/docker/containers")]);
   renderDockerFleet();
+  renderDockerWorkspace();
   renderMonitors();
   updateDashboardHealth();
   renderSearchResults();
+}
+
+function metricCard(label, value, note, alerting = false) {
+  const card = document.createElement("article"); card.className = `metric-card ${alerting ? "alerting" : ""}`;
+  const top = document.createElement("div"); top.className = "metric-top";
+  const tag = document.createElement("span"); tag.className = "section-tag"; tag.textContent = note;
+  const title = document.createElement("p"); title.textContent = label;
+  const number = document.createElement("div"); number.className = "metric-value"; number.textContent = value;
+  top.append(tag); card.append(top, title, number); return card;
+}
+
+async function openDockerDetails(container) {
+  const data = await api(`/api/docker/containers/${encodeURIComponent(container.id)}/details`);
+  document.getElementById("dockerDetailsTitle").textContent = data.container.name;
+  const summary = document.getElementById("dockerDetailsSummary"); summary.replaceChildren();
+  for (const [label, value] of [["Host", data.container.hostName], ["Image", data.container.image], ["Health", data.container.health], ["Stack", data.container.compose_project || "--"], ["CPU", `${Number(data.container.cpu_percent || 0).toFixed(1)}%`], ["Memory", `${formatBytes(data.container.memory_bytes)} / ${formatBytes(data.container.memory_limit_bytes)}`], ["Restarts", data.container.restart_count], ["Last seen", formatDate(data.container.last_seen_at)]]) {
+    const card = document.createElement("div"); const small = document.createElement("small"); small.textContent = label; const strong = document.createElement("strong"); strong.textContent = value; card.append(small, strong); summary.append(card);
+  }
+  const history = document.getElementById("dockerDetailsHistory"); history.replaceChildren();
+  for (const metric of data.metrics) {
+    const row = document.createElement("div"); row.className = "history-row";
+    for (const value of [metric.status.toUpperCase(), `CPU ${metric.cpuPercent == null ? "--" : metric.cpuPercent.toFixed(1) + "%"}`, `RAM ${formatBytes(metric.memoryBytes)}`, formatDate(metric.polledAt)]) { const cell = document.createElement("span"); cell.textContent = value; row.append(cell); }
+    history.append(row);
+  }
+  document.getElementById("dockerDetailsModal").hidden = false;
+}
+
+function renderDockerWorkspace() {
+  const metrics = document.getElementById("dockerPageMetrics");
+  const list = document.getElementById("dockerPageContainers");
+  if (!metrics || !list) return;
+  metrics.replaceChildren(
+    metricCard("Docker hosts", dockerStatus.hostCount || 0, `${dockerStatus.onlineHosts || 0} online`),
+    metricCard("Active containers", dockerContainers.length, "running now"),
+    metricCard("Unhealthy", dockerStatus.unhealthy || 0, "needs attention", Boolean(dockerStatus.unhealthy)),
+    metricCard("Memory allocated", formatBytes(dockerContainers.reduce((sum, item) => sum + Number(item.memoryBytes || 0), 0)), "current usage")
+  );
+  list.replaceChildren();
+  for (const item of dockerContainers) {
+    const card = document.createElement("button"); card.className = `docker-detail-card ${item.status === "down" ? "down" : ""}`;
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = item.name; const status = document.createElement("span"); status.className = `status-label ${item.status === "up" ? "up" : "warn"}`; status.textContent = item.health.toUpperCase(); header.append(name, status);
+    const detail = document.createElement("small"); detail.textContent = `${item.hostName} · ${item.image}${item.composeProject ? ` · ${item.composeProject}` : ""}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `CPU ${item.cpuPercent == null ? "--" : item.cpuPercent.toFixed(1) + "%"} · RAM ${formatBytes(item.memoryBytes)} · Restarts ${item.restartCount}`;
+    card.append(header, detail, values); card.addEventListener("click", () => openDockerDetails(item)); list.append(card);
+  }
+}
+
+async function loadAlertRules() {
+  [alertRules, alertRuleOptions] = await Promise.all([api("/api/alert-rules"), api("/api/alert-rules/options")]);
+  renderAlertRules();
+}
+
+function renderAlertRules() {
+  const metrics = document.getElementById("alertRuleMetrics"); const list = document.getElementById("alertRuleList");
+  if (!metrics || !list) return;
+  const active = alertRules.filter((rule) => rule.active).length;
+  metrics.replaceChildren(metricCard("Configured rules", alertRules.length, "automatic triggers"), metricCard("Active alerts", active, "triggered now", active > 0), metricCard("SNMP rules", alertRules.filter((rule) => rule.targetType === "snmp").length, "profile telemetry"), metricCard("Docker rules", alertRules.filter((rule) => rule.targetType === "docker").length, "container metrics"));
+  list.replaceChildren();
+  for (const rule of alertRules) {
+    const row = document.createElement("article"); row.className = `rule-row ${rule.active ? "active" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = rule.name; const detail = document.createElement("small"); detail.textContent = `${rule.targetType.toUpperCase()} · ${rule.metricKey} ${rule.operator} ${rule.threshold} · Current ${rule.currentValue ?? "--"}`; copy.append(name, detail);
+    const state = document.createElement("span"); state.className = `status-label ${rule.active ? "warn" : "up"}`; state.textContent = rule.active ? "TRIGGERED" : "OK";
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete alert rule ${rule.name}?`)) { await api(`/api/alert-rules/${rule.id}`, { method: "DELETE" }); await Promise.all([loadAlertRules(), loadIncidents()]); } });
+    row.append(copy, state, remove); list.append(row);
+  }
+  if (!alertRules.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No variable alert rules yet."; list.append(empty); }
+}
+
+function updateAlertRuleTargets() {
+  const form = document.getElementById("alertRuleForm"); const type = form.elements.targetType.value; const select = form.elements.targetId; select.replaceChildren();
+  for (const target of alertRuleOptions[type] || []) { const option = document.createElement("option"); option.value = target.id; option.textContent = target.name; select.append(option); }
+  updateAlertRuleMetrics();
+}
+
+function updateAlertRuleMetrics() {
+  const form = document.getElementById("alertRuleForm"); const target = (alertRuleOptions[form.elements.targetType.value] || []).find((item) => String(item.id) === form.elements.targetId.value); const select = form.elements.metricKey; select.replaceChildren();
+  for (const metric of target?.metrics || []) { const option = document.createElement("option"); option.value = metric.key; option.textContent = `${metric.label} · ${metric.value ?? "--"}${metric.unit ? ` ${metric.unit}` : ""}`; select.append(option); }
+}
+
+function openAlertRule() { document.getElementById("alertRuleError").textContent = ""; updateAlertRuleTargets(); document.getElementById("alertRuleModal").hidden = false; }
+
+async function loadNetworkMap() { networkMap = await api("/api/network-map"); renderNetworkMap(); }
+
+function renderNetworkMap() {
+  const map = document.getElementById("topologyMap"); if (!map) return; map.replaceChildren();
+  for (const type of ["subnet", "snmp", "docker-host", "docker", "monitor"]) {
+    const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
+    const group = document.createElement("section"); group.className = "topology-group"; const title = document.createElement("h2"); title.textContent = type.replace("-", " "); const cards = document.createElement("div"); cards.className = "topology-nodes";
+    for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const name = document.createElement("strong"); name.textContent = node.name; const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(name, detail, links); cards.append(card); }
+    group.append(title, cards); map.append(group);
+  }
 }
 
 function formatBytes(value) {
@@ -1097,6 +1201,17 @@ document.getElementById("runFleetPoll").addEventListener("click", async () => {
 document.getElementById("viewAllSnmp").addEventListener("click", () => showWorkspace("SNMP Devices"));
 document.getElementById("openAllAlerts").addEventListener("click", openIncidents);
 document.getElementById("accountSnmpAdmin").addEventListener("click", () => { accountModal.hidden = true; showWorkspace("SNMP Devices"); });
+document.getElementById("addAlertRule").addEventListener("click", openAlertRule);
+document.getElementById("addAlertRuleInline").addEventListener("click", openAlertRule);
+document.querySelector("#alertRuleForm select[name=targetType]").addEventListener("change", updateAlertRuleTargets);
+document.getElementById("alertRuleTarget").addEventListener("change", updateAlertRuleMetrics);
+document.getElementById("alertRuleForm").addEventListener("submit", async (event) => {
+  event.preventDefault(); const form = event.currentTarget; const error = document.getElementById("alertRuleError"); error.textContent = "";
+  try { await api("/api/alert-rules", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("alertRuleModal").hidden = true; form.reset(); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Alert rule created", "The rule was evaluated immediately"); } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
+document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
+document.getElementById("refreshNetworkMap").addEventListener("click", loadNetworkMap);
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
@@ -1150,6 +1265,11 @@ loadGraph();
 loadSnmpDevices();
 loadSnmpProfiles();
 loadDockerFleet();
+loadAlertRules();
+loadNetworkMap();
+document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
+const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
+if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

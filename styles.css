@@ -247,6 +247,26 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .container small, .cpu { color: #999f9c; font-family: "DM Mono"; font-size: 6px; }
 .container-stack .container.down { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.05); }
 .container-metrics { display: flex !important; flex-direction: row; gap: 9px !important; }
+.docker-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+.docker-detail-card { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: rgba(255,255,255,.35); text-align: left; }
+.docker-detail-card:hover { border-color: #86a9c7; background: rgba(220,233,243,.45); }
+.docker-detail-card.down, .rule-row.active, .topology-node.down { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.06); }
+.docker-detail-card > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.docker-detail-card strong { font-size: 12px; }
+.docker-detail-card small, .docker-detail-card .container-metrics { color: #858e89; font-size: 10px; }
+.rule-list { display: grid; gap: 8px; }
+.rule-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 10px; padding: 13px; border: 1px solid var(--line); border-radius: 9px; }
+.rule-row > div { display: grid; gap: 4px; min-width: 0; }
+.rule-row strong { font-size: 12px; }
+.rule-row small { overflow-wrap: anywhere; color: #858e89; font-size: 10px; }
+.topology-map { display: grid; gap: 18px; min-height: 420px; }
+.topology-group { display: grid; gap: 9px; }
+.topology-group h2 { margin: 0; color: #78827d; font-family: "DM Mono"; font-size: 11px; text-transform: uppercase; }
+.topology-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
+.topology-node { display: grid; gap: 5px; padding: 13px; border: 1px solid var(--line); border-left: 3px solid #79b89a; border-radius: 8px; background: rgba(255,255,255,.32); }
+.topology-node strong { font-size: 12px; }
+.topology-node small { overflow: hidden; color: #858e89; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.topology-node span { color: #5e8c76; font-family: "DM Mono"; font-size: 9px; }
 .docker-unavailable { padding: 18px; border: 1px dashed var(--line); border-radius: 9px; color: #7d8581; font-size: 11px; line-height: 1.6; }
 .truenas-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .truenas-metric { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }

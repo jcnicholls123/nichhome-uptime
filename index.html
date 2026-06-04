@@ -20,6 +20,7 @@
 
       <nav class="main-nav" aria-label="Main navigation">
         <p class="nav-label">Workspace</p>
+        <button class="nav-item" data-page="Alert Rules"><span class="nav-icon">!</span>Alert Rules</button>
         <button class="nav-item active" data-page="Overview"><span class="nav-icon">⌁</span>Overview</button>
         <button class="nav-item" data-page="Monitors"><span class="nav-icon">◉</span>Monitors<span class="nav-count">0</span></button>
         <button class="nav-item" data-page="Incidents"><span class="nav-icon">△</span>Incidents<span class="nav-alert" id="incidentCount">0</span></button>
@@ -147,6 +148,20 @@
           <article class="panel snmp-profile-panel"><div class="panel-heading"><div><span class="section-tag">TELEMETRY PROFILES</span><h2>Profiles and templates</h2></div><button class="text-button" id="importTemplateInline">Import XML</button></div><div class="profile-list" id="snmpProfileList"></div></article>
           <article class="panel snmp-panel snmp-fleet-panel"><div class="panel-heading"><div><span class="section-tag accent">ALL DEVICES</span><h2>SNMP fleet</h2></div><button class="dark-button" id="runFleetPoll">Poll entire fleet</button></div><div class="snmp-device-list" id="snmpFleetDeviceList"></div></article>
         </section>
+      </div>
+      <div class="content" id="dockerPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / DOCKER FLEET</p><h1>Container intelligence</h1><p class="subhead">Hosts, stacks, resource usage, health, restart counts, and recent metrics.</p></div><div class="heading-actions"><button class="soft-button" id="dockerPageAddHost">Add Docker host</button><button class="command-button" id="dockerPageRefresh">Refresh fleet</button></div></section>
+        <section class="metric-grid" id="dockerPageMetrics"></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">ALL ACTIVE CONTAINERS</span><h2>Docker fleet</h2></div></div><div class="docker-detail-grid" id="dockerPageContainers"></div></section>
+      </div>
+      <div class="content" id="alertRulesPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / ALERT RULES</p><h1>Variable alerts</h1><p class="subhead">Create Zabbix-style threshold and state rules from SNMP telemetry or Docker metrics.</p></div><div class="heading-actions"><button class="command-button" id="addAlertRule">Create alert rule</button></div></section>
+        <section class="metric-grid" id="alertRuleMetrics"></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag accent">TRIGGERS</span><h2>Configured alert rules</h2></div><button class="soft-button" id="addAlertRuleInline">New rule</button></div><div class="rule-list" id="alertRuleList"></div></section>
+      </div>
+      <div class="content" id="networkMapPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / NETWORK MAP</p><h1>Infrastructure topology</h1><p class="subhead">An inferred live map from monitored subnets, SNMP devices, Docker hosts, containers, and services.</p></div><div class="heading-actions"><button class="command-button" id="refreshNetworkMap">Refresh map</button></div></section>
+        <section class="panel"><div class="topology-map" id="topologyMap"></div></section>
       </div>
     </main>
   </div>
@@ -338,6 +353,15 @@
   </div>
 
   <div class="toast" id="toast"><span>✓</span><div><strong>Monitor created</strong><small>Initial heartbeat scheduled</small></div></div>
+  <div class="modal-backdrop" id="alertRuleModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">VARIABLE ALERT</span><h2>Create alert rule</h2></div><button class="modal-close" data-close="alertRuleModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="alertRuleForm"><label>Rule name<input name="name" required minlength="2" maxlength="100" placeholder="Main pool must stay online"></label><label>Source<select name="targetType"><option value="snmp">SNMP device metric</option><option value="docker">Docker container metric</option></select></label><label>Target<select name="targetId" id="alertRuleTarget"></select></label><label>Metric<select name="metricKey" id="alertRuleMetric"></select></label><div class="form-columns"><label>Condition<select name="operator"><option value=">">Greater than</option><option value=">=">Greater than or equal</option><option value="<">Less than</option><option value="<=">Less than or equal</option><option value="==">Equals</option><option value="!=" selected>Does not equal</option><option value="contains">Contains</option><option value="not_contains">Does not contain</option></select></label><label>Threshold<input name="threshold" required placeholder="ONLINE or 90"></label></div><p class="form-help">SNMP choices come from the latest profile telemetry. Example: choose a pool-health metric and alert when it does not equal ONLINE.</p><button class="command-button" type="submit">Create and evaluate rule</button><p class="modal-error" id="alertRuleError"></p></form>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="dockerDetailsModal" hidden>
+    <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true"><div class="modal-heading"><div><span class="section-tag blue">CONTAINER DETAILS</span><h2 id="dockerDetailsTitle">Container</h2></div><button class="modal-close" data-close="dockerDetailsModal" aria-label="Close">x</button></div><div class="snmp-details-summary" id="dockerDetailsSummary"></div><h3 class="modal-subtitle">Recent metrics</h3><div class="history-list" id="dockerDetailsHistory"></div></section>
+  </div>
   <div class="modal-backdrop" id="snmpWalkModal" hidden>
     <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true">
       <div class="modal-heading"><div><span class="section-tag accent">ADMIN TOOL</span><h2>SNMP walk</h2></div><button class="modal-close" data-close="snmpWalkModal" aria-label="Close">x</button></div>

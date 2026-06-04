@@ -13,6 +13,18 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.14] - 2026-06-04
+
+### Added
+
+- Dedicated Docker fleet workspace with resource summaries, stacks, container
+  details, and recent CPU/RAM metric history
+- Configurable SNMP and Docker variable alert rules with numeric and text
+  operators, automatic recovery, incidents, and Discord notifications
+- Derived per-filesystem TrueNAS storage usage percentages for threshold rules
+- Inferred network topology workspace covering local subnets, SNMP devices,
+  Docker hosts and containers, and monitored services
+
 ## [1.0.0-beta.13] - 2026-06-04
 
 ### Added

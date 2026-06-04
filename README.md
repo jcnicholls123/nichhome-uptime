@@ -23,6 +23,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   monitor import
 - Monitor editing, pause/resume, and heartbeat history
 - Incident tracking and Discord down/recovery alerts
+- Configurable variable alert rules for SNMP values and Docker CPU, memory,
+  restart, and health metrics
 - SNMP v2c and v3 device status, identity, uptime, and background polling
 - Dedicated SNMP fleet workspace with active alerts and fleet health
 - Assignable TrueNAS, UniFi, standard, and imported telemetry profiles
@@ -41,6 +43,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   Docker API endpoint
 - Active-container Docker fleet tracking with duplicate-host protection and
   automatic cleanup of stale historical fleet records
+- Dedicated Docker fleet details workspace and inferred infrastructure network
+  topology map
 - UniFi AP client totals and radio/VAP telemetry plus gateway WAN/LAN traffic,
   speed, error, and discard counters
 

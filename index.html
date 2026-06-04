@@ -33,6 +33,7 @@
         <p class="nav-label">Connect</p>
         <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications<span class="nav-pill">SOON</span></button>
         <button class="nav-item" data-page="Discord"><span class="nav-icon discord-icon">#</span>Discord<span class="status-dot" id="discordDot"></span></button>
+        <button class="nav-item" id="mobileAccountButton"><span class="nav-icon">◎</span>Account &amp; security</button>
       </nav>
 
       <div class="sidebar-footer">
@@ -40,14 +41,16 @@
         <div><strong>All systems nominal</strong><small><span id="appVersion">Loading version</span> · Beta channel</small></div>
       </div>
     </aside>
+    <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Close navigation" hidden></button>
 
     <main>
       <header class="topbar">
-        <div class="mobile-brand">NH</div>
+        <button class="mobile-menu-button" id="mobileMenuButton" aria-label="Open navigation" aria-expanded="false"><span></span><span></span><span></span></button>
         <div class="search">
-          <span>⌕</span>
-          <input type="search" placeholder="Search monitors, devices, containers..." aria-label="Search">
+          <span aria-hidden="true">⌕</span>
+          <input id="globalSearch" type="search" placeholder="Search monitors and SNMP devices..." aria-label="Search monitors and SNMP devices">
           <kbd>⌘ K</kbd>
+          <div class="search-results" id="searchResults" hidden></div>
         </div>
         <div class="top-actions">
           <button class="icon-button" id="incidentButton" aria-label="Incidents">♢<span class="notification-dot"></span></button>
@@ -140,7 +143,9 @@
         <button class="soft-button" id="mfaAction">Configure</button>
       </div>
       <div class="mfa-setup" id="mfaSetup" hidden>
-        <p>Add this secret to Google Authenticator, Microsoft Authenticator, 1Password, or another TOTP app.</p>
+        <p>Scan this QR code with Google Authenticator, Microsoft Authenticator, 1Password, or another TOTP app.</p>
+        <img class="mfa-qr" id="mfaQr" alt="Authenticator setup QR code">
+        <p>Cannot scan it? Enter this setup key manually:</p>
         <code id="mfaSecret"></code>
         <a id="mfaUri" href="#">Open authenticator link</a>
         <label>Enter the six-digit code<input id="mfaCode" inputmode="numeric" maxlength="6" placeholder="000000"></label>

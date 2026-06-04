@@ -9,10 +9,25 @@ include breaking changes while the monitoring engine and integrations mature.
 
 ### Planned
 
-- SNMP v2c/v3 polling and device discovery
+- SNMPv3 polling and broader device discovery
 - Docker Engine integration
-- Historical uptime graphs and reporting ranges
+- Additional historical reporting ranges
 - Public status pages
+
+## [1.0.0-beta.6] - 2026-06-04
+
+### Added
+
+- Scannable QR codes for authenticator-app MFA setup
+- Mobile off-canvas navigation with a burger menu and accessible account
+  settings
+
+### Changed
+
+- Mobile search is now a full-width usable field and filters both monitors and
+  SNMP devices
+- Increased mobile dashboard, navigation, card, form, and modal text sizes
+- Improved mobile monitor rows and modal action buttons
 
 ## [1.0.0-beta.5] - 2026-06-04
 
@@ -114,7 +129,8 @@ include breaking changes while the monitoring engine and integrations mature.
 - Live SNMP, Docker, Discord, incident, and public status-page integrations are
   not yet implemented
 
-[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.5...HEAD
+[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.6...HEAD
+[1.0.0-beta.6]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.6
 [1.0.0-beta.5]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.3

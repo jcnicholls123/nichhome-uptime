@@ -15,8 +15,9 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Guided first-run administrator setup
 - SQLite persistence in `/data`
 - Secure password hashing and cookie-backed sessions
-- Optional authenticator-app TOTP MFA
+- Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
+- Mobile navigation and search across monitors and SNMP devices
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
 - Monitor editing, pause/resume, and heartbeat history
 - Incident tracking and Discord down/recovery alerts

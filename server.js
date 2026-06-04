@@ -7,6 +7,7 @@ const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
 const snmp = require("net-snmp");
+const QRCode = require("qrcode");
 const packageInfo = require("./package.json");
 const execFileAsync = promisify(execFile);
 
@@ -557,12 +558,14 @@ app.post("/api/logout", (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/me", requireAuth, (req, res) => res.json({ username: req.user.username, mfaEnabled: Boolean(req.user.mfa_enabled) }));
-app.post("/api/mfa/start", requireAuth, (req, res) => {
+app.post("/api/mfa/start", requireAuth, async (req, res) => {
   if (req.user.mfa_enabled) return res.status(409).json({ error: "MFA is already enabled." });
   const secret = base32Encode(crypto.randomBytes(20));
   db.prepare("UPDATE users SET mfa_secret = ?, mfa_enabled = 0 WHERE id = ?").run(secret, req.user.id);
   const label = encodeURIComponent(`NichHome Uptime:${req.user.username}`);
-  res.json({ secret, uri: `otpauth://totp/${label}?secret=${secret}&issuer=NichHome%20Uptime&digits=6&period=30` });
+  const uri = `otpauth://totp/${label}?secret=${secret}&issuer=NichHome%20Uptime&digits=6&period=30`;
+  const qr = await QRCode.toDataURL(uri, { errorCorrectionLevel: "M", margin: 1, width: 320 });
+  res.json({ secret, uri, qr });
 });
 app.post("/api/mfa/confirm", requireAuth, (req, res) => {
   const user = db.prepare("SELECT mfa_secret FROM users WHERE id = ?").get(req.user.id);

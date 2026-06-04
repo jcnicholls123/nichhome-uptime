@@ -8,6 +8,53 @@ let currentUser;
 let monitors = [];
 let incidents = [];
 let snmpDevices = [];
+let searchFilter = "";
+
+const sidebar = document.querySelector(".sidebar");
+const sidebarBackdrop = document.getElementById("sidebarBackdrop");
+const mobileMenuButton = document.getElementById("mobileMenuButton");
+const globalSearch = document.getElementById("globalSearch");
+
+function setMobileMenu(open) {
+  sidebar.classList.toggle("open", open);
+  sidebarBackdrop.hidden = !open;
+  mobileMenuButton.setAttribute("aria-expanded", String(open));
+  document.body.classList.toggle("menu-open", open);
+}
+
+function renderSearchResults() {
+  const results = document.getElementById("searchResults");
+  results.replaceChildren();
+  results.hidden = !searchFilter;
+  if (!searchFilter) return;
+  const query = searchFilter.toLowerCase();
+  const matches = [
+    ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
+    ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) }))
+  ].slice(0, 8);
+  if (!matches.length) {
+    const empty = document.createElement("p");
+    empty.textContent = "No monitors or SNMP devices found.";
+    results.append(empty);
+    return;
+  }
+  for (const match of matches) {
+    const button = document.createElement("button");
+    button.type = "button";
+    const copy = document.createElement("span");
+    const name = document.createElement("strong"); name.textContent = match.name;
+    const detail = document.createElement("small"); detail.textContent = match.detail;
+    copy.append(name, detail);
+    const kind = document.createElement("b"); kind.textContent = match.kind;
+    button.append(copy, kind);
+    button.addEventListener("click", async () => {
+      await match.open();
+      globalSearch.value = "";
+      globalSearch.dispatchEvent(new Event("input"));
+    });
+    results.append(button);
+  }
+}
 
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
@@ -30,6 +77,11 @@ function showToast(title, message) {
 
 document.querySelectorAll(".nav-item").forEach((item) => {
   item.addEventListener("click", () => {
+    setMobileMenu(false);
+    if (item.id === "mobileAccountButton") {
+      accountModal.hidden = false;
+      return;
+    }
     if (item.dataset.page === "Discord") {
       openDiscord();
       return;
@@ -60,7 +112,14 @@ monitorModal.addEventListener("click", (event) => { if (event.target === monitor
 document.querySelector("#monitorForm select[name=type]").addEventListener("change", (event) => {
   document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : event.target.value === "ping" ? "192.168.1.10" : "https://home.example.com";
 });
-document.querySelector(".search input").addEventListener("input", (event) => renderMonitors(event.target.value));
+mobileMenuButton.addEventListener("click", () => setMobileMenu(!sidebar.classList.contains("open")));
+sidebarBackdrop.addEventListener("click", () => setMobileMenu(false));
+globalSearch.addEventListener("input", (event) => {
+  searchFilter = event.target.value.trim();
+  renderMonitors();
+  renderSnmpDevices();
+  renderSearchResults();
+});
 document.getElementById("timeRangeButton").addEventListener("click", () => showToast("Last 24 hours", "More reporting ranges are coming soon"));
 
 refreshButton.addEventListener("click", async () => {
@@ -78,7 +137,14 @@ refreshButton.addEventListener("click", async () => {
 document.addEventListener("keydown", (event) => {
   if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
     event.preventDefault();
-    document.querySelector(".search input").focus();
+    globalSearch.focus();
+  }
+  if (event.key === "Escape") {
+    setMobileMenu(false);
+    if (document.activeElement === globalSearch && globalSearch.value) {
+      globalSearch.value = "";
+      globalSearch.dispatchEvent(new Event("input"));
+    }
   }
 });
 
@@ -99,9 +165,9 @@ async function loadVersion() {
   document.getElementById("appVersion").textContent = `v${release.version}`;
 }
 
-function renderMonitors(filter = "") {
+function renderMonitors() {
   monitorList.replaceChildren();
-  const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type}`.toLowerCase().includes(filter.toLowerCase()));
+  const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   if (!visible.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
@@ -179,6 +245,7 @@ async function loadMonitors() {
   document.getElementById("totalMonitorCopy").textContent = `of ${monitors.length} total`;
   document.querySelector(".progress-line:not(.warning) span").style.width = monitors.length ? `${(up.length / monitors.length) * 100}%` : "0%";
   document.querySelector(".progress-line.warning span").style.width = monitors.length ? `${(down.length / monitors.length) * 100}%` : "0%";
+  renderSearchResults();
 }
 
 function formatDate(value) {
@@ -266,14 +333,15 @@ async function loadGraph() {
 function renderSnmpDevices() {
   const list = document.getElementById("snmpDeviceList");
   list.replaceChildren();
-  if (!snmpDevices.length) {
+  const visible = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.sysDescription || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
+  if (!visible.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = "Add an SNMP v2c device to begin polling.";
+    empty.textContent = snmpDevices.length ? "No SNMP devices match your search." : "Add an SNMP v2c device to begin polling.";
     list.append(empty);
     return;
   }
-  for (const device of snmpDevices) {
+  for (const device of visible) {
     const card = document.createElement("article");
     card.className = "snmp-device-card";
     const header = document.createElement("header");
@@ -309,6 +377,7 @@ function renderSnmpDevices() {
 async function loadSnmpDevices() {
   snmpDevices = await api("/api/snmp/devices");
   renderSnmpDevices();
+  renderSearchResults();
 }
 
 function formatBytes(value) {
@@ -506,6 +575,7 @@ document.getElementById("mfaAction").addEventListener("click", async () => {
     const setup = await api("/api/mfa/start", { method: "POST", body: "{}" });
     document.getElementById("mfaSecret").textContent = setup.secret;
     document.getElementById("mfaUri").href = setup.uri;
+    document.getElementById("mfaQr").src = setup.qr;
     document.getElementById("mfaSetup").hidden = false;
   }
 });

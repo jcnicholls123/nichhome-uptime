@@ -13,6 +13,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.12] - 2026-06-04
+
+### Fixed
+
+- Docker fleet polling now tracks active containers only instead of importing
+  every historical exited container from the Docker daemon
+- Existing installations automatically remove legacy unassigned containers,
+  duplicate Docker hosts, orphaned metrics, and stale container records
+- Duplicate socket and HTTP/HTTPS Docker daemon registrations are rejected
+- Repeated Docker fleet refreshes no longer increase the container count
+
+### Changed
+
+- Docker fleet totals now focus on configured hosts, active containers,
+  healthy containers, and unhealthy containers
+
 ## [1.0.0-beta.11] - 2026-06-04
 
 ### Added

@@ -609,14 +609,14 @@ function renderDockerFleet() {
     list.append(message);
     return;
   }
-  for (const [label, value] of [["Total", dockerStatus.total], ["Running", dockerStatus.running], ["Unhealthy", dockerStatus.unhealthy], ["Stopped", dockerStatus.stopped]]) {
+  for (const [label, value] of [["Docker hosts", dockerStatus.hostCount], ["Active containers", dockerStatus.total], ["Healthy", dockerStatus.running], ["Unhealthy", dockerStatus.unhealthy]]) {
     const item = document.createElement("div");
     const strong = document.createElement("strong"); strong.textContent = value;
     const span = document.createElement("span"); span.textContent = label;
     item.append(strong, span); summary.append(item);
   }
   if (!dockerContainers.length) {
-    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Docker Engine connected, but no containers were found."; list.append(empty);
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Docker Engine connected, but no active containers were found."; list.append(empty);
     return;
   }
   for (const item of dockerContainers) {

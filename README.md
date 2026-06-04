@@ -39,6 +39,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   count, uptime history, incidents, and Discord alerts
 - Configurable Docker hosts using a mounted socket path or reachable HTTP/HTTPS
   Docker API endpoint
+- Active-container Docker fleet tracking with duplicate-host protection and
+  automatic cleanup of stale historical fleet records
 - UniFi AP client totals and radio/VAP telemetry plus gateway WAN/LAN traffic,
   speed, error, and discard counters
 

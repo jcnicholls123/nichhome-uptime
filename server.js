@@ -229,6 +229,31 @@ ensureColumn("docker_containers", "host_id", "INTEGER");
 ensureColumn("docker_containers", "raw_container_id", "TEXT");
 ensureColumn("docker_incidents", "host_id", "INTEGER");
 
+function repairDockerFleetData() {
+  db.transaction(() => {
+    db.prepare("UPDATE docker_hosts SET endpoint = RTRIM(endpoint, '/') WHERE connection_type IN ('http', 'https')").run();
+    const duplicateHosts = db.prepare(`
+      SELECT id FROM docker_hosts
+      WHERE id NOT IN (SELECT MIN(id) FROM docker_hosts GROUP BY connection_type, endpoint)
+    `).all();
+    for (const { id } of duplicateHosts) {
+      db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
+      db.prepare("DELETE FROM docker_incidents WHERE host_id = ?").run(id);
+      db.prepare("DELETE FROM docker_containers WHERE host_id = ?").run(id);
+      db.prepare("DELETE FROM docker_hosts WHERE id = ?").run(id);
+    }
+
+    db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id IS NULL)").run();
+    db.prepare("DELETE FROM docker_incidents WHERE host_id IS NULL AND container_id NOT LIKE 'host:%'").run();
+    db.prepare("DELETE FROM docker_containers WHERE host_id IS NULL").run();
+    db.prepare("DELETE FROM docker_metrics WHERE container_id NOT IN (SELECT container_id FROM docker_containers)").run();
+    db.prepare("DELETE FROM docker_incidents WHERE host_id IS NOT NULL AND host_id NOT IN (SELECT id FROM docker_hosts)").run();
+  })();
+  db.exec("CREATE UNIQUE INDEX IF NOT EXISTS docker_hosts_connection_endpoint ON docker_hosts(connection_type, endpoint)");
+}
+
+repairDockerFleetData();
+
 const builtInSnmpProfiles = [
   ["Auto detect", "auto", "Automatically use the best built-in profile for the device."],
   ["Standard SNMP", "standard", "System identity, uptime, and interface health."],
@@ -242,17 +267,6 @@ const insertBuiltInProfile = db.prepare("INSERT INTO snmp_profiles (name, slug, 
 for (const profile of builtInSnmpProfiles) insertBuiltInProfile.run(...profile);
 if (fs.existsSync(DOCKER_SOCKET) && !db.prepare("SELECT 1 FROM docker_hosts WHERE endpoint = ?").get(DOCKER_SOCKET)) {
   db.prepare("INSERT INTO docker_hosts (name, connection_type, endpoint) VALUES ('Local Docker Engine', 'socket', ?)").run(DOCKER_SOCKET);
-}
-const localDockerHost = db.prepare("SELECT id FROM docker_hosts WHERE connection_type = 'socket' AND endpoint = ?").get(DOCKER_SOCKET);
-if (localDockerHost) {
-  db.transaction(() => {
-    for (const row of db.prepare("SELECT container_id FROM docker_containers WHERE host_id IS NULL").all()) {
-      const newId = `${localDockerHost.id}:${row.container_id}`;
-      db.prepare("UPDATE docker_metrics SET container_id = ? WHERE container_id = ?").run(newId, row.container_id);
-      db.prepare("UPDATE docker_incidents SET container_id = ?, host_id = ? WHERE container_id = ?").run(newId, localDockerHost.id, row.container_id);
-      db.prepare("UPDATE docker_containers SET container_id = ?, host_id = ?, raw_container_id = ? WHERE container_id = ?").run(newId, localDockerHost.id, row.container_id, row.container_id);
-    }
-  })();
 }
 
 const staticDir = __dirname;
@@ -803,7 +817,7 @@ let dockerLastPolledAt = null;
 function validateDockerHost(input) {
   const name = String(input.name || "").trim();
   const connectionType = String(input.connectionType || "socket");
-  const endpoint = String(input.endpoint || "").trim();
+  let endpoint = String(input.endpoint || "").trim();
   const tlsVerify = input.tlsVerify !== false;
   if (name.length < 2 || name.length > 80) throw new Error("Docker host name must be between 2 and 80 characters.");
   if (!["socket", "http", "https"].includes(connectionType)) throw new Error("Select a valid Docker connection type.");
@@ -812,6 +826,7 @@ function validateDockerHost(input) {
     const url = new URL(endpoint);
     if (url.protocol !== `${connectionType}:`) throw new Error(`Docker endpoint must begin with ${connectionType}://`);
     if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Enter only the Docker daemon base URL, without credentials or a path.");
+    endpoint = url.origin;
   }
   return { name, connectionType, endpoint, tlsVerify };
 }
@@ -860,7 +875,7 @@ async function pollDockerHost(hostOrId) {
   let containers;
   try {
     await dockerRequest(host, "/_ping");
-    containers = await dockerRequest(host, "/containers/json?all=1");
+    containers = await dockerRequest(host, "/containers/json");
   } catch (error) {
     db.prepare("UPDATE docker_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
     if (host.status !== "down") {
@@ -898,7 +913,7 @@ async function pollDockerHost(hostOrId) {
       db.prepare(`
         INSERT INTO docker_containers (container_id, host_id, raw_container_id, name, image, state, status_text, health, cpu_percent, memory_bytes, memory_limit_bytes, restart_count, compose_project, created_at, last_seen_at)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        ON CONFLICT(container_id) DO UPDATE SET name=excluded.name, image=excluded.image, state=excluded.state, status_text=excluded.status_text,
+        ON CONFLICT(container_id) DO UPDATE SET host_id=excluded.host_id, raw_container_id=excluded.raw_container_id, name=excluded.name, image=excluded.image, state=excluded.state, status_text=excluded.status_text,
           health=excluded.health, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, memory_limit_bytes=excluded.memory_limit_bytes,
           restart_count=excluded.restart_count, compose_project=excluded.compose_project, created_at=excluded.created_at, last_seen_at=CURRENT_TIMESTAMP
       `).run(id, host.id, rawId, name, container.Image || "", state, container.Status || "", health, cpuPercent, memoryBytes, memoryLimitBytes, Number(inspect?.RestartCount || 0), container.Labels?.["com.docker.compose.project"] || "", container.Created || null);
@@ -919,6 +934,7 @@ async function pollDockerHost(hostOrId) {
   db.transaction(() => {
     for (const { container_id } of stale) {
       db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(container_id);
+      db.prepare("DELETE FROM docker_metrics WHERE container_id = ?").run(container_id);
       db.prepare("DELETE FROM docker_containers WHERE container_id = ?").run(container_id);
     }
   })();
@@ -1376,6 +1392,9 @@ app.post("/api/docker/hosts/test", requireAuth, async (req, res) => {
 app.post("/api/docker/hosts", requireAuth, async (req, res) => {
   let host;
   try { host = validateDockerHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM docker_hosts WHERE connection_type = ? AND endpoint = ?").get(host.connectionType, host.endpoint)) {
+    return res.status(409).json({ error: "That Docker daemon is already configured." });
+  }
   const result = db.prepare("INSERT INTO docker_hosts (name, connection_type, endpoint, tls_verify) VALUES (?, ?, ?, ?)").run(host.name, host.connectionType, host.endpoint, host.tlsVerify ? 1 : 0);
   const poll = await pollDockerHost(Number(result.lastInsertRowid));
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), status: poll.available ? "up" : "down", error: poll.error });
@@ -1385,6 +1404,9 @@ app.put("/api/docker/hosts/:id", requireAuth, async (req, res) => {
   if (!db.prepare("SELECT 1 FROM docker_hosts WHERE id = ?").get(id)) return res.status(404).json({ error: "Docker host not found." });
   let host;
   try { host = validateDockerHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM docker_hosts WHERE connection_type = ? AND endpoint = ? AND id != ?").get(host.connectionType, host.endpoint, id)) {
+    return res.status(409).json({ error: "That Docker daemon is already configured." });
+  }
   const enabled = req.body.enabled === false ? 0 : 1;
   db.prepare("UPDATE docker_hosts SET name = ?, connection_type = ?, endpoint = ?, tls_verify = ?, enabled = ? WHERE id = ?").run(host.name, host.connectionType, host.endpoint, host.tlsVerify ? 1 : 0, enabled, id);
   if (enabled) await pollDockerHost(id);

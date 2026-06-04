@@ -16,11 +16,19 @@ const server = spawn(process.execPath, ["server.js"], {
 });
 let cookie = "";
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const dockerContainerListRequests = [];
 const dockerServer = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/_ping") return res.end("OK");
   if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
-  if (req.url === "/containers/json?all=1") return res.end(JSON.stringify([{ Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} }]));
+  if (req.url === "/containers/json") {
+    dockerContainerListRequests.push(req.url);
+    return res.end(JSON.stringify([{ Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} }]));
+  }
+  if (req.url === "/containers/json?all=1") return res.end(JSON.stringify([
+    { Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} },
+    { Id: "old123", Names: ["/old-container"], Image: "alpine:latest", State: "exited", Status: "Exited", Created: 1, Labels: {} }
+  ]));
   if (req.url === "/containers/abc123/json") return res.end(JSON.stringify({ State: { Status: "running", Health: { Status: "healthy" } }, RestartCount: 0 }));
   if (req.url === "/containers/abc123/stats?stream=false") return res.end(JSON.stringify({ cpu_stats: { cpu_usage: { total_usage: 10 }, system_cpu_usage: 100, online_cpus: 1 }, precpu_stats: { cpu_usage: { total_usage: 5 }, system_cpu_usage: 50 }, memory_stats: { usage: 1024, limit: 2048 } }));
   res.statusCode = 404; res.end(JSON.stringify({ message: "not found" }));
@@ -62,7 +70,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.11", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.12", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -113,13 +121,19 @@ async function waitForServer() {
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 400);
     assert.equal((await request("/api/docker/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Docker", connectionType: "http", endpoint: `http://127.0.0.1:${dockerPort}` }) })).status, 200);
     assert.equal((await request("/api/docker/hosts", { method: "POST", body: JSON.stringify({ name: "Test Docker", connectionType: "http", endpoint: `http://127.0.0.1:${dockerPort}` }) })).status, 201);
+    assert.equal((await request("/api/docker/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Docker", connectionType: "http", endpoint: `http://127.0.0.1:${dockerPort}/` }) })).status, 409);
     const dockerHosts = await (await request("/api/docker/hosts")).json();
+    assert.equal(dockerHosts.length, 1);
     assert.equal(dockerHosts[0].status, "up");
     const connectedDockerStatus = await (await request("/api/docker/status")).json();
     assert.equal(connectedDockerStatus.available, true);
     const containers = await (await request("/api/docker/containers")).json();
+    assert.equal(containers.length, 1);
     assert.equal(containers[0].hostName, "Test Docker");
     assert.equal(containers[0].status, "up");
+    assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);
+    assert.equal((await (await request("/api/docker/containers")).json()).length, 1);
+    assert.ok(dockerContainerListRequests.length >= 2);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();
     assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));

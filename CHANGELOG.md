@@ -13,6 +13,15 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.17] - 2026-06-04
+
+### Fixed
+
+- Ping monitors now parse the actual ICMP reply latency from the OS ping output
+  instead of timing the full command execution overhead
+- The network map now links monitors directly to matching SNMP or Docker host
+  IPs before falling back to inferred `/24` subnet groups
+
 ## [1.0.0-beta.16] - 2026-06-04
 
 ### Added

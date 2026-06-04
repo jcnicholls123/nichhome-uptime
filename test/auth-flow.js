@@ -74,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.16", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.17", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -115,6 +115,7 @@ async function waitForServer() {
     const pingMonitors = await (await request("/api/monitors")).json();
     assert.equal(pingMonitors[0].type, "ping");
     assert.equal(pingMonitors[0].status, "up");
+    assert.ok(pingMonitors[0].responseMs <= 1);
     assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Offline service", type: "tcp", target: "127.0.0.1:1", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     assert.equal((await (await request("/api/incidents")).json()).length, 1);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
@@ -149,6 +150,7 @@ async function waitForServer() {
     const networkMap = await (await request("/api/network-map")).json();
     assert.equal(networkMap.nodes.some((node) => node.type === "docker"), true);
     assert.equal(networkMap.edges.some((edge) => edge.type === "contains"), true);
+    assert.equal(networkMap.edges.some((edge) => edge.type === "monitors"), true);
     const mapNodeResponse = await request("/api/network-map/nodes", { method: "POST", body: JSON.stringify({ name: "Test site", nodeType: "site", detail: "Manual test node", status: "up", x: 25, y: 75 }) });
     assert.equal(mapNodeResponse.status, 201);
     const mapNode = await mapNodeResponse.json();

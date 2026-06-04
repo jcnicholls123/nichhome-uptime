@@ -1173,8 +1173,15 @@ async function checkPing(target, timeoutSeconds) {
   const args = process.platform === "win32"
     ? ["-n", "1", "-w", String(timeoutSeconds * 1000), host]
     : ["-c", "1", "-W", String(timeoutSeconds), host];
-  await execFileAsync("ping", args, { timeout: (timeoutSeconds + 2) * 1000 });
-  return Date.now() - started;
+  const { stdout, stderr } = await execFileAsync("ping", args, { timeout: (timeoutSeconds + 2) * 1000 });
+  return parsePingLatency(`${stdout}\n${stderr}`) ?? Date.now() - started;
+}
+
+function parsePingLatency(output) {
+  const direct = String(output).match(/time[=<]\s*(\d+(?:[.,]\d+)?)\s*ms/i);
+  if (direct) return String(output).match(/time<\s*1\s*ms/i) ? 0.5 : Number(direct[1].replace(",", "."));
+  const summary = String(output).match(/(?:avg|average)[^=\d]*(?:=|,)\s*(?:\d+(?:[.,]\d+)?\s*[/,]\s*){1,2}(\d+(?:[.,]\d+)?)/i);
+  return summary ? Number(summary[1].replace(",", ".")) : null;
 }
 
 async function runMonitor(id) {
@@ -1733,6 +1740,16 @@ app.get("/api/network-map", requireAuth, (req, res) => {
   const nodes = [];
   const edges = [];
   const subnetIds = new Set();
+  const hostLinks = new Map();
+  const extractIpv4 = (value) => String(value || "").match(/(\d+\.\d+\.\d+\.\d+)/)?.[1] || null;
+  const rememberHost = (value, nodeId) => {
+    const address = extractIpv4(value);
+    if (address) hostLinks.set(address, nodeId);
+    return address;
+  };
+  const addEdge = (from, to, type = "network") => {
+    if (from && to && from !== to && !edges.some((edge) => edge.from === from && edge.to === to && edge.type === type)) edges.push({ from, to, type });
+  };
   const addSubnet = (address, childId) => {
     const match = String(address || "").match(/^(\d+\.\d+\.\d+)\.\d+$/);
     if (!match) return;
@@ -1741,23 +1758,28 @@ app.get("/api/network-map", requireAuth, (req, res) => {
       subnetIds.add(id);
       nodes.push({ id, type: "subnet", name: `${match[1]}.0/24`, status: "up", detail: "Inferred local subnet" });
     }
-    edges.push({ from: id, to: childId, type: "network" });
+    addEdge(id, childId);
   };
   for (const device of db.prepare("SELECT id, name, host, status, sys_description FROM snmp_devices ORDER BY name").all()) {
     const id = `snmp:${device.id}`;
     nodes.push({ id, type: "snmp", name: device.name, status: device.status, detail: device.sys_description || device.host });
-    addSubnet(device.host, id);
+    addSubnet(rememberHost(device.host, id), id);
   }
-  for (const host of db.prepare("SELECT id, name, endpoint, status FROM docker_hosts ORDER BY name").all()) nodes.push({ id: `docker-host:${host.id}`, type: "docker-host", name: host.name, status: host.status, detail: host.endpoint });
+  for (const host of db.prepare("SELECT id, name, endpoint, status FROM docker_hosts ORDER BY name").all()) {
+    const id = `docker-host:${host.id}`;
+    nodes.push({ id, type: "docker-host", name: host.name, status: host.status, detail: host.endpoint });
+    addSubnet(rememberHost(host.endpoint, id), id);
+  }
   for (const container of db.prepare("SELECT container_id, host_id, name, image, health FROM docker_containers WHERE state = 'running' ORDER BY name").all()) {
     nodes.push({ id: `docker:${container.container_id}`, type: "docker", name: container.name, status: container.health === "unhealthy" ? "down" : "up", detail: container.image });
-    edges.push({ from: `docker-host:${container.host_id}`, to: `docker:${container.container_id}`, type: "contains" });
+    addEdge(`docker-host:${container.host_id}`, `docker:${container.container_id}`, "contains");
   }
   for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
     const id = `monitor:${monitor.id}`;
     nodes.push({ id, type: "monitor", name: monitor.name, status: monitor.status, detail: monitor.target });
-    const address = monitor.target.match(/(?:https?:\/\/)?(\d+\.\d+\.\d+\.\d+)/)?.[1];
-    addSubnet(address, id);
+    const address = extractIpv4(monitor.target);
+    if (hostLinks.has(address)) addEdge(hostLinks.get(address), id, "monitors");
+    else addSubnet(address, id);
   }
   for (const node of db.prepare("SELECT id, name, node_type, detail, status, x, y FROM map_nodes ORDER BY name").all()) nodes.push({ id: `manual:${node.id}`, type: node.node_type, name: node.name, detail: node.detail || "Manual map node", status: node.status, x: node.x, y: node.y, manual: true });
   for (const link of db.prepare("SELECT id, from_node AS 'from', to_node AS 'to', label FROM map_links ORDER BY id").all()) edges.push({ ...link, type: "manual", manual: true });

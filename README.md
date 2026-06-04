@@ -26,6 +26,8 @@ Open `http://localhost:8080`. The container health endpoint is available at
 docker compose up -d
 ```
 
+The Compose deployment exposes the dashboard at `http://localhost:30080`.
+
 GitHub Actions publishes multi-architecture images for AMD64 and ARM64 to:
 
 ```text
@@ -39,18 +41,38 @@ ghcr.io/jcnicholls123/nichhome-uptime:latest
 1. Open **Apps**, select **Discover Apps**, then choose **Custom App**.
 2. Set the application name to `nichhome-uptime`.
 3. Use `ghcr.io/jcnicholls123/nichhome-uptime:latest` as the image.
-4. Add container port `8080` and expose it on host port `8080`.
+4. Add container port `8080` and expose it on host port `30080`.
 5. Set the restart policy to **Unless Stopped**.
-6. Save the app and open `http://TRUENAS-IP:8080`.
+6. Save the app and open `http://TRUENAS-IP:30080`.
 
 ### Using YAML/Compose
 
 TrueNAS releases that provide an **Install via YAML** option can use the
 contents of `compose.yaml`, then install the app.
 
-No dataset mounts are required for this interface-only release. The container
-runs unprivileged, uses a read-only filesystem, and supports automatic health
-checks.
+No dataset mounts, environment variables, custom user IDs, or host-network
+access are required for this interface-only release. The container runs
+unprivileged and supports automatic health checks.
+
+### TrueNAS Troubleshooting
+
+Use the following minimal YAML in **Apps > Discover Apps > Install via YAML**:
+
+```yaml
+name: nichhome-uptime
+services:
+  nichhome-uptime:
+    image: ghcr.io/jcnicholls123/nichhome-uptime:latest
+    pull_policy: always
+    restart: unless-stopped
+    ports:
+      - "30080:8080"
+```
+
+The TrueNAS application name must be lowercase, such as `nichhome-uptime`.
+If port `30080` is already in use, change only the number before the colon.
+Do not configure storage, host networking, a custom user, or a read-only root
+filesystem.
 
 ## Development
 

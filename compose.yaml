@@ -1,17 +1,12 @@
+name: nichhome-uptime
+
 services:
   nichhome-uptime:
     image: ghcr.io/jcnicholls123/nichhome-uptime:latest
-    container_name: nichhome-uptime
+    pull_policy: always
     restart: unless-stopped
     ports:
-      - "8080:8080"
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    tmpfs:
-      - /tmp
-      - /var/cache/nginx
-      - /var/run
+      - "30080:8080"
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
       interval: 30s

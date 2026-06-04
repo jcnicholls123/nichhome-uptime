@@ -444,14 +444,18 @@ async function loadIncidents() {
   renderSnmpWorkspace();
 }
 
-function makePath(values, width, height, minimum, maximum) {
+function makePath(values, width, height, minimum, maximum, left = 0, top = 0) {
   if (values.length < 2) return "";
   const range = Math.max(1, maximum - minimum);
   return values.map((value, index) => {
-    const x = (index / (values.length - 1)) * width;
-    const y = height - ((value - minimum) / range) * height;
+    const x = left + (index / (values.length - 1)) * width;
+    const y = top + height - ((value - minimum) / range) * height;
     return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
+}
+
+function chartText(svg, x, y, value, anchor = "start") {
+  const text = document.createElementNS("http://www.w3.org/2000/svg", "text"); text.setAttribute("x", x); text.setAttribute("y", y); text.setAttribute("text-anchor", anchor); text.setAttribute("class", "chart-label"); text.textContent = value; svg.append(text);
 }
 
 async function loadGraph() {
@@ -467,25 +471,45 @@ async function loadGraph() {
   }
   const ns = "http://www.w3.org/2000/svg";
   const svg = document.createElementNS(ns, "svg");
-  svg.setAttribute("viewBox", "0 0 800 245");
-  svg.setAttribute("preserveAspectRatio", "none");
-  for (const y of [20, 80, 140, 200]) {
+  svg.setAttribute("viewBox", "0 0 860 280");
+  const left = 52; const top = 20; const width = 756; const height = 220;
+  const maxResponse = Math.max(...history.map((point) => point.responseMs ?? 0), 1);
+  for (let index = 0; index <= 4; index += 1) {
+    const y = top + (height / 4) * index;
     const line = document.createElementNS(ns, "line");
-    line.setAttribute("x1", "0"); line.setAttribute("x2", "800");
+    line.setAttribute("x1", left); line.setAttribute("x2", left + width);
     line.setAttribute("y1", y); line.setAttribute("y2", y);
     line.setAttribute("class", "chart-grid");
     svg.append(line);
+    chartText(svg, left - 8, y + 3, `${100 - index * 25}%`, "end");
+    chartText(svg, left + width + 8, y + 3, `${Math.round(maxResponse - (maxResponse / 4) * index)} ms`);
   }
+  for (const index of [0, Math.floor((history.length - 1) / 2), history.length - 1]) chartText(svg, left + (index / (history.length - 1)) * width, 262, new Date(`${history[index].checkedAt}Z`).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), index === 0 ? "start" : index === history.length - 1 ? "end" : "middle");
   const uptime = document.createElementNS(ns, "path");
   uptime.setAttribute("class", "uptime-path");
-  uptime.setAttribute("d", makePath(history.map((point) => point.uptime ?? 0), 800, 220, 0, 100));
+  uptime.setAttribute("d", makePath(history.map((point) => point.uptime ?? 0), width, height, 0, 100, left, top));
   const responses = history.map((point) => point.responseMs ?? 0);
   const response = document.createElementNS(ns, "path");
   response.setAttribute("class", "response-path");
-  response.setAttribute("d", makePath(responses, 800, 220, 0, Math.max(...responses, 1)));
+  response.setAttribute("d", makePath(responses, width, height, 0, maxResponse, left, top));
   svg.append(uptime, response);
   chart.append(svg);
 }
+
+async function renderSnmpBandwidth(deviceId) {
+  const samples = await api(`/api/snmp/devices/${deviceId}/interface-history?range=${document.getElementById("snmpBandwidthRange").value}`);
+  const chart = document.getElementById("snmpBandwidthChart"); chart.replaceChildren();
+  const buckets = new Map();
+  for (const sample of samples) { const bucket = buckets.get(sample.recordedAt) || { checkedAt: sample.recordedAt, inbound: 0, outbound: 0 }; bucket.inbound += sample.inBps; bucket.outbound += sample.outBps; buckets.set(sample.recordedAt, bucket); }
+  const points = [...buckets.values()];
+  if (points.length < 2) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Collecting SNMP interface counters. The bandwidth graph appears after enough polling history is available."; chart.append(empty); return; }
+  const max = Math.max(...points.flatMap((point) => [point.inbound, point.outbound]), 1); const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 860 280"); const left = 62; const top = 20; const width = 746; const height = 220;
+  for (let index = 0; index <= 4; index += 1) { const y = top + (height / 4) * index; const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "chart-grid"); svg.append(line); chartText(svg, left - 8, y + 3, `${formatBits(max - (max / 4) * index)}`, "end"); }
+  for (const index of [0, Math.floor((points.length - 1) / 2), points.length - 1]) chartText(svg, left + (index / (points.length - 1)) * width, 262, new Date(`${points[index].checkedAt}Z`).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), index === 0 ? "start" : index === points.length - 1 ? "end" : "middle");
+  const inbound = document.createElementNS(ns, "path"); inbound.setAttribute("class", "bandwidth-in-path"); inbound.setAttribute("d", makePath(points.map((point) => point.inbound), width, height, 0, max, left, top)); const outbound = document.createElementNS(ns, "path"); outbound.setAttribute("class", "bandwidth-out-path"); outbound.setAttribute("d", makePath(points.map((point) => point.outbound), width, height, 0, max, left, top)); svg.append(inbound, outbound); chart.append(svg);
+}
+
+function formatBits(value) { if (value >= 1e9) return `${(value / 1e9).toFixed(1)} Gbps`; if (value >= 1e6) return `${(value / 1e6).toFixed(1)} Mbps`; if (value >= 1e3) return `${(value / 1e3).toFixed(1)} Kbps`; return `${Math.round(value)} bps`; }
 
 function renderSnmpDeviceList(list) {
   list.replaceChildren();
@@ -855,6 +879,8 @@ async function openSnmpDetails(device) {
     }
     history.append(row);
   });
+  document.getElementById("snmpBandwidthRange").dataset.deviceId = device.id;
+  await renderSnmpBandwidth(device.id);
   document.getElementById("snmpDetailsModal").hidden = false;
 }
 
@@ -1235,8 +1261,8 @@ document.getElementById("runFleetPoll").addEventListener("click", async () => {
 document.getElementById("viewAllSnmp").addEventListener("click", () => showWorkspace("SNMP Devices"));
 document.getElementById("openAllAlerts").addEventListener("click", openIncidents);
 document.getElementById("accountSnmpAdmin").addEventListener("click", () => { accountModal.hidden = true; showWorkspace("SNMP Devices"); });
-document.getElementById("addAlertRule").addEventListener("click", openAlertRule);
-document.getElementById("addAlertRuleInline").addEventListener("click", openAlertRule);
+document.getElementById("addAlertRule").addEventListener("click", () => openAlertRule());
+document.getElementById("addAlertRuleInline").addEventListener("click", () => openAlertRule());
 document.querySelector("#alertRuleForm select[name=targetType]").addEventListener("change", updateAlertRuleTargets);
 document.getElementById("alertRuleTarget").addEventListener("change", updateAlertRuleMetrics);
 document.getElementById("alertRuleForm").addEventListener("submit", async (event) => {
@@ -1246,6 +1272,7 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
 document.getElementById("refreshNetworkMap").addEventListener("click", loadNetworkMap);
+document.getElementById("snmpBandwidthRange").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("addMapNode").addEventListener("click", () => openMapNode());
 document.getElementById("mapNodeForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); try { await api(values.id ? `/api/network-map/nodes/${values.id}` : "/api/network-map/nodes", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) }); document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value); } catch (err) { document.getElementById("mapNodeError").textContent = err.message; } });
 document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });

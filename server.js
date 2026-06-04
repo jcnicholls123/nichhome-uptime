@@ -145,6 +145,15 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(device_id, category, metric_key)
   );
+  CREATE TABLE IF NOT EXISTS snmp_interface_metrics (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    interface_index INTEGER NOT NULL,
+    in_octets INTEGER,
+    out_octets INTEGER,
+    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS snmp_interface_metrics_device_recorded ON snmp_interface_metrics(device_id, recorded_at DESC);
   CREATE TABLE IF NOT EXISTS snmp_profiles (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -803,8 +812,15 @@ async function discoverSnmpInterfaces(device) {
       in_octets=excluded.in_octets, out_octets=excluded.out_octets, in_errors=excluded.in_errors, out_errors=excluded.out_errors,
       in_discards=excluded.in_discards, out_discards=excluded.out_discards, updated_at=CURRENT_TIMESTAMP
   `);
+  const insertMetric = db.prepare("INSERT INTO snmp_interface_metrics (device_id, interface_index, in_octets, out_octets) VALUES (?, ?, ?, ?)");
   const save = db.transaction(() => {
-    for (const row of interfaces.values()) upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.highSpeed ? row.highSpeed * 1000000 : row.speed || null, row.inOctets || row.inOctets32 || null, row.outOctets || row.outOctets32 || null, row.inErrors || 0, row.outErrors || 0, row.inDiscards || 0, row.outDiscards || 0);
+    for (const row of interfaces.values()) {
+      const inOctets = row.inOctets ?? row.inOctets32 ?? null;
+      const outOctets = row.outOctets ?? row.outOctets32 ?? null;
+      upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.highSpeed ? row.highSpeed * 1000000 : row.speed || null, inOctets, outOctets, row.inErrors || 0, row.outErrors || 0, row.inDiscards || 0, row.outDiscards || 0);
+      if (inOctets != null || outOctets != null) insertMetric.run(device.id, row.index, inOctets, outOctets);
+    }
+    db.prepare("DELETE FROM snmp_interface_metrics WHERE id IN (SELECT id FROM snmp_interface_metrics WHERE device_id = ? ORDER BY recorded_at DESC LIMIT -1 OFFSET 10000)").run(device.id);
   });
   save();
 }
@@ -920,8 +936,8 @@ async function pollSnmpDevice(id) {
       db.prepare("UPDATE snmp_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
     }
   })();
-  if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **SNMP device ${device.name} is DOWN**\n${message || device.host}`);
-  if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **SNMP device ${device.name} recovered**\n${sysName || device.host}`);
+  if (status === "down" && previousStatus !== "down") await sendDiscordOperational(`SNMP device ${device.name}`, false, message, [{ name: "Address", value: device.host }, { name: "Profile", value: snmpDeviceProfile(device).label }]);
+  if (status === "up" && previousStatus === "down") await sendDiscordOperational(`SNMP device ${device.name}`, true, "SNMP polling has recovered.", [{ name: "Address", value: device.host }, { name: "Identity", value: sysName || device.host }]);
   if (status === "up") await evaluateAlertRules("snmp", id);
   return db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
 }
@@ -959,6 +975,17 @@ async function sendDiscordAlert(rule, value, cause, recovered) {
     color: recovered ? 5763719 : severityColours[rule.severity] || severityColours.warning,
     fields,
     footer: { text: `NichHome Uptime · ${new Date().toISOString()}` },
+    timestamp: new Date().toISOString()
+  }]);
+}
+
+async function sendDiscordOperational(title, recovered, description, fields = []) {
+  await sendDiscord("", [{
+    title: recovered ? `${title} recovered` : `${title} issue`,
+    description: description || (recovered ? "The service has recovered." : "NichHome detected an operational problem."),
+    color: recovered ? 5763719 : 15158332,
+    fields: fields.filter((field) => field.value != null).map((field) => ({ ...field, value: String(field.value).slice(0, 1024), inline: field.inline !== false })),
+    footer: { text: `NichHome Uptime · ${new Date().toLocaleString("en-GB")}` },
     timestamp: new Date().toISOString()
   }]);
 }
@@ -1033,7 +1060,7 @@ async function pollDockerHost(hostOrId) {
     db.prepare("UPDATE docker_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
     if (host.status !== "down") {
       db.prepare("INSERT INTO docker_incidents (container_id, host_id, container_name, cause) VALUES (?, ?, ?, ?)").run(hostIncidentId, host.id, `${host.name} Docker host`, error.message);
-      await sendDiscord(`🔴 **Docker host ${host.name} is DOWN**\n${error.message}`);
+      await sendDiscordOperational(`Docker host ${host.name}`, false, error.message, [{ name: "Endpoint", value: host.endpoint }, { name: "Connection", value: host.connection_type }]);
     }
     return { available: false, error: error.message };
   }
@@ -1081,8 +1108,8 @@ async function pollDockerHost(hostOrId) {
         db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(id);
       }
     })();
-    if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) await sendDiscord(`🔴 **Docker container ${name} is DOWN**\n${container.Status || health}`);
-    if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) await sendDiscord(`🟢 **Docker container ${name} recovered**`);
+    if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) await sendDiscordOperational(`Docker container ${name}`, false, container.Status || health, [{ name: "Host", value: host.name }, { name: "Image", value: container.Image }, { name: "Health", value: health }]);
+    if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) await sendDiscordOperational(`Docker container ${name}`, true, "The container is healthy and running.", [{ name: "Host", value: host.name }, { name: "Image", value: container.Image }]);
     await evaluateAlertRules("docker", id);
   }
   const stale = db.prepare("SELECT container_id FROM docker_containers WHERE host_id = ?").all(host.id).filter((item) => !seen.has(item.container_id));
@@ -1097,7 +1124,7 @@ async function pollDockerHost(hostOrId) {
   db.prepare("UPDATE docker_hosts SET status = 'up', last_error = NULL, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(host.id);
   if (host.status === "down") {
     db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(hostIncidentId);
-    await sendDiscord(`🟢 **Docker host ${host.name} recovered**`);
+    await sendDiscordOperational(`Docker host ${host.name}`, true, "The Docker daemon is reachable again.", [{ name: "Endpoint", value: host.endpoint }]);
   }
   dockerLastPolledAt = new Date().toISOString();
   return { available: true, count: containers.length, hostId: host.id };
@@ -1181,8 +1208,8 @@ async function runMonitor(id) {
       db.prepare("UPDATE incidents SET resolved_at = CURRENT_TIMESTAMP WHERE monitor_id = ? AND resolved_at IS NULL").run(id);
     }
   })();
-  if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **${monitor.name} is DOWN**\n${message || monitor.target}`);
-  if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **${monitor.name} recovered**\nResponse: ${responseMs} ms`);
+  if (status === "down" && previousStatus !== "down") await sendDiscordOperational(monitor.name, false, message, [{ name: "Target", value: monitor.target }, { name: "Monitor type", value: monitor.type }]);
+  if (status === "up" && previousStatus === "down") await sendDiscordOperational(monitor.name, true, "The monitor is responding again.", [{ name: "Target", value: monitor.target }, { name: "Response time", value: `${responseMs} ms` }]);
   return db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
 }
 
@@ -1516,6 +1543,27 @@ app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
     interfaces, oids, metrics, profileMetrics
   });
 });
+app.get("/api/snmp/devices/:id/interface-history", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(id)) return res.status(404).json({ error: "SNMP device not found." });
+  const windows = { "1h": "-1 hour", "24h": "-24 hours", "7d": "-7 days", "30d": "-30 days" };
+  const window = windows[String(req.query.range)] || windows["24h"];
+  const rows = db.prepare("SELECT interface_index AS interfaceIndex, in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND recorded_at >= datetime('now', ?) ORDER BY interface_index, recorded_at LIMIT 10000").all(id, window);
+  const names = Object.fromEntries(db.prepare("SELECT interface_index, name, alias FROM snmp_interfaces WHERE device_id = ?").all(id).map((item) => [item.interface_index, item.alias || item.name || `Interface ${item.interface_index}`]));
+  const previous = new Map();
+  const samples = [];
+  for (const row of rows) {
+    const before = previous.get(row.interfaceIndex);
+    if (before) {
+      const seconds = (new Date(`${row.recordedAt}Z`) - new Date(`${before.recordedAt}Z`)) / 1000;
+      const inDelta = Number(row.inOctets) - Number(before.inOctets);
+      const outDelta = Number(row.outOctets) - Number(before.outOctets);
+      if (seconds > 0 && inDelta >= 0 && outDelta >= 0) samples.push({ interfaceIndex: row.interfaceIndex, name: names[row.interfaceIndex], recordedAt: row.recordedAt, inBps: (inDelta * 8) / seconds, outBps: (outDelta * 8) / seconds });
+    }
+    previous.set(row.interfaceIndex, row);
+  }
+  res.json(samples);
+});
 app.get("/api/snmp/profiles", requireAuth, (req, res) => {
   const profiles = db.prepare("SELECT id, name, slug, source, description, created_at AS createdAt FROM snmp_profiles ORDER BY source, name").all();
   res.json(profiles.map((profile) => ({ ...profile, oidCount: db.prepare("SELECT COUNT(*) AS count FROM snmp_profile_oids WHERE profile_id = ?").get(profile.id).count })));
@@ -1773,7 +1821,7 @@ app.post("/api/notifications/discord/test", requireAuth, async (req, res) => {
   try {
     const response = await fetch(config.webhookUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content: "NichHome Uptime Discord notifications are working.", username: "NichHome Uptime" }),
+      body: JSON.stringify({ username: "NichHome Uptime", embeds: [{ title: "NichHome Uptime notification test", description: "Structured Discord alert embeds are working.", color: 5763719, fields: [{ name: "Status", value: "Connected", inline: true }, { name: "Alert style", value: "Rich embed", inline: true }], footer: { text: "NichHome Uptime" }, timestamp: new Date().toISOString() }] }),
       signal: AbortSignal.timeout(10000)
     });
     if (!response.ok) return res.status(400).json({ error: `Discord returned HTTP ${response.status}.` });

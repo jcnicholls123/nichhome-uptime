@@ -13,6 +13,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.16] - 2026-06-04
+
+### Added
+
+- Historical SNMP interface counter storage and selectable bandwidth graphs with
+  inbound/outbound bitrate scales and timestamps
+- Dual-axis uptime performance graphs with uptime percentages, response
+  milliseconds, reporting timestamps, and clearer visual styling
+- Structured Discord embeds for monitor, SNMP device, Docker host, Docker
+  container, recovery, and test notifications
+
+### Fixed
+
+- New alert rules no longer open in locked edit mode with greyed-out SNMP,
+  target, metric, and condition fields
+
 ## [1.0.0-beta.15] - 2026-06-04
 
 ### Added

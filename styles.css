@@ -342,11 +342,18 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .history-row { display: grid; grid-template-columns: 55px 1fr auto; gap: 8px; padding: 9px 0; border-bottom: 1px solid var(--line); font-size: 8px; }
 .history-row small { color: #949b97; }
 .form-help { margin: 0; color: #7d8581; font-size: 8px; line-height: 1.6; }
-.real-chart { min-height: 245px; display: grid; align-items: center; }
-.real-chart svg { width: 100%; height: 245px; overflow: visible; }
-.real-chart .uptime-path { fill: none; stroke: var(--coral); stroke-width: 2.5; vector-effect: non-scaling-stroke; }
-.real-chart .response-path { fill: none; stroke: #a9a493; stroke-width: 1.5; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
-.real-chart .chart-grid { stroke: rgba(20,30,27,.1); stroke-dasharray: 3 5; }
+.real-chart { min-height: 280px; display: grid; align-items: center; padding: 8px; border: 1px solid rgba(20,30,27,.07); border-radius: 10px; background: linear-gradient(180deg, rgba(255,255,255,.82), rgba(245,242,233,.48)); }
+.real-chart svg { width: 100%; height: 280px; overflow: visible; }
+.real-chart .uptime-path { fill: none; stroke: var(--coral); stroke-width: 2.75; filter: drop-shadow(0 2px 3px rgba(255,107,82,.22)); vector-effect: non-scaling-stroke; }
+.real-chart .response-path { fill: none; stroke: #6f7b76; stroke-width: 1.75; stroke-dasharray: 5 4; vector-effect: non-scaling-stroke; }
+.real-chart .bandwidth-in-path, .real-chart .bandwidth-out-path { fill: none; stroke-width: 2.5; vector-effect: non-scaling-stroke; }
+.real-chart .bandwidth-in-path { stroke: #4f9f79; filter: drop-shadow(0 2px 3px rgba(79,159,121,.18)); }
+.real-chart .bandwidth-out-path { stroke: #5b86bd; filter: drop-shadow(0 2px 3px rgba(91,134,189,.18)); }
+.real-chart .chart-grid { stroke: rgba(20,30,27,.11); stroke-dasharray: 3 5; }
+.real-chart .chart-label { fill: #737d78; font-family: "DM Mono", monospace; font-size: 9px; }
+.legend-line.bandwidth-in { background: #4f9f79; }
+.legend-line.bandwidth-out { background: #5b86bd; }
+.snmp-bandwidth-chart { min-height: 300px; margin-top: 10px; }
 .snmp-device-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; padding-top: 15px; }
 .snmp-device-card { display: grid; gap: 8px; padding: 14px; border: 1px solid #303936; border-radius: 10px; background: #202725; }
 .snmp-device-card header { display: flex; align-items: center; justify-content: space-between; }

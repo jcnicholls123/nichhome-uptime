@@ -74,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.15", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.16", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -180,6 +180,9 @@ async function waitForServer() {
     assert.ok(Array.isArray(snmpDetails.interfaces));
     assert.ok(Array.isArray(snmpDetails.oids));
     assert.equal(snmpDetails.device.profile.label, "Standard SNMP");
+    const interfaceHistory = await request(`/api/snmp/devices/${snmpDevices[0].id}/interface-history?range=24h`);
+    assert.equal(interfaceHistory.status, 200);
+    assert.ok(Array.isArray(await interfaceHistory.json()));
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/walk`, { method: "POST", body: JSON.stringify({ rootOid: "1.3.6.1.2.1" }) })).status, 400);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], profileId: imported.id, community: "", enabled: true }) })).status, 200);
     const customDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();

@@ -14,6 +14,21 @@ include breaking changes while the monitoring engine and integrations mature.
 - Historical uptime graphs and reporting ranges
 - Public status pages
 
+## [1.0.0-beta.5] - 2026-06-04
+
+### Added
+
+- Ping IP/hostname monitor type using real ICMP checks inside the container
+- UniFi-focused SNMP device profile and automatic UniFi/Ubiquiti detection
+- SNMP device details view with refreshable system OIDs and poll history
+- SNMP interface discovery with status, MAC address, speed, and traffic
+  counters
+
+### Changed
+
+- SNMP device cards now open a full details view
+- Container now includes the system ping utility required for ICMP monitoring
+
 ## [1.0.0-beta.4] - 2026-06-04
 
 ### Added
@@ -99,7 +114,8 @@ include breaking changes while the monitoring engine and integrations mature.
 - Live SNMP, Docker, Discord, incident, and public status-page integrations are
   not yet implemented
 
-[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.4...HEAD
+[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.5...HEAD
+[1.0.0-beta.5]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.5
 [1.0.0-beta.4]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.2

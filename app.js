@@ -58,7 +58,7 @@ document.getElementById("manageMonitors").addEventListener("click", () => { moni
 document.getElementById("closeMonitor").addEventListener("click", () => { monitorModal.hidden = true; });
 monitorModal.addEventListener("click", (event) => { if (event.target === monitorModal) monitorModal.hidden = true; });
 document.querySelector("#monitorForm select[name=type]").addEventListener("change", (event) => {
-  document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : "https://home.example.com";
+  document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : event.target.value === "ping" ? "192.168.1.10" : "https://home.example.com";
 });
 document.querySelector(".search input").addEventListener("input", (event) => renderMonitors(event.target.value));
 document.getElementById("timeRangeButton").addEventListener("click", () => showToast("Last 24 hours", "More reporting ranges are coming soon"));
@@ -114,7 +114,7 @@ function renderMonitors(filter = "") {
     row.className = "monitor-row real-monitor";
     const icon = document.createElement("span");
     icon.className = `service-icon ${monitor.type === "http" ? "web" : "vpn"}`;
-    icon.textContent = monitor.type === "http" ? "W" : "T";
+    icon.textContent = monitor.type === "http" ? "W" : monitor.type === "ping" ? "P" : "T";
     const copy = document.createElement("div");
     const name = document.createElement("strong");
     name.textContent = monitor.name;
@@ -291,13 +291,16 @@ function renderSnmpDevices() {
       : device.lastError || "Waiting for first poll";
     const actions = document.createElement("div");
     actions.className = "snmp-card-actions";
+    const details = document.createElement("button");
+    details.className = "dark-button"; details.textContent = "Details";
+    details.addEventListener("click", () => openSnmpDetails(device));
     const poll = document.createElement("button");
     poll.className = "dark-button"; poll.textContent = "Poll now";
     poll.addEventListener("click", async () => { await api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }); await loadSnmpDevices(); });
     const remove = document.createElement("button");
     remove.className = "dark-button"; remove.textContent = "Delete";
     remove.addEventListener("click", async () => { if (window.confirm(`Delete ${device.name}?`)) { await api(`/api/snmp/devices/${device.id}`, { method: "DELETE" }); await loadSnmpDevices(); } });
-    actions.append(poll, remove);
+    actions.append(details, poll, remove);
     card.append(header, identity, description, actions);
     list.append(card);
   }
@@ -306,6 +309,58 @@ function renderSnmpDevices() {
 async function loadSnmpDevices() {
   snmpDevices = await api("/api/snmp/devices");
   renderSnmpDevices();
+}
+
+function formatBytes(value) {
+  if (value == null) return "--";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let amount = Number(value);
+  let unit = 0;
+  while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
+  return `${amount.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+}
+
+async function openSnmpDetails(device) {
+  const data = await api(`/api/snmp/devices/${device.id}/details`);
+  document.getElementById("snmpDetailsTitle").textContent = data.device.name;
+  document.getElementById("snmpProfile").textContent = data.device.isUniFi ? "UNIFI SNMP PROFILE" : "SNMP DEVICE";
+  document.getElementById("refreshSnmpDetails").dataset.deviceId = device.id;
+  const summary = document.getElementById("snmpDetailsSummary");
+  summary.replaceChildren();
+  for (const [label, value] of [["Identity", data.device.sysName || data.device.host], ["Description", data.device.sysDescription || "--"], ["Address", `${data.device.host}:${data.device.port}`], ["Uptime", data.device.uptimeTicks == null ? "--" : `${Math.floor(data.device.uptimeTicks / 8640000)} days`], ["Interfaces", data.interfaces.length], ["Profile", data.device.isUniFi ? "UniFi / Ubiquiti" : "Standard SNMP"]]) {
+    const stat = document.createElement("div");
+    stat.className = "detail-stat";
+    const small = document.createElement("small"); small.textContent = label;
+    const strong = document.createElement("strong"); strong.textContent = value;
+    stat.append(small, strong); summary.append(stat);
+  }
+  const interfaces = document.getElementById("snmpInterfaces");
+  interfaces.replaceChildren();
+  for (const item of data.interfaces) {
+    const row = document.createElement("tr");
+    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, item.operStatus === 1 ? "Up" : "Down", item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets)]) {
+      const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
+    }
+    interfaces.append(row);
+  }
+  const oids = document.getElementById("snmpOids");
+  oids.replaceChildren();
+  for (const item of data.oids) {
+    const row = document.createElement("div"); row.className = "oid-detail";
+    const label = document.createElement("small"); label.textContent = `${item.label} · ${item.oid}`;
+    const value = document.createElement("strong"); value.textContent = item.value || "--";
+    row.append(label, value); oids.append(row);
+  }
+  const history = document.getElementById("snmpHistory");
+  history.replaceChildren();
+  data.metrics.forEach((metric) => {
+    const row = document.createElement("div"); row.className = "history-row";
+    for (const value of [metric.status.toUpperCase(), metric.responseMs == null ? metric.message || "--" : `${metric.responseMs} ms`, formatDate(metric.polledAt)]) {
+      const cell = document.createElement("span"); cell.textContent = value; row.append(cell);
+    }
+    history.append(row);
+  });
+  document.getElementById("snmpDetailsModal").hidden = false;
 }
 
 async function openIncidents() {
@@ -425,6 +480,12 @@ document.getElementById("snmpForm").addEventListener("submit", async (event) => 
     showToast("SNMP device added", "Initial poll completed");
   } catch (err) { error.textContent = err.message; }
 });
+document.getElementById("refreshSnmpDetails").addEventListener("click", async (event) => {
+  const id = event.currentTarget.dataset.deviceId;
+  await api(`/api/snmp/devices/${id}/poll`, { method: "POST", body: "{}" });
+  await loadSnmpDevices();
+  await openSnmpDetails(snmpDevices.find((device) => String(device.id) === String(id)));
+});
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
@@ -474,8 +535,3 @@ loadIncidents();
 loadDiscordStatus();
 loadGraph();
 loadSnmpDevices();
-    const details = document.createElement("button");
-    details.className = "monitor-action";
-    details.title = "Edit and view history";
-    details.textContent = "i";
-    details.addEventListener("click", () => openMonitorDetails(monitor));

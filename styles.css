@@ -278,6 +278,20 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .snmp-device-card small { color: #75807c; font-size: 10px; }
 .snmp-card-actions { display: flex; gap: 6px; }
 .snmp-footnote { margin: 14px 0 0; color: #77827e; font-size: 11px; }
+.extra-wide-modal { width: min(1000px, 100%); max-height: 92vh; overflow: auto; }
+.snmp-details-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 8px; margin: 18px 0; }
+.detail-stat { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
+.detail-stat small { color: #8c9490; font-size: 10px; }
+.detail-stat strong { font-size: 12px; overflow-wrap: anywhere; }
+.details-heading { margin-top: 22px; }
+.interface-table-wrap { overflow: auto; border: 1px solid var(--line); border-radius: 9px; }
+.interface-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+.interface-table th, .interface-table td { padding: 10px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.interface-table th { color: #858d89; font-size: 10px; }
+.oid-details-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 7px; }
+.oid-detail { display: grid; gap: 3px; padding: 10px; border: 1px solid var(--line); border-radius: 7px; }
+.oid-detail small { color: #888f8c; font-size: 10px; }
+.oid-detail strong { font-size: 11px; overflow-wrap: anywhere; }
 
 /* Readability pass: operational text should remain legible on wall displays. */
 .nav-item, .search input, .command-button, .soft-button, .profile-copy strong, .subhead { font-size: 12px; }

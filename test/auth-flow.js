@@ -50,7 +50,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.4", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.5", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -74,6 +74,10 @@ async function waitForServer() {
     assert.equal((await request(`/api/monitors/${monitors[0].id}/check`, { method: "POST", body: "{}" })).status, 200);
     assert.equal((await request(`/api/monitors/${monitors[0].id}`, { method: "DELETE" })).status, 200);
     assert.deepEqual(await (await request("/api/monitors")).json(), []);
+    assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Loopback ping", type: "ping", target: "127.0.0.1", intervalSeconds: 20, timeoutSeconds: 2 }) })).status, 201);
+    const pingMonitors = await (await request("/api/monitors")).json();
+    assert.equal(pingMonitors[0].type, "ping");
+    assert.equal(pingMonitors[0].status, "up");
     assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Offline service", type: "tcp", target: "127.0.0.1:1", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     assert.equal((await (await request("/api/incidents")).json()).length, 1);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
@@ -83,6 +87,9 @@ async function waitForServer() {
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);
     assert.equal(snmpDevices[0].status, "down");
+    const snmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
+    assert.ok(Array.isArray(snmpDetails.interfaces));
+    assert.ok(Array.isArray(snmpDetails.oids));
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/poll`, { method: "POST", body: "{}" })).status, 200);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "DELETE" })).status, 200);
     const mfaSetup = await (await request("/api/mfa/start", { method: "POST", body: "{}" })).json();

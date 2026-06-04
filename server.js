@@ -1,11 +1,14 @@
 const crypto = require("crypto");
 const net = require("net");
+const { execFile } = require("child_process");
+const { promisify } = require("util");
 const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
 const snmp = require("net-snmp");
 const packageInfo = require("./package.json");
+const execFileAsync = promisify(execFile);
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -96,6 +99,28 @@ db.exec(`
     polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS snmp_metrics_device_polled ON snmp_metrics(device_id, polled_at DESC);
+  CREATE TABLE IF NOT EXISTS snmp_interfaces (
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    interface_index INTEGER NOT NULL,
+    name TEXT,
+    alias TEXT,
+    mac TEXT,
+    admin_status INTEGER,
+    oper_status INTEGER,
+    speed_bps INTEGER,
+    in_octets INTEGER,
+    out_octets INTEGER,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(device_id, interface_index)
+  );
+  CREATE TABLE IF NOT EXISTS snmp_oids (
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    oid TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(device_id, oid)
+  );
 `);
 
 const staticDir = __dirname;
@@ -219,13 +244,14 @@ function validateMonitor(input) {
   const intervalSeconds = Math.max(20, Math.min(86400, Number(input.intervalSeconds || 60)));
   const timeoutSeconds = Math.max(1, Math.min(60, Number(input.timeoutSeconds || 10)));
   if (name.length < 2 || name.length > 80) throw new Error("Monitor name must be between 2 and 80 characters.");
-  if (!["http", "tcp"].includes(type)) throw new Error("Monitor type must be HTTP or TCP.");
+  if (!["http", "tcp", "ping"].includes(type)) throw new Error("Monitor type must be HTTP, TCP, or Ping.");
   if (type === "http") {
     const url = new URL(target);
     if (!["http:", "https:"].includes(url.protocol)) throw new Error("HTTP targets must begin with http:// or https://.");
   }
   if (type === "tcp" && !/^(\[[^\]]+\]|[^:]+):\d{1,5}$/.test(target)) throw new Error("TCP targets must use host:port format.");
-  return { name, type, target, intervalSeconds, timeoutSeconds };
+  if (type === "ping" && (!target || target.length > 255 || /\s|:\/\//.test(target))) throw new Error("Ping targets must be a hostname or IP address.");
+  return { name, type: type === "ping" ? "tcp" : type, target: type === "ping" ? `ping://${target}` : target, intervalSeconds, timeoutSeconds };
 }
 
 function getSetting(key, fallback = null) {
@@ -286,6 +312,68 @@ function snmpGet(device, oids) {
   });
 }
 
+function snmpSubtree(device, oid) {
+  return new Promise((resolve, reject) => {
+    const session = snmp.createSession(device.host, device.community, {
+      port: device.port, retries: 1, timeout: device.timeout_seconds * 1000,
+      version: snmp.Version2c, transport: "udp4"
+    });
+    const values = [];
+    session.subtree(oid, 20, (varbinds) => {
+      for (const varbind of varbinds) {
+        if (!snmp.isVarbindError(varbind)) values.push(varbind);
+      }
+    }, (error) => {
+      session.close();
+      error ? reject(error) : resolve(values);
+    });
+  });
+}
+
+function varbindIndex(varbind) {
+  return Number(varbind.oid.split(".").at(-1));
+}
+
+function valueText(value) {
+  if (!Buffer.isBuffer(value)) return String(value ?? "");
+  return value.length === 6 ? [...value].map((part) => part.toString(16).padStart(2, "0")).join(":") : value.toString();
+}
+
+async function discoverSnmpInterfaces(device) {
+  const columns = {
+    name: "1.3.6.1.2.1.2.2.1.2",
+    mac: "1.3.6.1.2.1.2.2.1.6",
+    adminStatus: "1.3.6.1.2.1.2.2.1.7",
+    operStatus: "1.3.6.1.2.1.2.2.1.8",
+    inOctets: "1.3.6.1.2.1.2.2.1.10",
+    outOctets: "1.3.6.1.2.1.2.2.1.16",
+    speed: "1.3.6.1.2.1.2.2.1.5",
+    alias: "1.3.6.1.2.1.31.1.1.1.18"
+  };
+  const interfaces = new Map();
+  for (const [column, oid] of Object.entries(columns)) {
+    try {
+      for (const varbind of await snmpSubtree(device, oid)) {
+        const index = varbindIndex(varbind);
+        const row = interfaces.get(index) || { index };
+        row[column] = ["name", "alias", "mac"].includes(column) ? valueText(varbind.value) : Number(varbind.value);
+        interfaces.set(index, row);
+      }
+    } catch {}
+  }
+  const upsert = db.prepare(`
+    INSERT INTO snmp_interfaces (device_id, interface_index, name, alias, mac, admin_status, oper_status, speed_bps, in_octets, out_octets, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(device_id, interface_index) DO UPDATE SET name=excluded.name, alias=excluded.alias, mac=excluded.mac,
+      admin_status=excluded.admin_status, oper_status=excluded.oper_status, speed_bps=excluded.speed_bps,
+      in_octets=excluded.in_octets, out_octets=excluded.out_octets, updated_at=CURRENT_TIMESTAMP
+  `);
+  const save = db.transaction(() => {
+    for (const row of interfaces.values()) upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.speed || null, row.inOctets || null, row.outOctets || null);
+  });
+  save();
+}
+
 async function pollSnmpDevice(id) {
   const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
   if (!device || !device.enabled) return null;
@@ -297,11 +385,24 @@ async function pollSnmpDevice(id) {
   let uptimeTicks = null;
   const previousStatus = device.status;
   try {
-    const result = await snmpGet(device, ["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.3.0"]);
+    const systemOids = {
+      "1.3.6.1.2.1.1.1.0": "System description",
+      "1.3.6.1.2.1.1.2.0": "System object ID",
+      "1.3.6.1.2.1.1.3.0": "System uptime",
+      "1.3.6.1.2.1.1.4.0": "System contact",
+      "1.3.6.1.2.1.1.5.0": "System name",
+      "1.3.6.1.2.1.1.6.0": "System location"
+    };
+    const result = await snmpGet(device, Object.keys(systemOids));
     responseMs = result.responseMs;
     sysName = String(result.values["1.3.6.1.2.1.1.5.0"] || "");
     sysDescription = String(result.values["1.3.6.1.2.1.1.1.0"] || "");
     uptimeTicks = Number(result.values["1.3.6.1.2.1.1.3.0"]) || null;
+    const upsertOid = db.prepare("INSERT INTO snmp_oids (device_id, oid, label, value, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, oid) DO UPDATE SET label=excluded.label, value=excluded.value, updated_at=CURRENT_TIMESTAMP");
+    db.transaction(() => {
+      for (const [oid, label] of Object.entries(systemOids)) upsertOid.run(device.id, oid, label, String(result.values[oid] ?? ""));
+    })();
+    await discoverSnmpInterfaces(device);
   } catch (error) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
@@ -358,6 +459,16 @@ function checkTcp(target, timeoutSeconds) {
   });
 }
 
+async function checkPing(target, timeoutSeconds) {
+  const host = target.replace(/^ping:\/\//, "");
+  const started = Date.now();
+  const args = process.platform === "win32"
+    ? ["-n", "1", "-w", String(timeoutSeconds * 1000), host]
+    : ["-c", "1", "-W", String(timeoutSeconds), host];
+  await execFileAsync("ping", args, { timeout: (timeoutSeconds + 2) * 1000 });
+  return Date.now() - started;
+}
+
 async function runMonitor(id) {
   const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
   if (!monitor || !monitor.enabled) return null;
@@ -367,7 +478,9 @@ async function runMonitor(id) {
   try {
     responseMs = monitor.type === "http"
       ? await checkHttp(monitor.target, monitor.timeout_seconds)
-      : await checkTcp(monitor.target, monitor.timeout_seconds);
+      : monitor.target.startsWith("ping://")
+        ? await checkPing(monitor.target, monitor.timeout_seconds)
+        : await checkTcp(monitor.target, monitor.timeout_seconds);
   } catch (error) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
@@ -466,7 +579,7 @@ app.post("/api/mfa/disable", requireAuth, (req, res) => {
 app.get("/api/monitors", requireAuth, (req, res) => {
   const monitors = db.prepare("SELECT * FROM monitors ORDER BY created_at DESC").all();
   res.json(monitors.map((monitor) => ({
-    id: monitor.id, name: monitor.name, type: monitor.type, target: monitor.target,
+    id: monitor.id, name: monitor.name, type: monitor.target.startsWith("ping://") ? "ping" : monitor.type, target: monitor.target.replace(/^ping:\/\//, ""),
     intervalSeconds: monitor.interval_seconds, timeoutSeconds: monitor.timeout_seconds,
     enabled: Boolean(monitor.enabled), status: monitor.status, responseMs: monitor.response_ms,
     lastError: monitor.last_error, lastCheckedAt: monitor.last_checked_at
@@ -537,6 +650,17 @@ app.get("/api/snmp/devices", requireAuth, (req, res) => {
     sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks,
     lastError: device.last_error, lastPolledAt: device.last_polled_at
   })));
+});
+app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
+  const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(req.params.id));
+  if (!device) return res.status(404).json({ error: "SNMP device not found." });
+  const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, admin_status AS adminStatus, oper_status AS operStatus, speed_bps AS speedBps, in_octets AS inOctets, out_octets AS outOctets, updated_at AS updatedAt FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(device.id);
+  const oids = db.prepare("SELECT oid, label, value, updated_at AS updatedAt FROM snmp_oids WHERE device_id = ? ORDER BY oid").all(device.id);
+  const metrics = db.prepare("SELECT status, uptime_ticks AS uptimeTicks, response_ms AS responseMs, message, polled_at AS polledAt FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 100").all(device.id);
+  res.json({
+    device: { id: device.id, name: device.name, host: device.host, port: device.port, status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, isUniFi: /unifi|ubiquiti/i.test(`${device.sys_name} ${device.sys_description}`) },
+    interfaces, oids, metrics
+  });
 });
 app.post("/api/snmp/devices", requireAuth, async (req, res) => {
   let device;

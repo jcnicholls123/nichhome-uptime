@@ -50,6 +50,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.1", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "correct-horse-battery-staple" }) })).status, 201);

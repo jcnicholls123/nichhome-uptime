@@ -61,6 +61,11 @@ async function loadAccount() {
   document.getElementById("mfaAction").textContent = currentUser.mfaEnabled ? "Disable" : "Enable";
 }
 
+async function loadVersion() {
+  const release = await api("/api/version");
+  document.getElementById("appVersion").textContent = `v${release.version}`;
+}
+
 document.getElementById("accountButton").addEventListener("click", () => { accountModal.hidden = false; });
 document.getElementById("closeAccount").addEventListener("click", () => { accountModal.hidden = true; });
 accountModal.addEventListener("click", (event) => { if (event.target === accountModal) accountModal.hidden = true; });
@@ -100,3 +105,4 @@ document.getElementById("confirmDisable").addEventListener("click", async () => 
 });
 
 loadAccount();
+loadVersion();

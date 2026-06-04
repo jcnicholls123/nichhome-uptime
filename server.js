@@ -3,6 +3,7 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
+const packageInfo = require("./package.json");
 
 const PORT = Number(process.env.PORT || 8080);
 const DATA_DIR = process.env.DATA_DIR || path.join(__dirname, "data");
@@ -151,6 +152,11 @@ function limited(req, res, next) {
 }
 
 app.get("/healthz", (req, res) => res.type("text").send("healthy\n"));
+app.get("/api/version", (req, res) => res.json({
+  name: "NichHome Uptime",
+  version: packageInfo.version,
+  channel: packageInfo.version.includes("-") ? packageInfo.version.split("-")[1].split(".")[0] : "stable"
+}));
 app.get("/api/setup/status", (req, res) => res.json({ required: !db.prepare("SELECT 1 FROM users LIMIT 1").get() }));
 app.post("/api/setup", limited, (req, res) => {
   if (db.prepare("SELECT 1 FROM users LIMIT 1").get()) return res.status(409).json({ error: "Setup is already complete." });

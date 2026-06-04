@@ -1,5 +1,8 @@
 # NichHome Uptime
 
+[![Release](https://img.shields.io/github/v/release/jcnicholls123/nichhome-uptime?include_prereleases)](https://github.com/jcnicholls123/nichhome-uptime/releases)
+[![Build container](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml/badge.svg)](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml)
+
 NichHome Uptime is a local-first infrastructure dashboard focused on uptime,
 SNMP network telemetry, Docker container health, and Discord alert visibility.
 
@@ -42,6 +45,11 @@ GitHub Actions publishes multi-architecture images for AMD64 and ARM64 to:
 ```text
 ghcr.io/jcnicholls123/nichhome-uptime:latest
 ```
+
+Beta deployments can be pinned to `ghcr.io/jcnicholls123/nichhome-uptime:beta`
+or an exact release such as
+`ghcr.io/jcnicholls123/nichhome-uptime:1.0.0-beta.1`. See
+[CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## Deploy on TrueNAS SCALE
 

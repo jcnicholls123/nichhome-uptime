@@ -340,7 +340,7 @@
           <tbody id="snmpInterfaces"></tbody>
         </table>
       </div>
-      <div class="panel-heading details-heading"><div><span class="section-tag blue">SNMP BANDWIDTH</span><h2>Interface throughput</h2><p class="form-help">Calculated from SNMP interface counter deltas.</p><div class="legend"><span><i class="legend-line bandwidth-in"></i>Inbound</span><span><i class="legend-line bandwidth-out"></i>Outbound</span></div></div><select class="soft-button range-select" id="snmpBandwidthRange"><option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></div>
+      <div class="panel-heading details-heading"><div><span class="section-tag blue">SNMP GRAPHS</span><h2>Interface throughput</h2><p class="form-help" id="snmpGraphHelp">Choose total device traffic or a single interface.</p><div class="legend"><span><i class="legend-line bandwidth-in"></i>Inbound</span><span><i class="legend-line bandwidth-out"></i>Outbound</span></div></div><div class="graph-controls"><select class="soft-button range-select" id="snmpGraphSelect"><option value="all">Total traffic</option></select><select class="soft-button range-select" id="snmpBandwidthRange"><option value="1h">Last hour</option><option value="24h" selected>Last 24 hours</option><option value="7d">Last 7 days</option><option value="30d">Last 30 days</option></select></div></div>
       <div class="real-chart snmp-bandwidth-chart" id="snmpBandwidthChart"><p class="empty-state">Collecting interface counter history...</p></div>
       <h3 class="modal-subtitle">Recent SNMP polls</h3>
       <div class="history-list" id="snmpHistory"></div>

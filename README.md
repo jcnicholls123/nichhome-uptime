@@ -37,6 +37,7 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Real heartbeat uptime and response-time graphs
 - Dual-axis uptime and response-time reporting graphs with timestamps
 - Historical SNMP interface bandwidth graphs with inbound/outbound bitrate
+- Selectable total or per-interface SNMP bandwidth graphs in device details
 - Reporting ranges from one hour to 90 days with durable hourly rollups
 - TrueNAS SNMP profile with CPU, load, memory, storage, dataset/pool entries,
   interfaces, and TrueNAS MIB inventory

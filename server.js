@@ -1654,8 +1654,14 @@ app.get("/api/snmp/devices/:id/interface-history", requireAuth, (req, res) => {
   if (!db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(id)) return res.status(404).json({ error: "SNMP device not found." });
   const windows = { "1h": "-1 hour", "24h": "-24 hours", "7d": "-7 days", "30d": "-30 days" };
   const window = windows[String(req.query.range)] || windows["24h"];
-  const rows = db.prepare("SELECT interface_index AS interfaceIndex, in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND recorded_at >= datetime('now', ?) ORDER BY interface_index, recorded_at LIMIT 10000").all(id, window);
-  const names = Object.fromEntries(db.prepare("SELECT interface_index, name, alias FROM snmp_interfaces WHERE device_id = ?").all(id).map((item) => [item.interface_index, item.alias || item.name || `Interface ${item.interface_index}`]));
+  const requestedInterface = req.query.interfaceIndex != null && req.query.interfaceIndex !== "all" ? Number(req.query.interfaceIndex) : null;
+  const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, oper_status AS operStatus, speed_bps AS speedBps FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(id)
+    .map((item) => ({ ...item, label: item.alias || item.name || `Interface ${item.interfaceIndex}` }));
+  if (requestedInterface != null && !interfaces.some((item) => item.interfaceIndex === requestedInterface)) return res.status(404).json({ error: "SNMP interface not found." });
+  const rows = requestedInterface == null
+    ? db.prepare("SELECT interface_index AS interfaceIndex, in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND recorded_at >= datetime('now', ?) ORDER BY interface_index, recorded_at LIMIT 10000").all(id, window)
+    : db.prepare("SELECT interface_index AS interfaceIndex, in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND interface_index = ? AND recorded_at >= datetime('now', ?) ORDER BY interface_index, recorded_at LIMIT 10000").all(id, requestedInterface, window);
+  const names = Object.fromEntries(interfaces.map((item) => [item.interfaceIndex, item.label]));
   const previous = new Map();
   const samples = [];
   for (const row of rows) {
@@ -1668,7 +1674,7 @@ app.get("/api/snmp/devices/:id/interface-history", requireAuth, (req, res) => {
     }
     previous.set(row.interfaceIndex, row);
   }
-  res.json(samples);
+  res.json({ interfaces, selectedInterface: requestedInterface ?? "all", samples });
 });
 app.get("/api/snmp/profiles", requireAuth, (req, res) => {
   const profiles = db.prepare("SELECT id, name, slug, source, description, created_at AS createdAt FROM snmp_profiles ORDER BY source, name").all();

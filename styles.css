@@ -353,6 +353,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .real-chart .chart-label { fill: #737d78; font-family: "DM Mono", monospace; font-size: 9px; }
 .legend-line.bandwidth-in { background: #4f9f79; }
 .legend-line.bandwidth-out { background: #5b86bd; }
+.graph-controls { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
+.graph-controls select { min-width: 180px; }
 .snmp-bandwidth-chart { min-height: 300px; margin-top: 10px; }
 .snmp-device-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; padding-top: 15px; }
 .snmp-device-card { display: grid; gap: 8px; padding: 14px; border: 1px solid #303936; border-radius: 10px; background: #202725; }

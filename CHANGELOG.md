@@ -13,6 +13,15 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.19] - 2026-06-05
+
+### Added
+
+- Selectable SNMP interface graphs in device details, including total traffic
+  and per-interface inbound/outbound throughput views
+- Clear SNMP graph helper text showing whether the chart is total device
+  traffic or a specific interface, including interface speed when available
+
 ## [1.0.0-beta.18] - 2026-06-04
 
 ### Added

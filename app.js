@@ -505,8 +505,16 @@ async function loadGraph() {
 }
 
 async function renderSnmpBandwidth(deviceId) {
-  const samples = await api(`/api/snmp/devices/${deviceId}/interface-history?range=${document.getElementById("snmpBandwidthRange").value}`);
+  const graphSelect = document.getElementById("snmpGraphSelect");
+  const selected = graphSelect.value || "all";
+  const data = await api(`/api/snmp/devices/${deviceId}/interface-history?range=${document.getElementById("snmpBandwidthRange").value}&interfaceIndex=${encodeURIComponent(selected)}`);
+  const samples = Array.isArray(data) ? data : data.samples;
   const chart = document.getElementById("snmpBandwidthChart"); chart.replaceChildren();
+  const interfaces = Array.isArray(data) ? [] : data.interfaces || [];
+  const selectedInterface = selected === "all" ? null : interfaces.find((item) => String(item.interfaceIndex) === String(selected));
+  document.getElementById("snmpGraphHelp").textContent = selectedInterface
+    ? `${selectedInterface.label} inbound/outbound bitrate from SNMP octet counter deltas${selectedInterface.speedBps ? ` · speed ${formatBits(selectedInterface.speedBps)}` : ""}.`
+    : "Total traffic sums inbound and outbound bitrate across all discovered interfaces.";
   const buckets = new Map();
   for (const sample of samples) { const bucket = buckets.get(sample.recordedAt) || { checkedAt: sample.recordedAt, inbound: 0, outbound: 0 }; bucket.inbound += sample.inBps; bucket.outbound += sample.outBps; buckets.set(sample.recordedAt, bucket); }
   const points = [...buckets.values()];
@@ -515,6 +523,21 @@ async function renderSnmpBandwidth(deviceId) {
   for (let index = 0; index <= 4; index += 1) { const y = top + (height / 4) * index; const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "chart-grid"); svg.append(line); chartText(svg, left - 8, y + 3, `${formatBits(max - (max / 4) * index)}`, "end"); }
   for (const index of [0, Math.floor((points.length - 1) / 2), points.length - 1]) chartText(svg, left + (index / (points.length - 1)) * width, 262, new Date(`${points[index].checkedAt}Z`).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" }), index === 0 ? "start" : index === points.length - 1 ? "end" : "middle");
   const inbound = document.createElementNS(ns, "path"); inbound.setAttribute("class", "bandwidth-in-path"); inbound.setAttribute("d", makePath(points.map((point) => point.inbound), width, height, 0, max, left, top)); const outbound = document.createElementNS(ns, "path"); outbound.setAttribute("class", "bandwidth-out-path"); outbound.setAttribute("d", makePath(points.map((point) => point.outbound), width, height, 0, max, left, top)); svg.append(inbound, outbound); chart.append(svg);
+}
+
+function populateSnmpGraphSelector(interfaces) {
+  const select = document.getElementById("snmpGraphSelect");
+  const current = select.value || "all";
+  select.replaceChildren();
+  const total = document.createElement("option"); total.value = "all"; total.textContent = "Total traffic (all interfaces)"; select.append(total);
+  for (const item of interfaces) {
+    const option = document.createElement("option");
+    option.value = item.interfaceIndex;
+    const state = item.operStatus === 1 ? "up" : item.operStatus === 2 ? "down" : "unknown";
+    option.textContent = `${item.alias || item.name || `Interface ${item.interfaceIndex}`} · ${state}${item.speedBps ? ` · ${formatBits(item.speedBps)}` : ""}`;
+    select.append(option);
+  }
+  select.value = [...select.options].some((option) => option.value === current) ? current : "all";
 }
 
 function formatBits(value) { if (value >= 1e9) return `${(value / 1e9).toFixed(1)} Gbps`; if (value >= 1e6) return `${(value / 1e6).toFixed(1)} Mbps`; if (value >= 1e3) return `${(value / 1e3).toFixed(1)} Kbps`; return `${Math.round(value)} bps`; }
@@ -921,6 +944,8 @@ async function openSnmpDetails(device) {
     history.append(row);
   });
   document.getElementById("snmpBandwidthRange").dataset.deviceId = device.id;
+  document.getElementById("snmpGraphSelect").dataset.deviceId = device.id;
+  populateSnmpGraphSelector(shownInterfaces);
   await renderSnmpBandwidth(device.id);
   document.getElementById("snmpDetailsModal").hidden = false;
 }
@@ -1348,6 +1373,7 @@ document.getElementById("maintenanceForm").addEventListener("submit", async (eve
   try { await api("/api/admin/maintenance", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); await loadAdminSettings(); showToast("Maintenance updated", document.getElementById("maintenanceStatus").textContent); } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("snmpBandwidthRange").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
+document.getElementById("snmpGraphSelect").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("addMapNode").addEventListener("click", () => openMapNode());
 document.getElementById("mapNodeForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); try { await api(values.id ? `/api/network-map/nodes/${values.id}` : "/api/network-map/nodes", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) }); document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value); } catch (err) { document.getElementById("mapNodeError").textContent = err.message; } });
 document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });

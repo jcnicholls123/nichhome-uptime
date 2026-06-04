@@ -1,6 +1,6 @@
 # NichHome Uptime
 
-[![Release](https://img.shields.io/github/v/release/jcnicholls123/nichhome-uptime?include_prereleases)](https://github.com/jcnicholls123/nichhome-uptime/releases)
+[![Release](https://img.shields.io/github/v/release/jcnicholls123/nichhome-uptime)](https://github.com/jcnicholls123/nichhome-uptime/releases/latest)
 [![Build container](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml/badge.svg)](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml)
 
 NichHome Uptime is a local-first infrastructure dashboard focused on uptime,

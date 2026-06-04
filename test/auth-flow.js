@@ -9,7 +9,7 @@ const port = 18080 + Math.floor(Math.random() * 1000);
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nichhome-test-"));
 const server = spawn(process.execPath, ["server.js"], {
   cwd: path.join(__dirname, ".."),
-  env: { ...process.env, PORT: String(port), DATA_DIR: dataDir },
+  env: { ...process.env, PORT: String(port), DATA_DIR: dataDir, DOCKER_SOCKET: path.join(dataDir, "missing-docker.sock") },
   stdio: "inherit"
 });
 let cookie = "";

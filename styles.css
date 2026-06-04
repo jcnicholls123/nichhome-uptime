@@ -229,6 +229,12 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .connected-pill { display: flex; align-items: center; gap: 5px; padding: 4px 6px; color: #5f9b7a; background: #dcece3; border-radius: 5px; font-family: "DM Mono"; font-size: 6px; }
 .connected-pill i { width: 4px; height: 4px; border-radius: 50%; background: #61ad83; }
 .docker-summary { display: grid; grid-template-columns: repeat(3, 1fr); margin: 5px 0 13px; border: 1px solid var(--line); border-radius: 8px; }
+.docker-host-list { display: grid; gap: 7px; margin: 10px 0; }
+.docker-host-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 9px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: rgba(255,255,255,.3); }
+.docker-host-row.down { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.05); }
+.docker-host-row > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.docker-host-row strong { font-size: 12px; }
+.docker-host-row small { overflow: hidden; color: #8c9490; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .docker-summary div { display: grid; gap: 2px; padding: 11px; border-left: 1px solid var(--line); }
 .docker-summary div:first-child { border-left: 0; }
 .docker-summary strong { font-size: 14px; }
@@ -407,6 +413,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .activity-item strong, .monitor-row strong, .snmp-device-card strong { font-size: 14px; }
   .activity-item p, .activity-item small, .monitor-row small, .snmp-device-card p, .snmp-device-card small, .empty-state, .text-button, .dark-button { font-size: 12px; line-height: 1.5; }
   .storage-row { grid-template-columns: 1fr; }
+  .docker-host-row { grid-template-columns: 1fr auto; }
+  .docker-host-row .status-label { grid-column: 1; justify-self: start; }
   .snmp-page-actions { display: flex; flex-wrap: wrap; margin-top: 14px; }
   .snmp-workspace .page-heading { display: block; }
   .inline-tool-form { grid-template-columns: 1fr; }

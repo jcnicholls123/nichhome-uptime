@@ -35,6 +35,10 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   interfaces, and TrueNAS MIB inventory
 - Docker Engine fleet discovery with state, health, image, CPU, RAM, restart
   count, uptime history, incidents, and Discord alerts
+- Configurable Docker hosts using a mounted socket path or reachable HTTP/HTTPS
+  Docker API endpoint
+- UniFi AP client totals and radio/VAP telemetry plus gateway WAN/LAN traffic,
+  speed, error, and discard counters
 
 All NichHome Uptime features are free. Unfinished features are clearly marked
 as Coming soon and are not hidden behind a paid tier.
@@ -90,6 +94,13 @@ Docker socket access lets NichHome Uptime read the local TrueNAS Docker Engine.
 Only mount it for this trusted local application. The socket grants powerful
 access to the Docker host even when the filesystem mount is marked read-only.
 
+You can also select **Add monitor > Docker host** or **Add Docker host** on the
+container fleet panel. A socket path only works when that socket is already
+mounted inside the NichHome container. If the TrueNAS app editor provides no
+host-path mount option, configure a Docker API endpoint reachable from
+NichHome instead. Avoid exposing an unencrypted Docker API outside a trusted
+private network because Docker daemon access is highly privileged.
+
 For TrueNAS SNMP monitoring, enable **System > Services > SNMP**, configure a
 community, then add the TrueNAS hostname/IP as an SNMP device in NichHome.
 SNMP v3 can also be used by selecting v3 in the device form and entering the
@@ -104,6 +115,11 @@ Zabbix XML templates, poll the fleet, and inspect active SNMP alerts.
 Zabbix imports accept numeric SNMP item OIDs only. NichHome does not execute
 template scripts or preprocessing. Walks use the saved device credentials and
 return at most 1,000 results per request.
+
+UniFi AP client totals use the station counts reported by the AP VAP table.
+UniFi gateways expose WAN/LAN interface traffic over SNMP, but controller-wide
+client totals are not exposed by the gateway device SNMP service. That requires
+the planned UniFi Network API integration.
 
 ### Using YAML/Compose
 

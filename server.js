@@ -1,6 +1,7 @@
 const crypto = require("crypto");
 const net = require("net");
 const http = require("http");
+const https = require("https");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
 const path = require("path");
@@ -192,6 +193,18 @@ db.exec(`
     resolved_at TEXT,
     cause TEXT
   );
+  CREATE TABLE IF NOT EXISTS docker_hosts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    connection_type TEXT NOT NULL DEFAULT 'socket',
+    endpoint TEXT NOT NULL,
+    tls_verify INTEGER NOT NULL DEFAULT 1,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    last_polled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
 `);
 
 function ensureColumn(table, column, definition) {
@@ -207,6 +220,13 @@ ensureColumn("snmp_devices", "v3_auth_protocol", "TEXT");
 ensureColumn("snmp_devices", "v3_auth_key", "TEXT");
 ensureColumn("snmp_devices", "v3_priv_protocol", "TEXT");
 ensureColumn("snmp_devices", "v3_priv_key", "TEXT");
+ensureColumn("snmp_interfaces", "in_errors", "INTEGER");
+ensureColumn("snmp_interfaces", "out_errors", "INTEGER");
+ensureColumn("snmp_interfaces", "in_discards", "INTEGER");
+ensureColumn("snmp_interfaces", "out_discards", "INTEGER");
+ensureColumn("docker_containers", "host_id", "INTEGER");
+ensureColumn("docker_containers", "raw_container_id", "TEXT");
+ensureColumn("docker_incidents", "host_id", "INTEGER");
 
 const builtInSnmpProfiles = [
   ["Auto detect", "auto", "Automatically use the best built-in profile for the device."],
@@ -219,6 +239,20 @@ const builtInSnmpProfiles = [
 ];
 const insertBuiltInProfile = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'built-in', ?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name, description=excluded.description");
 for (const profile of builtInSnmpProfiles) insertBuiltInProfile.run(...profile);
+if (fs.existsSync(DOCKER_SOCKET) && !db.prepare("SELECT 1 FROM docker_hosts WHERE endpoint = ?").get(DOCKER_SOCKET)) {
+  db.prepare("INSERT INTO docker_hosts (name, connection_type, endpoint) VALUES ('Local Docker Engine', 'socket', ?)").run(DOCKER_SOCKET);
+}
+const localDockerHost = db.prepare("SELECT id FROM docker_hosts WHERE connection_type = 'socket' AND endpoint = ?").get(DOCKER_SOCKET);
+if (localDockerHost) {
+  db.transaction(() => {
+    for (const row of db.prepare("SELECT container_id FROM docker_containers WHERE host_id IS NULL").all()) {
+      const newId = `${localDockerHost.id}:${row.container_id}`;
+      db.prepare("UPDATE docker_metrics SET container_id = ? WHERE container_id = ?").run(newId, row.container_id);
+      db.prepare("UPDATE docker_incidents SET container_id = ?, host_id = ? WHERE container_id = ?").run(newId, localDockerHost.id, row.container_id);
+      db.prepare("UPDATE docker_containers SET container_id = ?, host_id = ?, raw_container_id = ? WHERE container_id = ?").run(newId, localDockerHost.id, row.container_id, row.container_id);
+    }
+  })();
+}
 
 const staticDir = __dirname;
 const attempts = new Map();
@@ -511,15 +545,30 @@ function valueText(value) {
   return value.length === 6 ? [...value].map((part) => part.toString(16).padStart(2, "0")).join(":") : value.toString();
 }
 
+function numericSnmpValue(value) {
+  if (!Buffer.isBuffer(value)) return Number(value);
+  if (value.length >= 8) return Number(value.readBigUInt64BE(value.length - 8));
+  let total = 0;
+  for (const byte of value) total = total * 256 + byte;
+  return total;
+}
+
 async function discoverSnmpInterfaces(device) {
   const columns = {
     name: "1.3.6.1.2.1.2.2.1.2",
     mac: "1.3.6.1.2.1.2.2.1.6",
     adminStatus: "1.3.6.1.2.1.2.2.1.7",
     operStatus: "1.3.6.1.2.1.2.2.1.8",
-    inOctets: "1.3.6.1.2.1.2.2.1.10",
-    outOctets: "1.3.6.1.2.1.2.2.1.16",
+    inOctets: "1.3.6.1.2.1.31.1.1.1.6",
+    outOctets: "1.3.6.1.2.1.31.1.1.1.10",
+    inOctets32: "1.3.6.1.2.1.2.2.1.10",
+    outOctets32: "1.3.6.1.2.1.2.2.1.16",
+    inErrors: "1.3.6.1.2.1.2.2.1.14",
+    outErrors: "1.3.6.1.2.1.2.2.1.20",
+    inDiscards: "1.3.6.1.2.1.2.2.1.13",
+    outDiscards: "1.3.6.1.2.1.2.2.1.19",
     speed: "1.3.6.1.2.1.2.2.1.5",
+    highSpeed: "1.3.6.1.2.1.31.1.1.1.15",
     alias: "1.3.6.1.2.1.31.1.1.1.18"
   };
   const interfaces = new Map();
@@ -528,22 +577,42 @@ async function discoverSnmpInterfaces(device) {
       for (const varbind of await snmpSubtree(device, oid)) {
         const index = varbindIndex(varbind);
         const row = interfaces.get(index) || { index };
-        row[column] = ["name", "alias", "mac"].includes(column) ? valueText(varbind.value) : Number(varbind.value);
+        row[column] = ["name", "alias", "mac"].includes(column) ? valueText(varbind.value) : numericSnmpValue(varbind.value);
         interfaces.set(index, row);
       }
     } catch {}
   }
   const upsert = db.prepare(`
-    INSERT INTO snmp_interfaces (device_id, interface_index, name, alias, mac, admin_status, oper_status, speed_bps, in_octets, out_octets, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    INSERT INTO snmp_interfaces (device_id, interface_index, name, alias, mac, admin_status, oper_status, speed_bps, in_octets, out_octets, in_errors, out_errors, in_discards, out_discards, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(device_id, interface_index) DO UPDATE SET name=excluded.name, alias=excluded.alias, mac=excluded.mac,
       admin_status=excluded.admin_status, oper_status=excluded.oper_status, speed_bps=excluded.speed_bps,
-      in_octets=excluded.in_octets, out_octets=excluded.out_octets, updated_at=CURRENT_TIMESTAMP
+      in_octets=excluded.in_octets, out_octets=excluded.out_octets, in_errors=excluded.in_errors, out_errors=excluded.out_errors,
+      in_discards=excluded.in_discards, out_discards=excluded.out_discards, updated_at=CURRENT_TIMESTAMP
   `);
   const save = db.transaction(() => {
-    for (const row of interfaces.values()) upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.speed || null, row.inOctets || null, row.outOctets || null);
+    for (const row of interfaces.values()) upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.highSpeed ? row.highSpeed * 1000000 : row.speed || null, row.inOctets || row.inOctets32 || null, row.outOctets || row.outOctets32 || null, row.inErrors || 0, row.outErrors || 0, row.inDiscards || 0, row.outDiscards || 0);
   });
   save();
+}
+
+async function discoverUniFiMetrics(device) {
+  const profile = snmpDeviceProfile(device);
+  if (!profile.isUniFi) return;
+  const rows = [];
+  const walk = async (category, label, oid, unit = "") => {
+    try {
+      for (const varbind of await snmpSubtree(device, oid)) rows.push({ category, key: varbind.oid, label, value: valueText(varbind.value), unit });
+    } catch {}
+  };
+  await Promise.all([
+    walk("unifi-clients", "Connected clients per VAP", "1.3.6.1.4.1.41112.1.6.1.2.1.8", "clients"),
+    walk("unifi-vaps", "UniFi VAP telemetry", "1.3.6.1.4.1.41112.1.6.1.2"),
+    walk("unifi-radios", "UniFi radio telemetry", "1.3.6.1.4.1.41112.1.6.1.1"),
+    walk("unifi-system", "UniFi system telemetry", "1.3.6.1.4.1.41112.1.6.3")
+  ]);
+  const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
+  db.transaction(() => rows.slice(0, 3000).forEach((row) => upsert.run(device.id, row.category, row.key, row.label, row.value, row.unit)))();
 }
 
 async function discoverTrueNasMetrics(device) {
@@ -607,6 +676,7 @@ async function pollSnmpDevice(id) {
     })();
     await discoverSnmpInterfaces(device);
     await discoverTrueNasMetrics({ ...device, sys_name: sysName, sys_description: sysDescription });
+    await discoverUniFiMetrics({ ...device, sys_name: sysName, sys_description: sysDescription });
     await pollAssignedProfile(device);
   } catch (error) {
     status = "down";
@@ -645,22 +715,40 @@ async function sendDiscord(content) {
   }
 }
 
-function dockerAvailable() {
-  return Boolean(DOCKER_SOCKET) && fs.existsSync(DOCKER_SOCKET);
-}
 let dockerFleetError = null;
 let dockerLastPolledAt = null;
 
-function dockerRequest(requestPath) {
+function validateDockerHost(input) {
+  const name = String(input.name || "").trim();
+  const connectionType = String(input.connectionType || "socket");
+  const endpoint = String(input.endpoint || "").trim();
+  const tlsVerify = input.tlsVerify !== false;
+  if (name.length < 2 || name.length > 80) throw new Error("Docker host name must be between 2 and 80 characters.");
+  if (!["socket", "http", "https"].includes(connectionType)) throw new Error("Select a valid Docker connection type.");
+  if (connectionType === "socket" && (!endpoint.startsWith("/") || endpoint.length > 300)) throw new Error("Enter a container-local Docker socket path.");
+  if (connectionType !== "socket") {
+    const url = new URL(endpoint);
+    if (url.protocol !== `${connectionType}:`) throw new Error(`Docker endpoint must begin with ${connectionType}://`);
+    if (url.username || url.password || url.pathname !== "/" || url.search || url.hash) throw new Error("Enter only the Docker daemon base URL, without credentials or a path.");
+  }
+  return { name, connectionType, endpoint, tlsVerify };
+}
+
+function dockerRequest(host, requestPath) {
   return new Promise((resolve, reject) => {
-    if (!dockerAvailable()) return reject(new Error(`Docker socket is not mounted at ${DOCKER_SOCKET}`));
-    const request = http.request({ socketPath: DOCKER_SOCKET, path: requestPath, method: "GET" }, (response) => {
+    if (host.connection_type === "socket" && !fs.existsSync(host.endpoint)) return reject(new Error(`Socket ${host.endpoint} is not available inside this container.`));
+    const client = host.connection_type === "https" ? https : http;
+    const url = host.connection_type === "socket" ? null : new URL(requestPath, `${host.endpoint.replace(/\/+$/, "")}/`);
+    const options = host.connection_type === "socket"
+      ? { socketPath: host.endpoint, path: requestPath, method: "GET" }
+      : { protocol: url.protocol, hostname: url.hostname, port: url.port, path: `${url.pathname}${url.search}`, method: "GET", rejectUnauthorized: Boolean(host.tls_verify) };
+    const request = client.request(options, (response) => {
       let body = "";
       response.setEncoding("utf8");
       response.on("data", (chunk) => { body += chunk; });
       response.on("end", () => {
         if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`Docker Engine returned HTTP ${response.statusCode}`));
-        try { resolve(body ? JSON.parse(body) : null); } catch { reject(new Error("Docker Engine returned invalid JSON")); }
+        try { resolve(body ? JSON.parse(body) : null); } catch { resolve(body); }
       });
     });
     request.setTimeout(10000, () => request.destroy(new Error("Docker Engine request timed out")));
@@ -683,25 +771,30 @@ function dockerStatsPercent(stats) {
   return systemDelta > 0 && cpuDelta >= 0 ? (cpuDelta / systemDelta) * cpus * 100 : 0;
 }
 
-async function pollDockerFleet() {
-  if (!dockerAvailable()) {
-    dockerFleetError = `Mount ${DOCKER_SOCKET} to enable Docker fleet monitoring.`;
-    return { available: false, error: dockerFleetError };
-  }
+async function pollDockerHost(hostOrId) {
+  const host = typeof hostOrId === "object" ? hostOrId : db.prepare("SELECT * FROM docker_hosts WHERE id = ?").get(Number(hostOrId));
+  if (!host || !host.enabled) return { available: false, error: "Docker host not found or disabled." };
+  const hostIncidentId = `host:${host.id}`;
   let containers;
   try {
-    containers = await dockerRequest("/containers/json?all=1");
+    await dockerRequest(host, "/_ping");
+    containers = await dockerRequest(host, "/containers/json?all=1");
   } catch (error) {
-    dockerFleetError = error.message;
-    return { available: false, error: dockerFleetError };
+    db.prepare("UPDATE docker_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
+    if (host.status !== "down") {
+      db.prepare("INSERT INTO docker_incidents (container_id, host_id, container_name, cause) VALUES (?, ?, ?, ?)").run(hostIncidentId, host.id, `${host.name} Docker host`, error.message);
+      await sendDiscord(`🔴 **Docker host ${host.name} is DOWN**\n${error.message}`);
+    }
+    return { available: false, error: error.message };
   }
   const seen = new Set();
   for (const container of containers) {
-    const id = container.Id;
+    const rawId = container.Id;
+    const id = `${host.id}:${rawId}`;
     seen.add(id);
     const name = String(container.Names?.[0] || id.slice(0, 12)).replace(/^\//, "");
     let inspect = null;
-    try { inspect = await dockerRequest(`/containers/${id}/json`); } catch {}
+    try { inspect = await dockerRequest(host, `/containers/${rawId}/json`); } catch {}
     const state = inspect?.State?.Status || container.State || "unknown";
     const health = inspect?.State?.Health?.Status || dockerHealth(container);
     const previous = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(id);
@@ -713,7 +806,7 @@ async function pollDockerFleet() {
     let memoryLimitBytes = null;
     if (state === "running") {
       try {
-        const stats = await dockerRequest(`/containers/${id}/stats?stream=false`);
+        const stats = await dockerRequest(host, `/containers/${rawId}/stats?stream=false`);
         cpuPercent = dockerStatsPercent(stats);
         memoryBytes = Number(stats?.memory_stats?.usage || 0);
         memoryLimitBytes = Number(stats?.memory_stats?.limit || 0);
@@ -721,17 +814,17 @@ async function pollDockerFleet() {
     }
     db.transaction(() => {
       db.prepare(`
-        INSERT INTO docker_containers (container_id, name, image, state, status_text, health, cpu_percent, memory_bytes, memory_limit_bytes, restart_count, compose_project, created_at, last_seen_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        INSERT INTO docker_containers (container_id, host_id, raw_container_id, name, image, state, status_text, health, cpu_percent, memory_bytes, memory_limit_bytes, restart_count, compose_project, created_at, last_seen_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         ON CONFLICT(container_id) DO UPDATE SET name=excluded.name, image=excluded.image, state=excluded.state, status_text=excluded.status_text,
           health=excluded.health, cpu_percent=excluded.cpu_percent, memory_bytes=excluded.memory_bytes, memory_limit_bytes=excluded.memory_limit_bytes,
           restart_count=excluded.restart_count, compose_project=excluded.compose_project, created_at=excluded.created_at, last_seen_at=CURRENT_TIMESTAMP
-      `).run(id, name, container.Image || "", state, container.Status || "", health, cpuPercent, memoryBytes, memoryLimitBytes, Number(inspect?.RestartCount || 0), container.Labels?.["com.docker.compose.project"] || "", container.Created || null);
+      `).run(id, host.id, rawId, name, container.Image || "", state, container.Status || "", health, cpuPercent, memoryBytes, memoryLimitBytes, Number(inspect?.RestartCount || 0), container.Labels?.["com.docker.compose.project"] || "", container.Created || null);
       db.prepare("INSERT INTO docker_metrics (container_id, status, cpu_percent, memory_bytes, message) VALUES (?, ?, ?, ?, ?)")
         .run(id, status, cpuPercent, memoryBytes, status === "down" ? container.Status || health : null);
       db.prepare("DELETE FROM docker_metrics WHERE id IN (SELECT id FROM docker_metrics WHERE container_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
       if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) {
-        db.prepare("INSERT INTO docker_incidents (container_id, container_name, cause) VALUES (?, ?, ?)").run(id, name, container.Status || health);
+        db.prepare("INSERT INTO docker_incidents (container_id, host_id, container_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, container.Status || health);
       }
       if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) {
         db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(id);
@@ -740,16 +833,32 @@ async function pollDockerFleet() {
     if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) await sendDiscord(`🔴 **Docker container ${name} is DOWN**\n${container.Status || health}`);
     if (status === "up" && previous && (previous.state !== "running" || previous.health === "unhealthy")) await sendDiscord(`🟢 **Docker container ${name} recovered**`);
   }
-  const stale = db.prepare("SELECT container_id FROM docker_containers").all().filter((item) => !seen.has(item.container_id));
+  const stale = db.prepare("SELECT container_id FROM docker_containers WHERE host_id = ?").all(host.id).filter((item) => !seen.has(item.container_id));
   db.transaction(() => {
     for (const { container_id } of stale) {
       db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(container_id);
       db.prepare("DELETE FROM docker_containers WHERE container_id = ?").run(container_id);
     }
   })();
-  dockerFleetError = null;
+  db.prepare("UPDATE docker_hosts SET status = 'up', last_error = NULL, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(host.id);
+  if (host.status === "down") {
+    db.prepare("UPDATE docker_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE container_id = ? AND resolved_at IS NULL").run(hostIncidentId);
+    await sendDiscord(`🟢 **Docker host ${host.name} recovered**`);
+  }
   dockerLastPolledAt = new Date().toISOString();
-  return { available: true, count: containers.length };
+  return { available: true, count: containers.length, hostId: host.id };
+}
+
+async function pollDockerFleet() {
+  const hosts = db.prepare("SELECT * FROM docker_hosts WHERE enabled = 1 ORDER BY id").all();
+  if (!hosts.length) {
+    dockerFleetError = "Add a Docker host to begin container monitoring.";
+    return { available: false, error: dockerFleetError };
+  }
+  const results = [];
+  for (const host of hosts) results.push(await pollDockerHost(host));
+  dockerFleetError = results.every((item) => !item.available) ? results.map((item) => item.error).filter(Boolean).join("; ") : null;
+  return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
 }
 
 async function checkHttp(target, timeoutSeconds) {
@@ -1000,7 +1109,7 @@ app.get("/api/snmp/devices", requireAuth, (req, res) => {
 app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
   const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(req.params.id));
   if (!device) return res.status(404).json({ error: "SNMP device not found." });
-  const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, admin_status AS adminStatus, oper_status AS operStatus, speed_bps AS speedBps, in_octets AS inOctets, out_octets AS outOctets, updated_at AS updatedAt FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(device.id);
+  const interfaces = db.prepare("SELECT interface_index AS interfaceIndex, name, alias, mac, admin_status AS adminStatus, oper_status AS operStatus, speed_bps AS speedBps, in_octets AS inOctets, out_octets AS outOctets, in_errors AS inErrors, out_errors AS outErrors, in_discards AS inDiscards, out_discards AS outDiscards, updated_at AS updatedAt FROM snmp_interfaces WHERE device_id = ? ORDER BY interface_index").all(device.id);
   const oids = db.prepare("SELECT oid, label, value, updated_at AS updatedAt FROM snmp_oids WHERE device_id = ? ORDER BY oid").all(device.id);
   const metrics = db.prepare("SELECT status, uptime_ticks AS uptimeTicks, response_ms AS responseMs, message, polled_at AS polledAt FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 100").all(device.id);
   const profileMetrics = db.prepare("SELECT category, metric_key AS metricKey, label, value, unit, updated_at AS updatedAt FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, metric_key").all(device.id);
@@ -1099,23 +1208,63 @@ app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
 });
 app.get("/api/docker/status", requireAuth, (req, res) => {
   const containers = db.prepare("SELECT * FROM docker_containers ORDER BY name").all();
+  const hosts = db.prepare("SELECT * FROM docker_hosts ORDER BY name").all();
   res.json({
-    available: dockerAvailable() && !dockerFleetError,
-    socketPath: DOCKER_SOCKET,
+    available: hosts.some((item) => item.status === "up"),
     error: dockerFleetError,
     lastPolledAt: dockerLastPolledAt,
+    hostCount: hosts.length,
+    onlineHosts: hosts.filter((item) => item.status === "up").length,
     total: containers.length,
     running: containers.filter((item) => item.state === "running" && item.health !== "unhealthy").length,
     unhealthy: containers.filter((item) => item.health === "unhealthy").length,
     stopped: containers.filter((item) => item.state !== "running").length
   });
 });
+app.get("/api/docker/hosts", requireAuth, (req, res) => {
+  res.json(db.prepare("SELECT id, name, connection_type AS connectionType, endpoint, tls_verify AS tlsVerify, enabled, status, last_error AS lastError, last_polled_at AS lastPolledAt FROM docker_hosts ORDER BY name").all().map((item) => ({ ...item, tlsVerify: Boolean(item.tlsVerify), enabled: Boolean(item.enabled) })));
+});
+app.post("/api/docker/hosts/test", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateDockerHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const version = await dockerRequest({ connection_type: host.connectionType, endpoint: host.endpoint, tls_verify: host.tlsVerify ? 1 : 0 }, "/version");
+    res.json({ ok: true, version: version.Version || "unknown", apiVersion: version.ApiVersion || "unknown" });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/docker/hosts", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateDockerHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const result = db.prepare("INSERT INTO docker_hosts (name, connection_type, endpoint, tls_verify) VALUES (?, ?, ?, ?)").run(host.name, host.connectionType, host.endpoint, host.tlsVerify ? 1 : 0);
+  const poll = await pollDockerHost(Number(result.lastInsertRowid));
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), status: poll.available ? "up" : "down", error: poll.error });
+});
+app.put("/api/docker/hosts/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  if (!db.prepare("SELECT 1 FROM docker_hosts WHERE id = ?").get(id)) return res.status(404).json({ error: "Docker host not found." });
+  let host;
+  try { host = validateDockerHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE docker_hosts SET name = ?, connection_type = ?, endpoint = ?, tls_verify = ?, enabled = ? WHERE id = ?").run(host.name, host.connectionType, host.endpoint, host.tlsVerify ? 1 : 0, enabled, id);
+  if (enabled) await pollDockerHost(id);
+  res.json({ ok: true });
+});
+app.delete("/api/docker/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  db.transaction(() => {
+    db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
+    db.prepare("DELETE FROM docker_incidents WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM docker_containers WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM docker_hosts WHERE id = ?").run(id);
+  })();
+  res.json({ ok: true });
+});
 app.get("/api/docker/containers", requireAuth, (req, res) => {
-  const containers = db.prepare("SELECT * FROM docker_containers ORDER BY name").all();
+  const containers = db.prepare("SELECT docker_containers.*, docker_hosts.name AS host_name FROM docker_containers LEFT JOIN docker_hosts ON docker_hosts.id = docker_containers.host_id ORDER BY docker_hosts.name, docker_containers.name").all();
   res.json(containers.map((item) => {
     const openIncident = db.prepare("SELECT 1 FROM docker_incidents WHERE container_id = ? AND resolved_at IS NULL").get(item.container_id);
     return {
-      id: item.container_id, name: item.name, image: item.image, state: item.state, statusText: item.status_text,
+      id: item.container_id, hostId: item.host_id, hostName: item.host_name, name: item.name, image: item.image, state: item.state, statusText: item.status_text,
       health: item.health, status: item.state === "running" && item.health !== "unhealthy" ? "up" : openIncident || item.health === "unhealthy" ? "down" : "paused",
       cpuPercent: item.cpu_percent, memoryBytes: item.memory_bytes, memoryLimitBytes: item.memory_limit_bytes,
       restartCount: item.restart_count, composeProject: item.compose_project, createdAt: item.created_at, lastSeenAt: item.last_seen_at
@@ -1124,7 +1273,7 @@ app.get("/api/docker/containers", requireAuth, (req, res) => {
 });
 app.post("/api/docker/refresh", requireAuth, async (req, res) => {
   try {
-    const result = await pollDockerFleet();
+    const result = req.body.hostId ? await pollDockerHost(Number(req.body.hostId)) : await pollDockerFleet();
     if (!result.available) return res.status(400).json({ error: result.error });
     res.json(result);
   } catch (error) {

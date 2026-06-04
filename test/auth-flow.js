@@ -4,8 +4,10 @@ const os = require("os");
 const path = require("path");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
+const http = require("http");
 
 const port = 18080 + Math.floor(Math.random() * 1000);
+const dockerPort = port + 2000;
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "nichhome-test-"));
 const server = spawn(process.execPath, ["server.js"], {
   cwd: path.join(__dirname, ".."),
@@ -14,6 +16,16 @@ const server = spawn(process.execPath, ["server.js"], {
 });
 let cookie = "";
 const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
+const dockerServer = http.createServer((req, res) => {
+  res.setHeader("Content-Type", "application/json");
+  if (req.url === "/_ping") return res.end("OK");
+  if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
+  if (req.url === "/containers/json?all=1") return res.end(JSON.stringify([{ Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} }]));
+  if (req.url === "/containers/abc123/json") return res.end(JSON.stringify({ State: { Status: "running", Health: { Status: "healthy" } }, RestartCount: 0 }));
+  if (req.url === "/containers/abc123/stats?stream=false") return res.end(JSON.stringify({ cpu_stats: { cpu_usage: { total_usage: 10 }, system_cpu_usage: 100, online_cpus: 1 }, precpu_stats: { cpu_usage: { total_usage: 5 }, system_cpu_usage: 50 }, memory_stats: { usage: 1024, limit: 2048 } }));
+  res.statusCode = 404; res.end(JSON.stringify({ message: "not found" }));
+});
+dockerServer.listen(dockerPort, "127.0.0.1");
 
 function totp(secret) {
   let bits = "";
@@ -50,7 +62,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.9", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.10", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -87,6 +99,16 @@ async function waitForServer() {
     assert.equal(dockerStatus.available, false);
     assert.deepEqual(await (await request("/api/docker/containers")).json(), []);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 400);
+    assert.equal((await request("/api/docker/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Docker", connectionType: "http", endpoint: `http://127.0.0.1:${dockerPort}` }) })).status, 200);
+    assert.equal((await request("/api/docker/hosts", { method: "POST", body: JSON.stringify({ name: "Test Docker", connectionType: "http", endpoint: `http://127.0.0.1:${dockerPort}` }) })).status, 201);
+    const dockerHosts = await (await request("/api/docker/hosts")).json();
+    assert.equal(dockerHosts[0].status, "up");
+    const connectedDockerStatus = await (await request("/api/docker/status")).json();
+    assert.equal(connectedDockerStatus.available, true);
+    const containers = await (await request("/api/docker/containers")).json();
+    assert.equal(containers[0].hostName, "Test Docker");
+    assert.equal(containers[0].status, "up");
+    assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();
     assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));
     const zabbixXml = `<?xml version="1.0"?><zabbix_export><templates><template><name>Test custom SNMP</name><items><item><name>System name</name><snmp_oid>1.3.6.1.2.1.1.5.0</snmp_oid><units>text</units></item><item><name>Ignored symbolic OID</name><snmp_oid>SNMPv2-MIB::sysName.0</snmp_oid></item></items></template></templates></zabbix_export>`;
@@ -140,6 +162,7 @@ async function waitForServer() {
   } finally {
     server.kill();
     await new Promise((resolve) => server.once("exit", resolve));
+    dockerServer.close();
     fs.rmSync(dataDir, { recursive: true, force: true, maxRetries: 4, retryDelay: 100 });
   }
 })().catch((error) => {

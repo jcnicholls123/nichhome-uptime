@@ -128,7 +128,8 @@
           </article>
 
           <article class="panel docker-panel">
-            <div class="panel-heading"><div><span class="section-tag blue">DOCKER ENGINE</span><h2>Container fleet</h2></div><button class="soft-button" id="refreshDocker">Refresh fleet</button></div>
+            <div class="panel-heading"><div><span class="section-tag blue">DOCKER ENGINE</span><h2>Container fleet</h2></div><div class="modal-heading-actions"><button class="soft-button" id="addDockerHost">Add Docker host</button><button class="soft-button" id="refreshDocker">Refresh fleet</button></div></div>
+            <div class="docker-host-list" id="dockerHostList"></div>
             <div class="docker-summary" id="dockerSummary"></div>
             <div class="container-stack" id="dockerContainerList"><p class="empty-state">Checking Docker Engine access...</p></div>
           </article>
@@ -186,7 +187,7 @@
       <div class="modal-heading"><div><span class="section-tag accent">REAL MONITORING</span><h2 id="monitorTitle">Add a monitor</h2></div><button class="modal-close" id="closeMonitor" aria-label="Close">×</button></div>
       <form class="monitor-form" id="monitorForm">
         <label>Name<input name="name" required minlength="2" maxlength="80" placeholder="Home Assistant"></label>
-        <label>Type<select name="type"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP port</option><option value="ping">Ping IP / hostname</option></select></label>
+        <label>Type<select name="type"><option value="http">HTTP / HTTPS</option><option value="tcp">TCP port</option><option value="ping">Ping IP / hostname</option><option value="docker-host">Docker host</option></select></label>
         <label>Target<input name="target" required placeholder="https://home.example.com"></label>
         <div class="form-columns">
           <label>Check every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option><option value="900">15 minutes</option></select></label>
@@ -280,6 +281,12 @@
         <h3 class="modal-subtitle">Storage, pools, and datasets</h3>
         <div class="storage-list" id="truenasStorageList"></div>
       </section>
+      <section id="unifiDetails" hidden>
+        <div class="panel-heading details-heading"><div><span class="section-tag blue">UNIFI</span><h2>UniFi device intelligence</h2></div></div>
+        <p class="form-help" id="unifiMetricHelp"></p>
+        <div class="truenas-metric-grid" id="unifiMetricGrid"></div>
+        <div class="oid-details-list" id="unifiMetricList"></div>
+      </section>
       <h3 class="modal-subtitle">System OIDs</h3>
       <div class="oid-details-list" id="snmpOids"></div>
       <h3 class="modal-subtitle">Profile telemetry</h3>
@@ -287,12 +294,29 @@
       <div class="panel-heading details-heading"><div><span class="section-tag">DISCOVERED DATA</span><h2 id="snmpInterfaceTitle">Interfaces</h2><p class="form-help" id="snmpInterfaceHelp"></p></div><button class="dark-button" id="refreshSnmpDetails">Refresh data</button></div>
       <div class="interface-table-wrap">
         <table class="interface-table">
-          <thead><tr><th>Interface</th><th>Status</th><th>MAC</th><th>Speed</th><th>Received</th><th>Sent</th></tr></thead>
+          <thead><tr><th>Interface</th><th>Status</th><th>MAC</th><th>Speed</th><th>Received</th><th>Sent</th><th>Errors</th><th>Discards</th></tr></thead>
           <tbody id="snmpInterfaces"></tbody>
         </table>
       </div>
       <h3 class="modal-subtitle">Recent SNMP polls</h3>
       <div class="history-list" id="snmpHistory"></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="dockerHostModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag blue">CONTAINER MONITORING</span><h2 id="dockerHostTitle">Set up Docker host</h2></div><button class="modal-close" data-close="dockerHostModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="dockerHostForm">
+        <input type="hidden" name="id">
+        <label>Friendly name<input name="name" required minlength="2" maxlength="80" placeholder="TrueNAS Docker"></label>
+        <label>Connection type<select name="connectionType"><option value="socket">Socket path</option><option value="http">Docker API over HTTP</option><option value="https">Docker API over HTTPS</option></select></label>
+        <label>Docker daemon<input name="endpoint" required value="/var/run/docker.sock" placeholder="/var/run/docker.sock"></label>
+        <p class="form-help" id="dockerEndpointHelp">A socket path must already be mounted inside the NichHome container. If TrueNAS offers no mount option, use a reachable Docker API URL such as http://TRUENAS-IP:2375.</p>
+        <label class="toggle-label" id="dockerTlsVerifyLabel" hidden><input name="tlsVerify" type="checkbox" checked> Verify TLS certificate</label>
+        <label class="toggle-label" id="dockerHostEnabledLabel" hidden><input name="enabled" type="checkbox" checked> Host monitoring enabled</label>
+        <div class="form-columns"><button class="soft-button" type="button" id="testDockerHost">Test connection</button><button class="command-button" type="submit">Save Docker host</button></div>
+        <p class="modal-error" id="dockerHostError"></p>
+      </form>
     </section>
   </div>
 

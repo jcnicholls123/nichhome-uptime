@@ -10,6 +10,7 @@ let incidents = [];
 let snmpDevices = [];
 let snmpProfiles = [];
 let dockerContainers = [];
+let dockerHosts = [];
 let dockerStatus = { available: false };
 let searchFilter = "";
 let lastOpenIncidentCount = null;
@@ -45,6 +46,7 @@ function renderSearchResults() {
   const matches = [
     ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
     ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })),
+    ...dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })),
     ...dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) }))
   ].slice(0, 8);
   if (!matches.length) {
@@ -131,6 +133,12 @@ document.getElementById("manageMonitors").addEventListener("click", () => { moni
 document.getElementById("closeMonitor").addEventListener("click", () => { monitorModal.hidden = true; });
 monitorModal.addEventListener("click", (event) => { if (event.target === monitorModal) monitorModal.hidden = true; });
 document.querySelector("#monitorForm select[name=type]").addEventListener("change", (event) => {
+  if (event.target.value === "docker-host") {
+    monitorModal.hidden = true;
+    openDockerHostForm();
+    event.target.value = "http";
+    return;
+  }
   document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : event.target.value === "ping" ? "192.168.1.10" : "https://home.example.com";
 });
 mobileMenuButton.addEventListener("click", () => setMobileMenu(!sidebar.classList.contains("open")));
@@ -193,10 +201,11 @@ function renderMonitors() {
   monitorList.replaceChildren();
   const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   const visibleSnmp = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  if (!visible.length && !visibleSnmp.length) {
+  const visibleDockerHosts = dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
+  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = monitors.length || snmpDevices.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor or SNMP device to begin.";
+    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, or Docker host to begin.";
     monitorList.append(empty);
     return;
   }
@@ -277,10 +286,24 @@ function renderMonitors() {
     row.append(icon, copy, actions, status);
     monitorList.append(row);
   }
+  for (const host of visibleDockerHosts) {
+    const row = document.createElement("div"); row.className = "monitor-row real-monitor";
+    const icon = document.createElement("span"); icon.className = "service-icon api"; icon.textContent = "D";
+    const copy = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = host.name;
+    const detail = document.createElement("small"); detail.textContent = `DOCKER HOST · ${host.endpoint} · ${host.lastError || host.status}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openDockerHostForm(host));
+    const check = document.createElement("button"); check.className = "monitor-action"; check.textContent = "↻"; check.addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await Promise.all([loadDockerFleet(), loadIncidents()]); });
+    actions.append(edit, check);
+    const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+    row.append(icon, copy, actions, status); monitorList.append(row);
+  }
 }
 
 function updateDashboardHealth() {
-  const services = [...monitors, ...snmpDevices, ...dockerContainers.map((item) => ({ ...item, enabled: true }))];
+  const services = [...monitors, ...snmpDevices, ...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))];
   const up = services.filter((item) => item.enabled && item.status === "up");
   const down = services.filter((item) => item.enabled && item.status === "down");
   const checked = up.length + down.length;
@@ -511,12 +534,28 @@ function renderDockerFleet() {
   document.getElementById("dockerNavCount").textContent = dockerContainers.length;
   const summary = document.getElementById("dockerSummary");
   const list = document.getElementById("dockerContainerList");
+  const hosts = document.getElementById("dockerHostList");
   summary.replaceChildren();
   list.replaceChildren();
-  if (!dockerStatus.available) {
+  hosts.replaceChildren();
+  for (const host of dockerHosts) {
+    const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
+    const copy = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = host.name;
+    const detail = document.createElement("small"); detail.textContent = `${host.connectionType.toUpperCase()} · ${host.endpoint} · ${host.lastError || host.status}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.title = "Edit Docker host"; edit.addEventListener("click", () => openDockerHostForm(host));
+    const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "↻"; poll.title = "Refresh Docker host"; poll.addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await loadDockerFleet(); });
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.title = "Delete Docker host"; remove.addEventListener("click", async () => { if (window.confirm(`Delete Docker host ${host.name} and its container history?`)) { await api(`/api/docker/hosts/${host.id}`, { method: "DELETE" }); await loadDockerFleet(); } });
+    actions.append(edit, poll, remove);
+    const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+    row.append(copy, actions, status); hosts.append(row);
+  }
+  if (!dockerHosts.length) {
     const message = document.createElement("p");
     message.className = "docker-unavailable";
-    message.textContent = dockerStatus.error || `Docker Engine is not connected. Mount the TrueNAS Docker socket at ${dockerStatus.socketPath || "/var/run/docker.sock"} to enable the fleet.`;
+    message.textContent = "No Docker hosts configured. Add a socket path if it is mounted inside this container, or use a reachable Docker API URL.";
     list.append(message);
     return;
   }
@@ -535,7 +574,7 @@ function renderDockerFleet() {
     const cube = document.createElement("span"); cube.className = "cube"; cube.textContent = "▣";
     const copy = document.createElement("div");
     const name = document.createElement("strong"); name.textContent = item.name;
-    const detail = document.createElement("small"); detail.textContent = `${item.image} · ${item.statusText || item.health}${item.composeProject ? ` · Stack ${item.composeProject}` : ""}`;
+    const detail = document.createElement("small"); detail.textContent = `${item.hostName || "Docker"} · ${item.image} · ${item.statusText || item.health}${item.composeProject ? ` · Stack ${item.composeProject}` : ""}`;
     const metrics = document.createElement("div"); metrics.className = "container-metrics";
     const cpu = document.createElement("small"); cpu.textContent = `CPU ${item.cpuPercent == null ? "--" : item.cpuPercent.toFixed(1) + "%"}`;
     const memory = document.createElement("small"); memory.textContent = `RAM ${formatBytes(item.memoryBytes)}`;
@@ -547,10 +586,11 @@ function renderDockerFleet() {
 }
 
 async function loadDockerFleet() {
-  dockerStatus = await api("/api/docker/status");
-  dockerContainers = dockerStatus.available ? await api("/api/docker/containers") : [];
+  [dockerStatus, dockerHosts, dockerContainers] = await Promise.all([api("/api/docker/status"), api("/api/docker/hosts"), api("/api/docker/containers")]);
   renderDockerFleet();
+  renderMonitors();
   updateDashboardHealth();
+  renderSearchResults();
 }
 
 function formatBytes(value) {
@@ -584,6 +624,7 @@ async function openSnmpDetails(device) {
     stat.append(small, strong); summary.append(stat);
   }
   renderTrueNasDetails(data);
+  renderUniFiDetails(data);
   const interfaces = document.getElementById("snmpInterfaces");
   interfaces.replaceChildren();
   document.getElementById("snmpInterfaceTitle").textContent = profileType === "switch" ? "Switch ports and interfaces" : profileType === "access-point" ? "AP uplink and radio interfaces" : profileType === "gateway" ? "Gateway physical interfaces" : "Interfaces";
@@ -591,7 +632,7 @@ async function openSnmpDetails(device) {
   for (const item of shownInterfaces) {
     const row = document.createElement("tr");
     const interfaceStatus = item.operStatus === 1 ? "Up" : item.adminStatus === 2 ? "Disabled" : item.operStatus === 2 ? "Down" : "Unknown";
-    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, interfaceStatus, item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets)]) {
+    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, interfaceStatus, item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets), String((item.inErrors || 0) + (item.outErrors || 0)), String((item.inDiscards || 0) + (item.outDiscards || 0))]) {
       const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
     }
     interfaces.append(row);
@@ -627,6 +668,40 @@ async function openSnmpDetails(device) {
     history.append(row);
   });
   document.getElementById("snmpDetailsModal").hidden = false;
+}
+
+function renderUniFiDetails(data) {
+  const section = document.getElementById("unifiDetails");
+  section.hidden = !data.device.profile.isUniFi;
+  if (section.hidden) return;
+  const grid = document.getElementById("unifiMetricGrid");
+  const list = document.getElementById("unifiMetricList");
+  grid.replaceChildren(); list.replaceChildren();
+  const metrics = data.profileMetrics || [];
+  const clients = metrics.filter((item) => item.category === "unifi-clients").map((item) => Number(item.value)).filter(Number.isFinite);
+  document.getElementById("unifiMetricHelp").textContent = data.device.profile.type === "gateway"
+    ? "WAN/LAN port statistics below come from IF-MIB. Gateway-wide client totals are not exposed by UniFi device SNMP and will require the coming UniFi Network API integration."
+    : "Client totals are the station counts reported by the AP VAP table. UniFi firmware can occasionally report stale station counts.";
+  const physical = data.interfaces.filter((item) => item.mac && item.mac !== "00:00:00:00:00:00");
+  const cards = [
+    ["SNMP-reported clients", clients.length ? clients.reduce((sum, value) => sum + value, 0) : "--"],
+    ["Online interfaces", `${physical.filter((item) => item.operStatus === 1).length} / ${physical.length}`],
+    ["Traffic received", formatBytes(physical.reduce((sum, item) => sum + Number(item.inOctets || 0), 0))],
+    ["Traffic sent", formatBytes(physical.reduce((sum, item) => sum + Number(item.outOctets || 0), 0))],
+    ["Port errors", String(physical.reduce((sum, item) => sum + Number(item.inErrors || 0) + Number(item.outErrors || 0), 0))]
+  ];
+  for (const [label, value] of cards) {
+    const card = document.createElement("div"); card.className = "truenas-metric";
+    const small = document.createElement("small"); small.textContent = label;
+    const strong = document.createElement("strong"); strong.textContent = value;
+    card.append(small, strong); grid.append(card);
+  }
+  for (const item of metrics.filter((metric) => metric.category.startsWith("unifi-")).slice(0, 120)) {
+    const row = document.createElement("div"); row.className = "oid-detail";
+    const label = document.createElement("small"); label.textContent = `${item.label} · ${item.metricKey}`;
+    const value = document.createElement("strong"); value.textContent = `${item.value || "--"} ${item.unit || ""}`.trim();
+    row.append(label, value); list.append(row);
+  }
 }
 
 function renderTrueNasDetails(data) {
@@ -789,6 +864,64 @@ document.getElementById("refreshDocker").addEventListener("click", async () => {
   } catch (err) {
     showToast("Docker Engine unavailable", err.message);
   }
+});
+function toggleDockerEndpoint() {
+  const form = document.getElementById("dockerHostForm");
+  const type = form.elements.connectionType.value;
+  const socket = type === "socket";
+  const endpoint = form.elements.endpoint;
+  endpoint.placeholder = socket ? "/var/run/docker.sock" : `${type}://192.168.1.10:${type === "https" ? "2376" : "2375"}`;
+  if (socket && /^https?:\/\//.test(endpoint.value)) endpoint.value = "/var/run/docker.sock";
+  if (!socket && endpoint.value.startsWith("/")) endpoint.value = endpoint.placeholder;
+  if (!socket && /^https?:\/\//.test(endpoint.value) && !endpoint.value.startsWith(`${type}://`)) endpoint.value = endpoint.value.replace(/^https?/, type);
+  document.getElementById("dockerTlsVerifyLabel").hidden = type !== "https";
+  document.getElementById("dockerEndpointHelp").textContent = socket
+    ? "This path must already be mounted inside the NichHome container. A form cannot create the mount."
+    : type === "http"
+      ? "Use a Docker daemon TCP endpoint reachable from NichHome. Plain HTTP is unencrypted, so keep it on a trusted network."
+      : "Use a Docker daemon HTTPS endpoint reachable from NichHome. Client-certificate authentication is coming soon.";
+}
+function openDockerHostForm(host = null) {
+  const form = document.getElementById("dockerHostForm");
+  form.reset();
+  form.elements.id.value = host?.id || "";
+  form.elements.name.value = host?.name || "";
+  form.elements.connectionType.value = host?.connectionType || "socket";
+  form.elements.endpoint.value = host?.endpoint || "/var/run/docker.sock";
+  form.elements.tlsVerify.checked = host?.tlsVerify ?? true;
+  form.elements.enabled.checked = host?.enabled ?? true;
+  document.getElementById("dockerHostEnabledLabel").hidden = !host;
+  document.getElementById("dockerHostTitle").textContent = host ? `Edit ${host.name}` : "Set up Docker host";
+  document.getElementById("dockerHostError").textContent = "";
+  toggleDockerEndpoint();
+  document.getElementById("dockerHostModal").hidden = false;
+}
+function dockerHostFormValues() {
+  const form = document.getElementById("dockerHostForm");
+  const values = Object.fromEntries(new FormData(form));
+  values.tlsVerify = form.elements.tlsVerify.checked;
+  values.enabled = form.elements.enabled.checked;
+  return values;
+}
+document.getElementById("addDockerHost").addEventListener("click", () => openDockerHostForm());
+document.querySelector("#dockerHostForm select[name=connectionType]").addEventListener("change", toggleDockerEndpoint);
+document.getElementById("testDockerHost").addEventListener("click", async () => {
+  const error = document.getElementById("dockerHostError"); error.textContent = "";
+  try {
+    const result = await api("/api/docker/hosts/test", { method: "POST", body: JSON.stringify(dockerHostFormValues()) });
+    showToast("Docker connection works", `Engine ${result.version} · API ${result.apiVersion}`);
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("dockerHostForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const values = dockerHostFormValues();
+  const error = document.getElementById("dockerHostError"); error.textContent = "";
+  try {
+    await api(values.id ? `/api/docker/hosts/${values.id}` : "/api/docker/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+    document.getElementById("dockerHostModal").hidden = true;
+    await Promise.all([loadDockerFleet(), loadIncidents(), loadGraph()]);
+    showToast("Docker host saved", values.name);
+  } catch (err) { error.textContent = err.message; }
 });
 function openSnmpForm(device = null) {
   const form = document.getElementById("snmpForm");

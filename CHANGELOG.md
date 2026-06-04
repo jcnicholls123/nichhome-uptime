@@ -11,6 +11,29 @@ include breaking changes while the monitoring engine and integrations mature.
 
 - Additional historical reporting ranges
 - Public status pages
+- UniFi Network API integration for controller-wide gateway client totals
+
+## [1.0.0-beta.10] - 2026-06-04
+
+### Added
+
+- Configurable Docker host monitors with socket, HTTP, and HTTPS daemon
+  connections, connection testing, editing, deletion, and per-host status
+- Docker host setup through both Add Monitor and the container fleet panel
+- Docker host incidents, home-page uptime contribution, and Discord
+  down/recovery notifications
+- UniFi AP VAP client totals, radio/VAP/system enterprise telemetry, and
+  SNMP-reported client summary
+- 64-bit IF-MIB traffic counters, high-speed links, errors, and discards for
+  UniFi gateway, AP, switch, and standard SNMP interfaces
+
+### Changed
+
+- Existing installations with a mounted Docker socket automatically receive a
+  Local Docker Engine host on upgrade
+- Container fleet data is grouped by its configured Docker host
+- UCG gateway details now focus on WAN/LAN interface statistics and explicitly
+  identify controller-wide client totals as requiring UniFi Network API access
 
 ## [1.0.0-beta.9] - 2026-06-04
 

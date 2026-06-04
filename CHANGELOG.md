@@ -13,6 +13,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.13] - 2026-06-04
+
+### Added
+
+- Full TCP port discovery using `all` or `1-65535` for one private/local IPv4
+  address at a time
+
+### Fixed
+
+- Orphaned Docker container rows and metrics from deleted historical hosts are
+  now removed during startup
+- Docker fleet responses now exclude orphaned and stopped rows at the API
+  boundary
+- Duplicate container IDs and stopped containers returned by Docker-compatible
+  TrueNAS endpoints are filtered before storage
+
 ## [1.0.0-beta.12] - 2026-06-04
 
 ### Fixed

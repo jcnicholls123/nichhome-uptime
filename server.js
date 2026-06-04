@@ -246,6 +246,8 @@ function repairDockerFleetData() {
     db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id IS NULL)").run();
     db.prepare("DELETE FROM docker_incidents WHERE host_id IS NULL AND container_id NOT LIKE 'host:%'").run();
     db.prepare("DELETE FROM docker_containers WHERE host_id IS NULL").run();
+    db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id NOT IN (SELECT id FROM docker_hosts))").run();
+    db.prepare("DELETE FROM docker_containers WHERE host_id NOT IN (SELECT id FROM docker_hosts)").run();
     db.prepare("DELETE FROM docker_metrics WHERE container_id NOT IN (SELECT container_id FROM docker_containers)").run();
     db.prepare("DELETE FROM docker_incidents WHERE host_id IS NOT NULL AND host_id NOT IN (SELECT id FROM docker_hosts)").run();
   })();
@@ -455,6 +457,7 @@ function discoveryHosts(value) {
 
 function discoveryPorts(value) {
   if (!String(value || "").trim()) return defaultDiscoveryPorts;
+  if (["all", "1-65535"].includes(String(value).trim().toLowerCase())) return Array.from({ length: 65535 }, (_, index) => index + 1);
   const ports = new Set();
   for (const part of String(value).split(",")) {
     const trimmed = part.trim();
@@ -876,6 +879,7 @@ async function pollDockerHost(hostOrId) {
   try {
     await dockerRequest(host, "/_ping");
     containers = await dockerRequest(host, "/containers/json");
+    containers = [...new Map(containers.filter((container) => container.State === "running").map((container) => [container.Id, container])).values()];
   } catch (error) {
     db.prepare("UPDATE docker_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
     if (host.status !== "down") {
@@ -1138,7 +1142,9 @@ app.post("/api/discovery/tcp-scan", requireAuth, async (req, res) => {
     hosts = discoveryHosts(req.body.range);
     ports = discoveryPorts(req.body.ports);
   } catch (error) { return res.status(400).json({ error: error.message }); }
-  if (hosts.length * ports.length > 8192) return res.status(400).json({ error: "This scan is too large. Use fewer ports or a smaller address range." });
+  const fullPortScan = ports.length === 65535;
+  if (fullPortScan && hosts.length !== 1) return res.status(400).json({ error: "All-port scans are limited to one private/local IPv4 address at a time." });
+  if (!fullPortScan && hosts.length * ports.length > 8192) return res.status(400).json({ error: "This scan is too large. Use fewer ports or a smaller address range." });
   if (discoveryScanRunning) return res.status(409).json({ error: "A network discovery scan is already running." });
   discoveryScanRunning = true;
   const timeoutMs = Math.max(150, Math.min(3000, Number(req.body.timeoutMs || 600)));
@@ -1153,7 +1159,7 @@ app.post("/api/discovery/tcp-scan", requireAuth, async (req, res) => {
         if (responseMs != null) open.push({ ...probe, responseMs });
       }
     };
-    await Promise.all(Array.from({ length: Math.min(128, probes.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(fullPortScan ? 256 : 128, probes.length) }, worker));
     const hostnames = {};
     await Promise.all([...new Set(open.map((item) => item.host))].map(async (host) => {
       try {
@@ -1364,7 +1370,7 @@ app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/docker/status", requireAuth, (req, res) => {
-  const containers = db.prepare("SELECT * FROM docker_containers ORDER BY name").all();
+  const containers = db.prepare("SELECT docker_containers.* FROM docker_containers INNER JOIN docker_hosts ON docker_hosts.id = docker_containers.host_id WHERE docker_containers.state = 'running' ORDER BY docker_containers.name").all();
   const hosts = db.prepare("SELECT * FROM docker_hosts ORDER BY name").all();
   res.json({
     available: hosts.some((item) => item.status === "up"),
@@ -1423,7 +1429,7 @@ app.delete("/api/docker/hosts/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/docker/containers", requireAuth, (req, res) => {
-  const containers = db.prepare("SELECT docker_containers.*, docker_hosts.name AS host_name FROM docker_containers LEFT JOIN docker_hosts ON docker_hosts.id = docker_containers.host_id ORDER BY docker_hosts.name, docker_containers.name").all();
+  const containers = db.prepare("SELECT docker_containers.*, docker_hosts.name AS host_name FROM docker_containers INNER JOIN docker_hosts ON docker_hosts.id = docker_containers.host_id WHERE docker_containers.state = 'running' ORDER BY docker_hosts.name, docker_containers.name").all();
   res.json(containers.map((item) => {
     const openIncident = db.prepare("SELECT 1 FROM docker_incidents WHERE container_id = ? AND resolved_at IS NULL").get(item.container_id);
     return {

@@ -205,9 +205,9 @@
       <div class="modal-heading"><div><span class="section-tag accent">NETWORK DISCOVERY</span><h2>Auto-scan TCP services</h2></div><button class="modal-close" data-close="networkScanModal" aria-label="Close">x</button></div>
       <form class="monitor-form discovery-form" id="networkScanForm">
         <label>IPv4 CIDR or range<input name="range" required placeholder="192.168.1.0/24"></label>
-        <label>TCP ports<input name="ports" placeholder="Leave blank for common services, or 22,80,443,8000-8010"></label>
+        <label>TCP ports<input name="ports" placeholder="Common ports, 22,80,443,8000-8010, or all"></label>
         <div class="form-columns"><label>Connection timeout<select name="timeoutMs"><option value="300">Fast · 300 ms</option><option value="600" selected>Normal · 600 ms</option><option value="1500">Patient · 1.5 seconds</option></select></label><button class="command-button" type="submit">Scan network</button></div>
-        <p class="form-help">Scans up to 256 IPv4 addresses and 64 TCP ports. Only scan networks you own or are authorised to test.</p>
+        <p class="form-help">Scans up to 256 IPv4 addresses and 64 selected TCP ports. Enter <strong>all</strong> or <strong>1-65535</strong> to scan every TCP port on one address. Only scan networks you own or are authorised to test.</p>
         <p class="modal-error" id="networkScanError"></p>
       </form>
       <div class="discovery-summary" id="networkScanSummary"></div>

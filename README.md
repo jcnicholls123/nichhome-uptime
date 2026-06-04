@@ -52,7 +52,8 @@ as Coming soon and are not hidden behind a paid tier.
 Select **Add monitor > Auto-scan network** or **Auto-scan network** above the
 monitored services list. Enter a private IPv4 CIDR such as `192.168.1.0/24`, a
 range such as `192.168.1.10-192.168.1.40`, or one address. Leave ports blank
-to scan common services, or enter up to 64 comma-separated ports/ranges.
+to scan common services, or enter up to 64 comma-separated ports/ranges. Enter
+`all` or `1-65535` to scan every TCP port on one private/local address.
 
 Open ports receive suggested names from their service and reverse-DNS hostname.
 Rename and select the results you want, then import them as normal TCP

@@ -23,7 +23,11 @@ const dockerServer = http.createServer((req, res) => {
   if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
   if (req.url === "/containers/json") {
     dockerContainerListRequests.push(req.url);
-    return res.end(JSON.stringify([{ Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} }]));
+    return res.end(JSON.stringify([
+      { Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} },
+      { Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} },
+      { Id: "old123", Names: ["/old-container"], Image: "alpine:latest", State: "exited", Status: "Exited", Created: 1, Labels: {} }
+    ]));
   }
   if (req.url === "/containers/json?all=1") return res.end(JSON.stringify([
     { Id: "abc123", Names: ["/test-container"], Image: "alpine:latest", State: "running", Status: "Up 1 minute", Created: 1, Labels: {} },
@@ -70,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.12", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.13", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -86,6 +90,7 @@ async function waitForServer() {
     assert.equal((await request("/api/me")).status, 200);
     assert.deepEqual(await (await request("/api/monitors")).json(), []);
     assert.equal((await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "127.0.0.0/23", ports: String(dockerPort) }) })).status, 400);
+    assert.equal((await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "127.0.0.1-127.0.0.2", ports: "all" }) })).status, 400);
     assert.equal((await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "8.8.8.8", ports: "53" }) })).status, 400);
     const scanResponse = await request("/api/discovery/tcp-scan", { method: "POST", body: JSON.stringify({ range: "127.0.0.1", ports: String(dockerPort), timeoutMs: 300 }) });
     assert.equal(scanResponse.status, 200);

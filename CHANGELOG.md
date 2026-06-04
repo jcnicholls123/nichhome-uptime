@@ -9,9 +9,30 @@ include breaking changes while the monitoring engine and integrations mature.
 
 ### Planned
 
-- SNMPv3 polling and broader device discovery
 - Additional historical reporting ranges
 - Public status pages
+
+## [1.0.0-beta.9] - 2026-06-04
+
+### Added
+
+- Dedicated SNMP fleet workspace with health totals, active SNMP alerts,
+  profiles, device actions, and a complete fleet view
+- SNMP v3 polling with no-auth, authentication, and authentication/privacy
+  security levels using SHA/MD5 and AES/DES options
+- Bounded administrator SNMP walk tool with readable OID categories and a
+  1,000-result safety limit
+- Built-in assignable TrueNAS and UniFi profiles
+- Safe Zabbix XML SNMP template import and custom OID polling
+- SNMP administration shortcut in account settings and device-level walk
+  actions
+
+### Security
+
+- Saved SNMP v2c communities and SNMP v3 authentication/privacy keys are never
+  returned by the API
+- Imported Zabbix scripts and preprocessing are ignored; only numeric SNMP
+  item OIDs are accepted
 
 ## [1.0.0-beta.8] - 2026-06-04
 

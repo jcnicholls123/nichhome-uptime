@@ -60,7 +60,7 @@
       </header>
       <button class="active-alert-strip" id="activeAlertStrip" hidden><strong id="activeAlertCount">0 active alerts</strong><span>Open incidents</span></button>
 
-      <div class="content">
+      <div class="content" id="overviewPage">
         <section class="page-heading">
           <div>
             <p class="eyebrow">CONTROL ROOM / <span id="pageName">OVERVIEW</span></p>
@@ -114,11 +114,12 @@
 
           <article class="panel snmp-panel">
             <div class="panel-heading">
-              <div><span class="section-tag accent">SNMP V2C</span><h2>Network intelligence</h2></div>
+              <div><span class="section-tag accent">SNMP FLEET</span><h2>Network intelligence</h2></div>
               <button class="dark-button" id="addSnmpDevice">Add SNMP device <span>→</span></button>
             </div>
-            <div class="snmp-device-list" id="snmpDeviceList"><p class="empty-state">Add an SNMP v2c device to begin polling.</p></div>
-            <p class="snmp-footnote">SNMPv3, model-specific UniFi MIB metrics, and network mapping are coming soon.</p>
+            <button class="dark-button view-all-snmp" id="viewAllSnmp">View complete SNMP fleet</button>
+            <div class="snmp-device-list" id="snmpDeviceList"><p class="empty-state">Add an SNMP device to begin polling.</p></div>
+            <p class="snmp-footnote">SNMP v2c/v3 polling, TrueNAS and UniFi intelligence, custom Zabbix templates, incidents, and Discord alerts.</p>
           </article>
 
           <article class="panel monitor-panel">
@@ -133,6 +134,18 @@
           </article>
         </section>
       </div>
+      <div class="content snmp-workspace" id="snmpPage" hidden>
+        <section class="page-heading">
+          <div><p class="eyebrow">CONTROL ROOM / <span>SNMP FLEET</span></p><h1>SNMP intelligence</h1><p class="subhead">Device health, alerts, walks, credentials, and telemetry profiles in one place.</p></div>
+          <div class="heading-actions snmp-page-actions"><button class="soft-button" id="openSnmpWalk">Run SNMP walk</button><button class="soft-button" id="openTemplateImport">Import Zabbix XML</button><button class="command-button" id="addSnmpDevicePage">Add device</button></div>
+        </section>
+        <section class="metric-grid snmp-metric-grid" id="snmpFleetMetrics"></section>
+        <section class="dashboard-grid">
+          <article class="panel activity-panel snmp-alert-panel"><div class="panel-heading"><div><span class="section-tag accent">ACTIVE SNMP ALERTS</span><h2>Needs attention</h2></div><button class="text-button" id="openAllAlerts">View all alerts</button></div><div class="activity-list" id="snmpAlertList"></div></article>
+          <article class="panel snmp-profile-panel"><div class="panel-heading"><div><span class="section-tag">TELEMETRY PROFILES</span><h2>Profiles and templates</h2></div><button class="text-button" id="importTemplateInline">Import XML</button></div><div class="profile-list" id="snmpProfileList"></div></article>
+          <article class="panel snmp-panel snmp-fleet-panel"><div class="panel-heading"><div><span class="section-tag accent">ALL DEVICES</span><h2>SNMP fleet</h2></div><button class="dark-button" id="runFleetPoll">Poll entire fleet</button></div><div class="snmp-device-list" id="snmpFleetDeviceList"></div></article>
+        </section>
+      </div>
     </main>
   </div>
 
@@ -143,6 +156,10 @@
       <div class="security-card">
         <div><strong>Authenticator MFA</strong><p id="mfaStatus">Checking security status...</p></div>
         <button class="soft-button" id="mfaAction">Configure</button>
+      </div>
+      <div class="security-card admin-card">
+        <div><strong>SNMP administration</strong><p>Manage profiles, run walks, and inspect fleet alerts.</p></div>
+        <button class="soft-button" id="accountSnmpAdmin">Open</button>
       </div>
       <div class="mfa-setup" id="mfaSetup" hidden>
         <p>Scan this QR code with Google Authenticator, Microsoft Authenticator, 1Password, or another TOTP app.</p>
@@ -230,9 +247,16 @@
         <input type="hidden" name="id">
         <label>Name<input name="name" required minlength="2" placeholder="Core switch"></label>
         <label>Hostname or IP<input name="host" required placeholder="192.168.1.1"></label>
+        <div class="form-columns"><label>SNMP version<select name="version"><option value="2c">SNMP v2c</option><option value="3">SNMP v3</option></select></label><label>Telemetry profile<select name="profileId" id="snmpProfileSelect"></select></label></div>
         <div class="form-columns">
           <label>Port<input name="port" type="number" value="161" min="1" max="65535"></label>
-          <label>Community<input name="community" placeholder="public"></label>
+          <label id="snmpCommunityField">Community<input name="community" placeholder="public"></label>
+        </div>
+        <div class="v3-fields" id="snmpV3Fields" hidden>
+          <label>Username<input name="v3Username" autocomplete="off" placeholder="snmp-monitor"></label>
+          <div class="form-columns"><label>Security level<select name="v3SecurityLevel"><option value="noAuthNoPriv">No auth / no privacy</option><option value="authNoPriv">Auth / no privacy</option><option value="authPriv">Auth / privacy</option></select></label><label>Authentication<select name="v3AuthProtocol"><option value="sha">SHA</option><option value="md5">MD5</option></select></label></div>
+          <label>Authentication key<input name="v3AuthKey" type="password" autocomplete="new-password" placeholder="At least 8 characters"></label>
+          <div class="form-columns"><label>Privacy protocol<select name="v3PrivProtocol"><option value="aes">AES</option><option value="des">DES</option></select></label><label>Privacy key<input name="v3PrivKey" type="password" autocomplete="new-password" placeholder="At least 8 characters"></label></div>
         </div>
         <div class="form-columns">
           <label>Poll every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option></select></label>
@@ -249,6 +273,7 @@
     <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true">
       <div class="modal-heading"><div><span class="section-tag accent" id="snmpProfile">SNMP DEVICE</span><h2 id="snmpDetailsTitle">Device details</h2></div><div class="modal-heading-actions"><button class="soft-button" id="editSnmpDevice">Edit device</button><button class="modal-close" data-close="snmpDetailsModal" aria-label="Close">×</button></div></div>
       <div class="snmp-details-summary" id="snmpDetailsSummary"></div>
+      <button class="soft-button" id="walkSnmpDevice">Walk this device</button>
       <section id="truenasDetails" hidden>
         <div class="panel-heading details-heading"><div><span class="section-tag blue">TRUENAS</span><h2>System and storage health</h2></div></div>
         <div class="truenas-metric-grid" id="truenasMetricGrid"></div>
@@ -257,6 +282,8 @@
       </section>
       <h3 class="modal-subtitle">System OIDs</h3>
       <div class="oid-details-list" id="snmpOids"></div>
+      <h3 class="modal-subtitle">Profile telemetry</h3>
+      <div class="oid-details-list" id="snmpTemplateMetrics"></div>
       <div class="panel-heading details-heading"><div><span class="section-tag">DISCOVERED DATA</span><h2 id="snmpInterfaceTitle">Interfaces</h2><p class="form-help" id="snmpInterfaceHelp"></p></div><button class="dark-button" id="refreshSnmpDetails">Refresh data</button></div>
       <div class="interface-table-wrap">
         <table class="interface-table">
@@ -270,6 +297,22 @@
   </div>
 
   <div class="toast" id="toast"><span>✓</span><div><strong>Monitor created</strong><small>Initial heartbeat scheduled</small></div></div>
+  <div class="modal-backdrop" id="snmpWalkModal" hidden>
+    <section class="account-modal extra-wide-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">ADMIN TOOL</span><h2>SNMP walk</h2></div><button class="modal-close" data-close="snmpWalkModal" aria-label="Close">x</button></div>
+      <form class="monitor-form inline-tool-form" id="snmpWalkForm"><label>Device<select name="deviceId" id="walkDeviceSelect"></select></label><label>Root OID<input name="rootOid" value="1.3.6.1.2.1" pattern="[0-9.]+" required></label><button class="command-button" type="submit">Run bounded walk</button><p class="form-help">Returns up to 1,000 OIDs using the saved device credentials.</p><p class="modal-error" id="snmpWalkError"></p></form>
+      <div class="walk-summary" id="snmpWalkSummary"></div>
+      <div class="interface-table-wrap"><table class="interface-table"><thead><tr><th>OID</th><th>Meaning</th><th>Type</th><th>Value</th></tr></thead><tbody id="snmpWalkResults"></tbody></table></div>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="templateImportModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">SNMP PROFILE</span><h2>Import Zabbix XML</h2></div><button class="modal-close" data-close="templateImportModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="templateImportForm"><label>Profile name (optional)<input name="name" maxlength="80" placeholder="Use template name"></label><label>Zabbix XML template<input name="template" type="file" accept=".xml,text/xml,application/xml" required></label><p class="form-help">Numeric SNMP item OIDs are imported. Scripts and preprocessing are never executed.</p><button class="command-button" type="submit">Import SNMP profile</button><p class="modal-error" id="templateImportError"></p></form>
+    </section>
+  </div>
+
   <script src="app.js"></script>
 </body>
 </html>

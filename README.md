@@ -21,7 +21,11 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
 - Monitor editing, pause/resume, and heartbeat history
 - Incident tracking and Discord down/recovery alerts
-- SNMP v2c device status, identity, uptime, and background polling
+- SNMP v2c and v3 device status, identity, uptime, and background polling
+- Dedicated SNMP fleet workspace with active alerts and fleet health
+- Assignable TrueNAS, UniFi, standard, and imported telemetry profiles
+- Safe Zabbix XML SNMP template import with custom OID polling
+- Bounded SNMP walk administration tool with readable OID categories
 - UniFi-focused SNMP details with system OIDs and discovered interfaces
 - Profile-aware UniFi gateway, access point, and switch details
 - Unified SNMP/service uptime, incidents, Discord alerts, and live fault state
@@ -88,6 +92,18 @@ access to the Docker host even when the filesystem mount is marked read-only.
 
 For TrueNAS SNMP monitoring, enable **System > Services > SNMP**, configure a
 community, then add the TrueNAS hostname/IP as an SNMP device in NichHome.
+SNMP v3 can also be used by selecting v3 in the device form and entering the
+username, security level, and matching authentication/privacy credentials.
+
+## SNMP Profiles and Walks
+
+Open **SNMP Devices** from the sidebar for the complete fleet workspace. From
+there you can run a bounded SNMP walk, assign built-in device profiles, import
+Zabbix XML templates, poll the fleet, and inspect active SNMP alerts.
+
+Zabbix imports accept numeric SNMP item OIDs only. NichHome does not execute
+template scripts or preprocessing. Walks use the saved device credentials and
+return at most 1,000 results per request.
 
 ### Using YAML/Compose
 

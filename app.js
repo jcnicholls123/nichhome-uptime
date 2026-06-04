@@ -8,10 +8,21 @@ let currentUser;
 let monitors = [];
 let incidents = [];
 let snmpDevices = [];
+let snmpProfiles = [];
 let dockerContainers = [];
 let dockerStatus = { available: false };
 let searchFilter = "";
 let lastOpenIncidentCount = null;
+
+function showWorkspace(name) {
+  const snmp = name === "SNMP Devices";
+  document.getElementById("overviewPage").hidden = snmp;
+  document.getElementById("snmpPage").hidden = !snmp;
+  pageName.textContent = snmp ? "SNMP FLEET" : "OVERVIEW";
+  document.querySelector(".nav-item.active")?.classList.remove("active");
+  document.querySelector(`[data-page="${snmp ? "SNMP Devices" : "Overview"}"]`)?.classList.add("active");
+  if (snmp) renderSnmpWorkspace();
+}
 
 const sidebar = document.querySelector(".sidebar");
 const sidebarBackdrop = document.getElementById("sidebarBackdrop");
@@ -95,10 +106,11 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       return;
     }
     if (item.dataset.page === "SNMP Devices") {
-      document.querySelector(".snmp-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+      showWorkspace("SNMP Devices");
       return;
     }
     if (item.dataset.page === "Docker") {
+      showWorkspace("Overview");
       document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" });
       return;
     }
@@ -109,6 +121,7 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     document.querySelector(".nav-item.active")?.classList.remove("active");
     item.classList.add("active");
     pageName.textContent = item.dataset.page.toUpperCase();
+    showWorkspace("Overview");
     if (item.dataset.page === "Monitors") document.querySelector(".monitor-panel").scrollIntoView({ behavior: "smooth", block: "center" });
   });
 });
@@ -342,6 +355,7 @@ async function loadIncidents() {
   } else {
     incidents.slice(0, 4).forEach((incident) => list.append(incidentElement(incident)));
   }
+  renderSnmpWorkspace();
 }
 
 function makePath(values, width, height, minimum, maximum) {
@@ -387,8 +401,7 @@ async function loadGraph() {
   chart.append(svg);
 }
 
-function renderSnmpDevices() {
-  const list = document.getElementById("snmpDeviceList");
+function renderSnmpDeviceList(list) {
   list.replaceChildren();
   const visible = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.sysDescription || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   if (!visible.length) {
@@ -432,12 +445,66 @@ function renderSnmpDevices() {
   }
 }
 
+function renderSnmpDevices() {
+  renderSnmpDeviceList(document.getElementById("snmpDeviceList"));
+  renderSnmpDeviceList(document.getElementById("snmpFleetDeviceList"));
+}
+
+function renderSnmpWorkspace() {
+  const metrics = document.getElementById("snmpFleetMetrics");
+  if (!metrics) return;
+  const up = snmpDevices.filter((item) => item.enabled && item.status === "up").length;
+  const down = snmpDevices.filter((item) => item.enabled && item.status === "down").length;
+  const v3 = snmpDevices.filter((item) => item.version === "3").length;
+  metrics.replaceChildren();
+  for (const [label, value, note] of [["Total devices", snmpDevices.length, "configured"], ["Operational", up, "responding"], ["Active alerts", down, "needs attention"], ["SNMP v3", v3, "secure devices"]]) {
+    const card = document.createElement("article"); card.className = `metric-card ${label === "Active alerts" && down ? "alerting" : ""}`;
+    const top = document.createElement("div"); top.className = "metric-top";
+    const tag = document.createElement("span"); tag.className = "section-tag"; tag.textContent = note;
+    const title = document.createElement("p"); title.textContent = label;
+    const number = document.createElement("div"); number.className = "metric-value"; number.textContent = value;
+    top.append(tag); card.append(top, title, number); metrics.append(card);
+  }
+  const alertList = document.getElementById("snmpAlertList");
+  alertList.replaceChildren();
+  const snmpAlerts = incidents.filter((item) => item.source === "snmp" && !item.resolvedAt);
+  if (snmpAlerts.length) snmpAlerts.forEach((item) => alertList.append(incidentElement(item)));
+  else { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No active SNMP alerts."; alertList.append(empty); }
+  const profiles = document.getElementById("snmpProfileList");
+  profiles.replaceChildren();
+  for (const profile of snmpProfiles) {
+    const row = document.createElement("div"); row.className = "profile-row";
+    const copy = document.createElement("div");
+    const name = document.createElement("strong"); name.textContent = profile.name;
+    const detail = document.createElement("small"); detail.textContent = `${profile.source} · ${profile.oidCount} custom OIDs · ${profile.description || ""}`;
+    copy.append(name, detail); row.append(copy);
+    if (profile.source !== "built-in") {
+      const remove = document.createElement("button"); remove.className = "text-button"; remove.textContent = "Delete";
+      remove.addEventListener("click", async () => { if (window.confirm(`Delete profile ${profile.name}?`)) { await api(`/api/snmp/profiles/${profile.id}`, { method: "DELETE" }); await loadSnmpProfiles(); } });
+      row.append(remove);
+    }
+    profiles.append(row);
+  }
+}
+
 async function loadSnmpDevices() {
   snmpDevices = await api("/api/snmp/devices");
   renderSnmpDevices();
   renderMonitors();
   updateDashboardHealth();
   renderSearchResults();
+  renderSnmpWorkspace();
+}
+
+async function loadSnmpProfiles() {
+  snmpProfiles = await api("/api/snmp/profiles");
+  const select = document.getElementById("snmpProfileSelect");
+  select.replaceChildren();
+  const unassigned = document.createElement("option"); unassigned.value = ""; unassigned.textContent = "Auto detect"; select.append(unassigned);
+  for (const profile of snmpProfiles.filter((item) => item.slug !== "auto")) {
+    const option = document.createElement("option"); option.value = profile.id; option.textContent = `${profile.name}${profile.source === "built-in" ? "" : " (imported)"}`; select.append(option);
+  }
+  renderSnmpWorkspace();
 }
 
 function renderDockerFleet() {
@@ -505,10 +572,11 @@ async function openSnmpDetails(device) {
   document.getElementById("snmpProfile").textContent = data.device.profile.label.toUpperCase();
   document.getElementById("refreshSnmpDetails").dataset.deviceId = device.id;
   document.getElementById("editSnmpDevice").dataset.deviceId = device.id;
+  document.getElementById("walkSnmpDevice").dataset.deviceId = device.id;
   const summary = document.getElementById("snmpDetailsSummary");
   summary.replaceChildren();
   const interfaceLabel = profileType === "access-point" ? "Useful AP interfaces" : profileType === "gateway" ? "Useful gateway interfaces" : "Interfaces";
-  for (const [label, value] of [["Device type", data.device.profile.label], ["Identity", data.device.sysName || data.device.host], ["Description", data.device.sysDescription || "--"], ["Address", `${data.device.host}:${data.device.port}`], ["Uptime", data.device.uptimeTicks == null ? "--" : `${Math.floor(data.device.uptimeTicks / 8640000)} days`], [interfaceLabel, `${shownInterfaces.filter((item) => item.operStatus === 1).length} up / ${shownInterfaces.length} shown`]]) {
+  for (const [label, value] of [["Device type", data.device.profile.label], ["SNMP security", `v${data.device.version}${data.device.version === "3" ? ` · ${data.device.v3SecurityLevel}` : ""}`], ["Identity", data.device.sysName || data.device.host], ["Description", data.device.sysDescription || "--"], ["Address", `${data.device.host}:${data.device.port}`], ["Uptime", data.device.uptimeTicks == null ? "--" : `${Math.floor(data.device.uptimeTicks / 8640000)} days`], [interfaceLabel, `${shownInterfaces.filter((item) => item.operStatus === 1).length} up / ${shownInterfaces.length} shown`]]) {
     const stat = document.createElement("div");
     stat.className = "detail-stat";
     const small = document.createElement("small"); small.textContent = label;
@@ -537,6 +605,17 @@ async function openSnmpDetails(device) {
     const label = document.createElement("small"); label.textContent = `${item.label} · ${item.oid}`;
     const value = document.createElement("strong"); value.textContent = item.value || "--";
     row.append(label, value); oids.append(row);
+  }
+  const templateMetrics = document.getElementById("snmpTemplateMetrics");
+  templateMetrics.replaceChildren();
+  const customMetrics = (data.profileMetrics || []).filter((item) => item.category.startsWith("template:"));
+  if (!customMetrics.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No imported profile telemetry is assigned to this device."; templateMetrics.append(empty);
+  } else for (const item of customMetrics) {
+    const row = document.createElement("div"); row.className = "oid-detail";
+    const label = document.createElement("small"); label.textContent = `${item.label} · ${item.metricKey}`;
+    const value = document.createElement("strong"); value.textContent = `${item.value || "--"} ${item.unit || ""}`.trim();
+    row.append(label, value); templateMetrics.append(row);
   }
   const history = document.getElementById("snmpHistory");
   history.replaceChildren();
@@ -718,18 +797,33 @@ function openSnmpForm(device = null) {
   form.elements.name.value = device?.name || "";
   form.elements.host.value = device?.host || "";
   form.elements.port.value = device?.port || 161;
+  form.elements.version.value = device?.version || "2c";
+  form.elements.profileId.value = device?.profileId || "";
   form.elements.community.value = device ? "" : "public";
   form.elements.community.required = !device;
   form.elements.community.placeholder = device ? "Leave blank to keep current community" : "public";
   form.elements.intervalSeconds.value = String(device?.intervalSeconds || 60);
   form.elements.timeoutSeconds.value = String(device?.timeoutSeconds || 5);
+  form.elements.v3Username.value = device?.v3Username || "";
+  form.elements.v3SecurityLevel.value = device?.v3SecurityLevel || "noAuthNoPriv";
+  form.elements.v3AuthProtocol.value = device?.v3AuthProtocol || "sha";
+  form.elements.v3PrivProtocol.value = device?.v3PrivProtocol || "aes";
   form.elements.enabled.checked = device?.enabled ?? true;
   document.getElementById("snmpEnabledLabel").hidden = !device;
   document.getElementById("snmpFormTitle").textContent = device ? `Edit ${device.name}` : "Add SNMP device";
   document.getElementById("snmpSubmitButton").textContent = device ? "Save and poll device" : "Add and poll device";
   document.getElementById("snmpModal").hidden = false;
+  toggleSnmpVersionFields();
 }
+function toggleSnmpVersionFields() {
+  const form = document.getElementById("snmpForm");
+  const v3 = form.elements.version.value === "3";
+  document.getElementById("snmpV3Fields").hidden = !v3;
+  document.getElementById("snmpCommunityField").hidden = v3;
+}
+document.querySelector("#snmpForm select[name=version]").addEventListener("change", toggleSnmpVersionFields);
 document.getElementById("addSnmpDevice").addEventListener("click", () => openSnmpForm());
+document.getElementById("addSnmpDevicePage").addEventListener("click", () => openSnmpForm());
 document.getElementById("editSnmpDevice").addEventListener("click", () => {
   const device = snmpDevices.find((item) => String(item.id) === document.getElementById("editSnmpDevice").dataset.deviceId);
   if (device) {
@@ -759,6 +853,67 @@ document.getElementById("refreshSnmpDetails").addEventListener("click", async (e
   await loadSnmpDevices();
   await openSnmpDetails(snmpDevices.find((device) => String(device.id) === String(id)));
 });
+function openSnmpWalk(deviceId = "") {
+  const select = document.getElementById("walkDeviceSelect");
+  select.replaceChildren();
+  for (const device of snmpDevices) {
+    const option = document.createElement("option"); option.value = device.id; option.textContent = `${device.name} · SNMP v${device.version}`; select.append(option);
+  }
+  if (deviceId) select.value = String(deviceId);
+  document.getElementById("snmpWalkResults").replaceChildren();
+  document.getElementById("snmpWalkSummary").textContent = "";
+  document.getElementById("snmpWalkModal").hidden = false;
+}
+document.getElementById("openSnmpWalk").addEventListener("click", () => openSnmpWalk());
+document.getElementById("walkSnmpDevice").addEventListener("click", (event) => {
+  document.getElementById("snmpDetailsModal").hidden = true;
+  openSnmpWalk(event.currentTarget.dataset.deviceId);
+});
+document.getElementById("snmpWalkForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = document.getElementById("snmpWalkError");
+  const results = document.getElementById("snmpWalkResults");
+  error.textContent = ""; results.replaceChildren();
+  const button = form.querySelector("button[type=submit]"); button.disabled = true; button.textContent = "Walking...";
+  try {
+    const data = await api(`/api/snmp/devices/${form.elements.deviceId.value}/walk`, { method: "POST", body: JSON.stringify({ rootOid: form.elements.rootOid.value }) });
+    document.getElementById("snmpWalkSummary").textContent = `${data.count} OIDs in ${data.durationMs} ms${data.truncated ? " · result limited to 1,000" : ""}`;
+    for (const item of data.results) {
+      const row = document.createElement("tr");
+      for (const value of [item.oid, item.meaning, item.type, item.value]) { const cell = document.createElement("td"); cell.textContent = value; row.append(cell); }
+      results.append(row);
+    }
+  } catch (err) { error.textContent = err.message; }
+  finally { button.disabled = false; button.textContent = "Run bounded walk"; }
+});
+function openTemplateImport() {
+  document.getElementById("templateImportError").textContent = "";
+  document.getElementById("templateImportModal").hidden = false;
+}
+document.getElementById("openTemplateImport").addEventListener("click", openTemplateImport);
+document.getElementById("importTemplateInline").addEventListener("click", openTemplateImport);
+document.getElementById("templateImportForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const file = form.elements.template.files[0];
+  const error = document.getElementById("templateImportError");
+  error.textContent = "";
+  try {
+    if (!file || file.size > 1024 * 1024) throw new Error("Choose an XML template smaller than 1 MB.");
+    const result = await api("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ name: form.elements.name.value, xml: await file.text() }) });
+    form.reset(); document.getElementById("templateImportModal").hidden = true; await loadSnmpProfiles();
+    showToast("SNMP profile imported", `${result.imported} numeric OIDs are ready to assign`);
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("runFleetPoll").addEventListener("click", async () => {
+  await Promise.all(snmpDevices.filter((item) => item.enabled).map((item) => api(`/api/snmp/devices/${item.id}/poll`, { method: "POST", body: "{}" })));
+  await Promise.all([loadSnmpDevices(), loadIncidents(), loadGraph()]);
+  showToast("SNMP fleet refreshed", `${snmpDevices.length} devices checked`);
+});
+document.getElementById("viewAllSnmp").addEventListener("click", () => showWorkspace("SNMP Devices"));
+document.getElementById("openAllAlerts").addEventListener("click", openIncidents);
+document.getElementById("accountSnmpAdmin").addEventListener("click", () => { accountModal.hidden = true; showWorkspace("SNMP Devices"); });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
@@ -810,6 +965,7 @@ loadIncidents();
 loadDiscordStatus();
 loadGraph();
 loadSnmpDevices();
+loadSnmpProfiles();
 loadDockerFleet();
 setInterval(() => {
   Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadIncidents(), loadGraph()]).catch(() => {});

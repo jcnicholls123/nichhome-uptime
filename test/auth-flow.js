@@ -50,7 +50,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.8", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.9", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -87,6 +87,13 @@ async function waitForServer() {
     assert.equal(dockerStatus.available, false);
     assert.deepEqual(await (await request("/api/docker/containers")).json(), []);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 400);
+    const profiles = await (await request("/api/snmp/profiles")).json();
+    assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));
+    const zabbixXml = `<?xml version="1.0"?><zabbix_export><templates><template><name>Test custom SNMP</name><items><item><name>System name</name><snmp_oid>1.3.6.1.2.1.1.5.0</snmp_oid><units>text</units></item><item><name>Ignored symbolic OID</name><snmp_oid>SNMPv2-MIB::sysName.0</snmp_oid></item></items></template></templates></zabbix_export>`;
+    const importedResponse = await request("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ xml: zabbixXml }) });
+    assert.equal(importedResponse.status, 201);
+    const imported = await importedResponse.json();
+    assert.equal(imported.imported, 1);
     assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Test SNMP", host: "127.0.0.1", port: 1161, community: "public", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);
@@ -97,6 +104,10 @@ async function waitForServer() {
     assert.ok(Array.isArray(snmpDetails.interfaces));
     assert.ok(Array.isArray(snmpDetails.oids));
     assert.equal(snmpDetails.device.profile.label, "Standard SNMP");
+    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/walk`, { method: "POST", body: JSON.stringify({ rootOid: "1.3.6.1.2.1" }) })).status, 400);
+    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], profileId: imported.id, community: "", enabled: true }) })).status, 200);
+    const customDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
+    assert.equal(customDetails.device.profile.assigned.id, imported.id);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "U7 Pro Max", community: "", enabled: true }) })).status, 200);
     const editedSnmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.equal(editedSnmpDetails.device.profile.type, "access-point");
@@ -105,7 +116,16 @@ async function waitForServer() {
     assert.equal(trueNasDetails.device.profile.type, "truenas");
     assert.ok(Array.isArray(trueNasDetails.profileMetrics));
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}/poll`, { method: "POST", body: "{}" })).status, 200);
+    assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Invalid SNMP v3", host: "127.0.0.1", port: 1162, version: "3", v3Username: "monitor", v3SecurityLevel: "authPriv", v3AuthKey: "short", v3PrivKey: "short", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 400);
+    assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Test SNMP v3", host: "127.0.0.1", port: 1162, version: "3", v3Username: "monitor", v3SecurityLevel: "authPriv", v3AuthProtocol: "sha", v3AuthKey: "password1", v3PrivProtocol: "aes", v3PrivKey: "privacy1", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
+    const withV3 = await (await request("/api/snmp/devices")).json();
+    const v3Device = withV3.find((device) => device.version === "3");
+    assert.equal(v3Device.v3Username, "monitor");
+    assert.equal(v3Device.v3SecurityLevel, "authPriv");
+    assert.equal(Object.hasOwn(v3Device, "v3AuthKey"), false);
+    assert.equal((await request(`/api/snmp/devices/${v3Device.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await request(`/api/snmp/profiles/${imported.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await (await request("/api/incidents")).json()).length, 1);
     const mfaSetup = await (await request("/api/mfa/start", { method: "POST", body: "{}" })).json();
     assert.match(mfaSetup.qr, /^data:image\/png;base64,/);

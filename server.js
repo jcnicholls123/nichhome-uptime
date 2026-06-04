@@ -9,6 +9,7 @@ const express = require("express");
 const Database = require("better-sqlite3");
 const snmp = require("net-snmp");
 const QRCode = require("qrcode");
+const { XMLParser } = require("fast-xml-parser");
 const packageInfo = require("./package.json");
 const execFileAsync = promisify(execFile);
 
@@ -142,6 +143,22 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(device_id, category, metric_key)
   );
+  CREATE TABLE IF NOT EXISTS snmp_profiles (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    slug TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL DEFAULT 'built-in',
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS snmp_profile_oids (
+    profile_id INTEGER NOT NULL REFERENCES snmp_profiles(id) ON DELETE CASCADE,
+    oid TEXT NOT NULL,
+    name TEXT NOT NULL,
+    unit TEXT,
+    value_type TEXT,
+    PRIMARY KEY(profile_id, oid)
+  );
   CREATE TABLE IF NOT EXISTS docker_containers (
     container_id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
@@ -177,12 +194,38 @@ db.exec(`
   );
 `);
 
+function ensureColumn(table, column, definition) {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all();
+  if (!columns.some((item) => item.name === column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+}
+
+ensureColumn("snmp_devices", "version", "TEXT NOT NULL DEFAULT '2c'");
+ensureColumn("snmp_devices", "profile_id", "INTEGER REFERENCES snmp_profiles(id) ON DELETE SET NULL");
+ensureColumn("snmp_devices", "v3_username", "TEXT");
+ensureColumn("snmp_devices", "v3_security_level", "TEXT NOT NULL DEFAULT 'noAuthNoPriv'");
+ensureColumn("snmp_devices", "v3_auth_protocol", "TEXT");
+ensureColumn("snmp_devices", "v3_auth_key", "TEXT");
+ensureColumn("snmp_devices", "v3_priv_protocol", "TEXT");
+ensureColumn("snmp_devices", "v3_priv_key", "TEXT");
+
+const builtInSnmpProfiles = [
+  ["Auto detect", "auto", "Automatically use the best built-in profile for the device."],
+  ["Standard SNMP", "standard", "System identity, uptime, and interface health."],
+  ["TrueNAS", "truenas", "TrueNAS, HOST-RESOURCES, UCD memory, storage, and interface telemetry."],
+  ["UniFi", "unifi", "General UniFi network device telemetry."],
+  ["UniFi Switch", "unifi-switch", "UniFi switch interfaces and port health."],
+  ["UniFi Access Point", "unifi-access-point", "UniFi access point identity and radio-facing interfaces."],
+  ["UniFi Gateway", "unifi-gateway", "UniFi gateway identity and routed interfaces."]
+];
+const insertBuiltInProfile = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'built-in', ?) ON CONFLICT(slug) DO UPDATE SET name=excluded.name, description=excluded.description");
+for (const profile of builtInSnmpProfiles) insertBuiltInProfile.run(...profile);
+
 const staticDir = __dirname;
 const attempts = new Map();
 const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "32kb" }));
+app.use(express.json({ limit: "1100kb" }));
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -332,41 +375,74 @@ function validDiscordWebhook(value) {
   }
 }
 
-function validateSnmpDevice(input) {
+function validateSnmpDevice(input, current = {}) {
   const name = String(input.name || "").trim();
   const host = String(input.host || "").trim();
-  const community = String(input.community || "").trim();
+  const version = String(input.version || current.version || "2c");
+  const community = String(input.community || current.community || "").trim();
   const port = Number(input.port || 161);
   const intervalSeconds = Math.max(20, Math.min(86400, Number(input.intervalSeconds || 60)));
   const timeoutSeconds = Math.max(1, Math.min(30, Number(input.timeoutSeconds || 5)));
+  const profileId = input.profileId ? Number(input.profileId) : null;
+  const v3Username = String(input.v3Username || current.v3_username || "").trim();
+  const v3SecurityLevel = String(input.v3SecurityLevel || current.v3_security_level || "noAuthNoPriv");
+  const v3AuthProtocol = String(input.v3AuthProtocol || current.v3_auth_protocol || "sha");
+  const v3AuthKey = String(input.v3AuthKey || current.v3_auth_key || "");
+  const v3PrivProtocol = String(input.v3PrivProtocol || current.v3_priv_protocol || "aes");
+  const v3PrivKey = String(input.v3PrivKey || current.v3_priv_key || "");
   if (name.length < 2 || name.length > 80) throw new Error("Device name must be between 2 and 80 characters.");
   if (!host || host.length > 255 || /\s/.test(host)) throw new Error("Enter a valid hostname or IP address.");
-  if (!community || community.length > 128) throw new Error("Enter an SNMP community.");
+  if (!["2c", "3"].includes(version)) throw new Error("SNMP version must be v2c or v3.");
+  if (version === "2c" && (!community || community.length > 128)) throw new Error("Enter an SNMP community.");
+  if (version === "3" && (!v3Username || v3Username.length > 64)) throw new Error("Enter an SNMP v3 username.");
+  if (!["noAuthNoPriv", "authNoPriv", "authPriv"].includes(v3SecurityLevel)) throw new Error("Select a valid SNMP v3 security level.");
+  if (version === "3" && v3SecurityLevel !== "noAuthNoPriv" && v3AuthKey.length < 8) throw new Error("SNMP v3 authentication keys must be at least 8 characters.");
+  if (version === "3" && v3SecurityLevel === "authPriv" && v3PrivKey.length < 8) throw new Error("SNMP v3 privacy keys must be at least 8 characters.");
+  if (!["md5", "sha"].includes(v3AuthProtocol)) throw new Error("Select a valid SNMP v3 authentication protocol.");
+  if (!["des", "aes"].includes(v3PrivProtocol)) throw new Error("Select a valid SNMP v3 privacy protocol.");
   if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Enter a valid SNMP port.");
-  return { name, host, community, port, intervalSeconds, timeoutSeconds };
+  if (profileId && !db.prepare("SELECT 1 FROM snmp_profiles WHERE id = ?").get(profileId)) throw new Error("Select a valid SNMP profile.");
+  return { name, host, version, community: version === "2c" ? community : "", port, intervalSeconds, timeoutSeconds, profileId, v3Username, v3SecurityLevel, v3AuthProtocol, v3AuthKey, v3PrivProtocol, v3PrivKey };
 }
 
 function snmpDeviceProfile(device) {
+  const assigned = device.profile_id ? db.prepare("SELECT id, name, slug, source, description FROM snmp_profiles WHERE id = ?").get(device.profile_id) : null;
   const objectId = device.id ? db.prepare("SELECT value FROM snmp_oids WHERE device_id = ? AND oid = '1.3.6.1.2.1.1.2.0'").get(device.id)?.value || "" : "";
   const identity = `${device.name || ""} ${device.sys_name || ""} ${device.sys_description || ""} ${objectId}`.toLowerCase();
-  const isTrueNas = /truenas|freenas|1\.3\.6\.1\.4\.1\.50536/.test(identity);
-  const isUniFi = /unifi|ubiquiti|ucg-|u7 |u7-|usw-|udm-|uxg-/.test(identity);
+  const isTrueNas = assigned?.slug === "truenas" || /truenas|freenas|1\.3\.6\.1\.4\.1\.50536/.test(identity);
+  const isUniFi = assigned?.slug?.startsWith("unifi") || /unifi|ubiquiti|ucg-|u7 |u7-|usw-|udm-|uxg-/.test(identity);
   let type = "network-device";
   if (isTrueNas) type = "truenas";
+  else if (assigned?.slug === "unifi-gateway") type = "gateway";
+  else if (assigned?.slug === "unifi-access-point") type = "access-point";
+  else if (assigned?.slug === "unifi-switch") type = "switch";
   else if (/\bucg|cloud gateway|\budm|dream machine|\buxg|security gateway/.test(identity)) type = "gateway";
   else if (/\bu7\b|access point|\buap|wifi|wireless/.test(identity)) type = "access-point";
   else if (/\busw\b|switch/.test(identity)) type = "switch";
   const label = type === "truenas" ? "TrueNAS System" : type === "gateway" ? "UniFi Gateway" : type === "access-point" ? "UniFi Access Point" : type === "switch" ? "UniFi Switch" : isUniFi ? "UniFi Device" : "Standard SNMP";
-  return { isTrueNas, isUniFi, type, label };
+  return { isTrueNas, isUniFi, type, label: assigned?.slug !== "auto" ? assigned?.name || label : label, assigned };
+}
+
+function createSnmpSession(device) {
+  const options = { port: device.port, retries: 1, timeout: device.timeout_seconds * 1000, transport: "udp4" };
+  if (device.version !== "3") return snmp.createSession(device.host, device.community, { ...options, version: snmp.Version2c });
+  const securityLevel = snmp.SecurityLevel[device.v3_security_level] ?? snmp.SecurityLevel.noAuthNoPriv;
+  const user = { name: device.v3_username, level: securityLevel };
+  if (securityLevel !== snmp.SecurityLevel.noAuthNoPriv) {
+    user.authProtocol = device.v3_auth_protocol === "md5" ? snmp.AuthProtocols.md5 : snmp.AuthProtocols.sha;
+    user.authKey = device.v3_auth_key;
+  }
+  if (securityLevel === snmp.SecurityLevel.authPriv) {
+    user.privProtocol = device.v3_priv_protocol === "des" ? snmp.PrivProtocols.des : snmp.PrivProtocols.aes;
+    user.privKey = device.v3_priv_key;
+  }
+  return snmp.createV3Session(device.host, user, options);
 }
 
 function snmpGet(device, oids) {
   return new Promise((resolve, reject) => {
     const started = Date.now();
-    const session = snmp.createSession(device.host, device.community, {
-      port: device.port, retries: 1, timeout: device.timeout_seconds * 1000,
-      version: snmp.Version2c, transport: "udp4"
-    });
+    const session = createSnmpSession(device);
     session.get(oids, (error, varbinds) => {
       session.close();
       if (error) return reject(error);
@@ -382,10 +458,7 @@ function snmpGet(device, oids) {
 
 function snmpSubtree(device, oid) {
   return new Promise((resolve, reject) => {
-    const session = snmp.createSession(device.host, device.community, {
-      port: device.port, retries: 1, timeout: device.timeout_seconds * 1000,
-      version: snmp.Version2c, transport: "udp4"
-    });
+    const session = createSnmpSession(device);
     const values = [];
     session.subtree(oid, 20, (varbinds) => {
       for (const varbind of varbinds) {
@@ -396,6 +469,37 @@ function snmpSubtree(device, oid) {
       error ? reject(error) : resolve(values);
     });
   });
+}
+
+function oidMeaning(oid) {
+  const prefixes = [
+    ["1.3.6.1.2.1.1", "System identity and uptime"],
+    ["1.3.6.1.2.1.2", "Network interfaces"],
+    ["1.3.6.1.2.1.25.2", "Host storage and filesystems"],
+    ["1.3.6.1.2.1.25.3.3", "Host processor load"],
+    ["1.3.6.1.4.1.2021.4", "UCD memory"],
+    ["1.3.6.1.4.1.2021.10", "UCD system load"],
+    ["1.3.6.1.4.1.50536", "TrueNAS enterprise MIB"],
+    ["1.3.6.1.4.1.41112", "Ubiquiti enterprise MIB"]
+  ];
+  return prefixes.find(([prefix]) => oid === prefix || oid.startsWith(`${prefix}.`))?.[1] || "Discovered OID";
+}
+
+async function pollAssignedProfile(device) {
+  if (!device.profile_id) return;
+  const profile = db.prepare("SELECT id, source FROM snmp_profiles WHERE id = ?").get(device.profile_id);
+  if (!profile || profile.source === "built-in") return;
+  const oids = db.prepare("SELECT oid, name, unit FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
+  const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
+  for (let index = 0; index < oids.length; index += 20) {
+    try {
+      const batch = oids.slice(index, index + 20);
+      const result = await snmpGet(device, batch.map((item) => item.oid));
+      db.transaction(() => {
+        for (const item of batch) upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, String(result.values[item.oid] ?? ""), item.unit || "");
+      })();
+    } catch {}
+  }
 }
 
 function varbindIndex(varbind) {
@@ -503,6 +607,7 @@ async function pollSnmpDevice(id) {
     })();
     await discoverSnmpInterfaces(device);
     await discoverTrueNasMetrics({ ...device, sys_name: sysName, sys_description: sysDescription });
+    await pollAssignedProfile(device);
   } catch (error) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
@@ -883,6 +988,8 @@ app.get("/api/snmp/devices", requireAuth, (req, res) => {
     const profile = snmpDeviceProfile(device);
     return {
       id: device.id, name: device.name, host: device.host, port: device.port,
+      version: device.version, profileId: device.profile_id, v3Username: device.v3_username,
+      v3SecurityLevel: device.v3_security_level, v3AuthProtocol: device.v3_auth_protocol, v3PrivProtocol: device.v3_priv_protocol,
       intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds,
       enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name,
       sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks,
@@ -901,15 +1008,69 @@ app.get("/api/snmp/devices/:id/details", requireAuth, (req, res) => {
   const upInterfaces = interfaces.filter((item) => item.operStatus === 1).length;
   const physicalInterfaces = interfaces.filter((item) => item.mac && item.mac !== "00:00:00:00:00:00").length;
   res.json({
-    device: { id: device.id, name: device.name, host: device.host, port: device.port, intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds, enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, profile, interfaceSummary: { total: interfaces.length, up: upInterfaces, physical: physicalInterfaces } },
+    device: { id: device.id, name: device.name, host: device.host, port: device.port, version: device.version, profileId: device.profile_id, v3Username: device.v3_username, v3SecurityLevel: device.v3_security_level, v3AuthProtocol: device.v3_auth_protocol, v3PrivProtocol: device.v3_priv_protocol, intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds, enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name, sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks, profile, interfaceSummary: { total: interfaces.length, up: upInterfaces, physical: physicalInterfaces } },
     interfaces, oids, metrics, profileMetrics
   });
+});
+app.get("/api/snmp/profiles", requireAuth, (req, res) => {
+  const profiles = db.prepare("SELECT id, name, slug, source, description, created_at AS createdAt FROM snmp_profiles ORDER BY source, name").all();
+  res.json(profiles.map((profile) => ({ ...profile, oidCount: db.prepare("SELECT COUNT(*) AS count FROM snmp_profile_oids WHERE profile_id = ?").get(profile.id).count })));
+});
+app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
+  const xml = String(req.body.xml || "");
+  const requestedName = String(req.body.name || "").trim();
+  if (!xml || Buffer.byteLength(xml) > 1024 * 1024) return res.status(400).json({ error: "Choose a Zabbix XML template smaller than 1 MB." });
+  let parsed;
+  try { parsed = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: true, processEntities: false }).parse(xml); } catch { return res.status(400).json({ error: "The XML template could not be parsed." }); }
+  const templates = parsed?.zabbix_export?.templates?.template;
+  const template = Array.isArray(templates) ? templates[0] : templates;
+  const name = requestedName || String(template?.name || template?.template || "Imported SNMP template").trim();
+  const rawItems = template?.items?.item;
+  const items = (Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : []).map((item) => ({
+    oid: String(item.snmp_oid || item.oid || "").trim().replace(/^SNMPv2-SMI::/, ""),
+    name: String(item.name || item.key || "Imported OID").trim(),
+    unit: String(item.units || "").trim(),
+    valueType: String(item.value_type || "").trim()
+  })).filter((item) => /^\d+(?:\.\d+)+$/.test(item.oid)).slice(0, 500);
+  if (!items.length) return res.status(400).json({ error: "No numeric SNMP OIDs were found in this Zabbix template." });
+  const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "imported";
+  let slug = slugBase;
+  let suffix = 2;
+  while (db.prepare("SELECT 1 FROM snmp_profiles WHERE slug = ?").get(slug)) slug = `${slugBase}-${suffix++}`;
+  const result = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'zabbix', ?)").run(name.slice(0, 80), slug, `Imported Zabbix SNMP template with ${items.length} OIDs.`);
+  const insert = db.prepare("INSERT INTO snmp_profile_oids (profile_id, oid, name, unit, value_type) VALUES (?, ?, ?, ?, ?)");
+  db.transaction(() => items.forEach((item) => insert.run(result.lastInsertRowid, item.oid, item.name.slice(0, 160), item.unit.slice(0, 40), item.valueType.slice(0, 40))))();
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), imported: items.length });
+});
+app.delete("/api/snmp/profiles/:id", requireAuth, (req, res) => {
+  const profile = db.prepare("SELECT source FROM snmp_profiles WHERE id = ?").get(Number(req.params.id));
+  if (!profile) return res.status(404).json({ error: "SNMP profile not found." });
+  if (profile.source === "built-in") return res.status(400).json({ error: "Built-in profiles cannot be deleted." });
+  db.prepare("DELETE FROM snmp_profiles WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+});
+app.post("/api/snmp/devices/:id/walk", requireAuth, async (req, res) => {
+  const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(req.params.id));
+  if (!device) return res.status(404).json({ error: "SNMP device not found." });
+  const rootOid = String(req.body.rootOid || "1.3.6.1.2.1").trim();
+  if (!/^\d+(?:\.\d+)+$/.test(rootOid) || rootOid.length > 128) return res.status(400).json({ error: "Enter a valid numeric root OID." });
+  const started = Date.now();
+  try {
+    const values = await snmpSubtree(device, rootOid);
+    const limited = values.slice(0, 1000);
+    res.json({
+      rootOid, count: limited.length, truncated: values.length > limited.length, durationMs: Date.now() - started,
+      results: limited.map((varbind) => ({ oid: varbind.oid, type: snmp.ObjectType[varbind.type] || String(varbind.type), value: valueText(varbind.value), meaning: oidMeaning(varbind.oid) }))
+    });
+  } catch (error) {
+    res.status(400).json({ error: String(error.message || error).slice(0, 300) });
+  }
 });
 app.post("/api/snmp/devices", requireAuth, async (req, res) => {
   let device;
   try { device = validateSnmpDevice(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
-  const result = db.prepare("INSERT INTO snmp_devices (name, host, port, community, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?, ?)")
-    .run(device.name, device.host, device.port, device.community, device.intervalSeconds, device.timeoutSeconds);
+  const result = db.prepare("INSERT INTO snmp_devices (name, host, port, community, version, profile_id, v3_username, v3_security_level, v3_auth_protocol, v3_auth_key, v3_priv_protocol, v3_priv_key, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(device.name, device.host, device.port, device.community, device.version, device.profileId, device.v3Username, device.v3SecurityLevel, device.v3AuthProtocol, device.v3AuthKey, device.v3PrivProtocol, device.v3PrivKey, device.intervalSeconds, device.timeoutSeconds);
   await pollSnmpDevice(result.lastInsertRowid);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -923,10 +1084,10 @@ app.put("/api/snmp/devices/:id", requireAuth, async (req, res) => {
   const current = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
   if (!current) return res.status(404).json({ error: "SNMP device not found." });
   let device;
-  try { device = validateSnmpDevice({ ...req.body, community: req.body.community || current.community }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try { device = validateSnmpDevice(req.body, current); } catch (error) { return res.status(400).json({ error: error.message }); }
   const enabled = req.body.enabled === false ? 0 : 1;
-  db.prepare("UPDATE snmp_devices SET name = ?, host = ?, port = ?, community = ?, interval_seconds = ?, timeout_seconds = ?, enabled = ?, next_poll_at = 0 WHERE id = ?")
-    .run(device.name, device.host, device.port, device.community, device.intervalSeconds, device.timeoutSeconds, enabled, id);
+  db.prepare("UPDATE snmp_devices SET name = ?, host = ?, port = ?, community = ?, version = ?, profile_id = ?, v3_username = ?, v3_security_level = ?, v3_auth_protocol = ?, v3_auth_key = ?, v3_priv_protocol = ?, v3_priv_key = ?, interval_seconds = ?, timeout_seconds = ?, enabled = ?, next_poll_at = 0 WHERE id = ?")
+    .run(device.name, device.host, device.port, device.community, device.version, device.profileId, device.v3Username, device.v3SecurityLevel, device.v3AuthProtocol, device.v3AuthKey, device.v3PrivProtocol, device.v3PrivKey, device.intervalSeconds, device.timeoutSeconds, enabled, id);
   if (!enabled) db.prepare("UPDATE snmp_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
   if (enabled) await pollSnmpDevice(id);
   res.json({ ok: true });

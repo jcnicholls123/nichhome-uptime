@@ -14,6 +14,23 @@ include breaking changes while the monitoring engine and integrations mature.
 - Historical uptime graphs and reporting ranges
 - Public status pages
 
+## [1.0.0-beta.4] - 2026-06-04
+
+### Added
+
+- Real SNMP v2c device polling using configurable host, port, community,
+  interval, and timeout
+- Standard SNMP system name, description, and uptime polling
+- Stored SNMP device status and metrics with background and manual polling
+- Discord down and recovery alerts for SNMP devices
+- Real 24-hour uptime and response-time graphs from stored heartbeats
+
+### Fixed
+
+- Confirm-password field no longer appears on the normal login screen
+- Increased text sizes throughout the dashboard, forms, modals, events, and
+  monitor rows for better readability
+
 ## [1.0.0-beta.3] - 2026-06-04
 
 ### Added
@@ -82,7 +99,8 @@ include breaking changes while the monitoring engine and integrations mature.
 - Live SNMP, Docker, Discord, incident, and public status-page integrations are
   not yet implemented
 
-[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.3...HEAD
+[Unreleased]: https://github.com/jcnicholls123/nichhome-uptime/compare/v1.0.0-beta.4...HEAD
+[1.0.0-beta.4]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.4
 [1.0.0-beta.3]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.3
 [1.0.0-beta.2]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.2
 [1.0.0-beta.1]: https://github.com/jcnicholls123/nichhome-uptime/releases/tag/v1.0.0-beta.1

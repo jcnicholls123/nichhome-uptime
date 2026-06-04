@@ -4,6 +4,7 @@ const path = require("path");
 const fs = require("fs");
 const express = require("express");
 const Database = require("better-sqlite3");
+const snmp = require("net-snmp");
 const packageInfo = require("./package.json");
 
 const PORT = Number(process.env.PORT || 8080);
@@ -67,6 +68,34 @@ db.exec(`
     resolved_at TEXT,
     cause TEXT
   );
+  CREATE TABLE IF NOT EXISTS snmp_devices (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    host TEXT NOT NULL,
+    port INTEGER NOT NULL DEFAULT 161,
+    community TEXT NOT NULL,
+    interval_seconds INTEGER NOT NULL DEFAULT 60,
+    timeout_seconds INTEGER NOT NULL DEFAULT 5,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    sys_name TEXT,
+    sys_description TEXT,
+    uptime_ticks INTEGER,
+    last_error TEXT,
+    last_polled_at TEXT,
+    next_poll_at INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS snmp_metrics (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    status TEXT NOT NULL,
+    uptime_ticks INTEGER,
+    response_ms INTEGER,
+    message TEXT,
+    polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS snmp_metrics_device_polled ON snmp_metrics(device_id, polled_at DESC);
 `);
 
 const staticDir = __dirname;
@@ -223,6 +252,72 @@ function validDiscordWebhook(value) {
   }
 }
 
+function validateSnmpDevice(input) {
+  const name = String(input.name || "").trim();
+  const host = String(input.host || "").trim();
+  const community = String(input.community || "").trim();
+  const port = Number(input.port || 161);
+  const intervalSeconds = Math.max(20, Math.min(86400, Number(input.intervalSeconds || 60)));
+  const timeoutSeconds = Math.max(1, Math.min(30, Number(input.timeoutSeconds || 5)));
+  if (name.length < 2 || name.length > 80) throw new Error("Device name must be between 2 and 80 characters.");
+  if (!host || host.length > 255 || /\s/.test(host)) throw new Error("Enter a valid hostname or IP address.");
+  if (!community || community.length > 128) throw new Error("Enter an SNMP community.");
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Enter a valid SNMP port.");
+  return { name, host, community, port, intervalSeconds, timeoutSeconds };
+}
+
+function snmpGet(device, oids) {
+  return new Promise((resolve, reject) => {
+    const started = Date.now();
+    const session = snmp.createSession(device.host, device.community, {
+      port: device.port, retries: 1, timeout: device.timeout_seconds * 1000,
+      version: snmp.Version2c, transport: "udp4"
+    });
+    session.get(oids, (error, varbinds) => {
+      session.close();
+      if (error) return reject(error);
+      const values = {};
+      for (const varbind of varbinds) {
+        if (snmp.isVarbindError(varbind)) return reject(new Error(snmp.varbindError(varbind)));
+        values[varbind.oid] = Buffer.isBuffer(varbind.value) ? varbind.value.toString() : varbind.value;
+      }
+      resolve({ values, responseMs: Date.now() - started });
+    });
+  });
+}
+
+async function pollSnmpDevice(id) {
+  const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
+  if (!device || !device.enabled) return null;
+  let status = "up";
+  let responseMs = null;
+  let message = null;
+  let sysName = null;
+  let sysDescription = null;
+  let uptimeTicks = null;
+  const previousStatus = device.status;
+  try {
+    const result = await snmpGet(device, ["1.3.6.1.2.1.1.5.0", "1.3.6.1.2.1.1.1.0", "1.3.6.1.2.1.1.3.0"]);
+    responseMs = result.responseMs;
+    sysName = String(result.values["1.3.6.1.2.1.1.5.0"] || "");
+    sysDescription = String(result.values["1.3.6.1.2.1.1.1.0"] || "");
+    uptimeTicks = Number(result.values["1.3.6.1.2.1.1.3.0"]) || null;
+  } catch (error) {
+    status = "down";
+    message = String(error.message || error).slice(0, 300);
+  }
+  db.transaction(() => {
+    db.prepare("UPDATE snmp_devices SET status = ?, sys_name = COALESCE(?, sys_name), sys_description = COALESCE(?, sys_description), uptime_ticks = COALESCE(?, uptime_ticks), last_error = ?, last_polled_at = CURRENT_TIMESTAMP, next_poll_at = ? WHERE id = ?")
+      .run(status, sysName, sysDescription, uptimeTicks, message, Date.now() + device.interval_seconds * 1000, id);
+    db.prepare("INSERT INTO snmp_metrics (device_id, status, uptime_ticks, response_ms, message) VALUES (?, ?, ?, ?, ?)")
+      .run(id, status, uptimeTicks, responseMs, message);
+    db.prepare("DELETE FROM snmp_metrics WHERE id IN (SELECT id FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
+  })();
+  if (status === "down" && previousStatus !== "down") await sendDiscord(`🔴 **SNMP device ${device.name} is DOWN**\n${message || device.host}`);
+  if (status === "up" && previousStatus === "down") await sendDiscord(`🟢 **SNMP device ${device.name} recovered**\n${sysName || device.host}`);
+  return db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
+}
+
 async function sendDiscord(content) {
   const config = discordConfig();
   if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return;
@@ -303,6 +398,8 @@ async function schedulerTick() {
   try {
     const due = db.prepare("SELECT id FROM monitors WHERE enabled = 1 AND next_check_at <= ? LIMIT 20").all(Date.now());
     await Promise.all(due.map(({ id }) => runMonitor(id)));
+    const dueSnmp = db.prepare("SELECT id FROM snmp_devices WHERE enabled = 1 AND next_poll_at <= ? LIMIT 20").all(Date.now());
+    await Promise.all(dueSnmp.map(({ id }) => pollSnmpDevice(id)));
   } finally {
     schedulerRunning = false;
   }
@@ -418,6 +515,46 @@ app.get("/api/incidents", requireAuth, (req, res) => {
     ORDER BY incidents.started_at DESC LIMIT 100
   `).all();
   res.json(incidents);
+});
+app.get("/api/dashboard/history", requireAuth, (req, res) => {
+  const rows = db.prepare(`
+    SELECT checked_at AS checkedAt, status, response_ms AS responseMs
+    FROM heartbeats WHERE checked_at >= datetime('now', '-24 hours')
+    ORDER BY checked_at DESC LIMIT 200
+  `).all();
+  res.json(rows.reverse().map((row) => ({
+    checkedAt: row.checkedAt,
+    uptime: row.status === "up" ? 100 : 0,
+    responseMs: row.responseMs
+  })));
+});
+app.get("/api/snmp/devices", requireAuth, (req, res) => {
+  const devices = db.prepare("SELECT * FROM snmp_devices ORDER BY created_at DESC").all();
+  res.json(devices.map((device) => ({
+    id: device.id, name: device.name, host: device.host, port: device.port,
+    intervalSeconds: device.interval_seconds, timeoutSeconds: device.timeout_seconds,
+    enabled: Boolean(device.enabled), status: device.status, sysName: device.sys_name,
+    sysDescription: device.sys_description, uptimeTicks: device.uptime_ticks,
+    lastError: device.last_error, lastPolledAt: device.last_polled_at
+  })));
+});
+app.post("/api/snmp/devices", requireAuth, async (req, res) => {
+  let device;
+  try { device = validateSnmpDevice(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const result = db.prepare("INSERT INTO snmp_devices (name, host, port, community, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?, ?)")
+    .run(device.name, device.host, device.port, device.community, device.intervalSeconds, device.timeoutSeconds);
+  await pollSnmpDevice(result.lastInsertRowid);
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.post("/api/snmp/devices/:id/poll", requireAuth, async (req, res) => {
+  const device = await pollSnmpDevice(Number(req.params.id));
+  if (!device) return res.status(404).json({ error: "SNMP device not found." });
+  res.json({ ok: true, status: device.status });
+});
+app.delete("/api/snmp/devices/:id", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM snmp_devices WHERE id = ?").run(Number(req.params.id));
+  if (!result.changes) return res.status(404).json({ error: "SNMP device not found." });
+  res.json({ ok: true });
 });
 app.get("/api/notifications/discord", requireAuth, (req, res) => {
   const config = discordConfig();

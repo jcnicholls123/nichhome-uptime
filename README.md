@@ -20,6 +20,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
 - Monitor editing, pause/resume, and heartbeat history
 - Incident tracking and Discord down/recovery alerts
+- SNMP v2c device status, identity, uptime, and background polling
+- Real heartbeat uptime and response-time graphs
 
 All NichHome Uptime features are free. Unfinished features are clearly marked
 as Coming soon and are not hidden behind a paid tier.

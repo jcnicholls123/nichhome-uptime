@@ -7,6 +7,7 @@ const monitorList = document.getElementById("monitorList");
 let currentUser;
 let monitors = [];
 let incidents = [];
+let snmpDevices = [];
 
 async function api(url, options = {}) {
   const response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
@@ -37,6 +38,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       openIncidents();
       return;
     }
+    if (item.dataset.page === "SNMP Devices") {
+      document.querySelector(".snmp-panel").scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
     if (!["Overview", "Monitors"].includes(item.dataset.page)) {
       showToast(`${item.dataset.page} is coming next`, "This section is not implemented yet");
       return;
@@ -63,6 +68,7 @@ refreshButton.addEventListener("click", async () => {
   try {
     await Promise.all(monitors.map((monitor) => api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" })));
     await loadMonitors();
+    await loadGraph();
     showToast("Checks complete", `${monitors.length} monitor${monitors.length === 1 ? "" : "s"} checked`);
   } finally {
     refreshButton.classList.remove("spinning");
@@ -131,6 +137,7 @@ function renderMonitors(filter = "") {
       check.disabled = true;
       await api(`/api/monitors/${monitor.id}/check`, { method: "POST", body: "{}" });
       await loadMonitors();
+      await loadGraph();
       showToast("Monitor checked", monitor.name);
     });
     const remove = document.createElement("button");
@@ -141,6 +148,7 @@ function renderMonitors(filter = "") {
       if (!window.confirm(`Delete ${monitor.name}? Its heartbeat history will also be deleted.`)) return;
       await api(`/api/monitors/${monitor.id}`, { method: "DELETE" });
       await loadMonitors();
+      await loadGraph();
       showToast("Monitor deleted", monitor.name);
     });
     actions.append(details, check, remove);
@@ -212,6 +220,94 @@ async function loadIncidents() {
   }
 }
 
+function makePath(values, width, height, minimum, maximum) {
+  if (values.length < 2) return "";
+  const range = Math.max(1, maximum - minimum);
+  return values.map((value, index) => {
+    const x = (index / (values.length - 1)) * width;
+    const y = height - ((value - minimum) / range) * height;
+    return `${index ? "L" : "M"}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+async function loadGraph() {
+  const history = await api("/api/dashboard/history");
+  const chart = document.getElementById("realChart");
+  chart.replaceChildren();
+  if (history.length < 2) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "Collecting heartbeat data. The graph appears after two time buckets.";
+    chart.append(empty);
+    return;
+  }
+  const ns = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(ns, "svg");
+  svg.setAttribute("viewBox", "0 0 800 245");
+  svg.setAttribute("preserveAspectRatio", "none");
+  for (const y of [20, 80, 140, 200]) {
+    const line = document.createElementNS(ns, "line");
+    line.setAttribute("x1", "0"); line.setAttribute("x2", "800");
+    line.setAttribute("y1", y); line.setAttribute("y2", y);
+    line.setAttribute("class", "chart-grid");
+    svg.append(line);
+  }
+  const uptime = document.createElementNS(ns, "path");
+  uptime.setAttribute("class", "uptime-path");
+  uptime.setAttribute("d", makePath(history.map((point) => point.uptime ?? 0), 800, 220, 0, 100));
+  const responses = history.map((point) => point.responseMs ?? 0);
+  const response = document.createElementNS(ns, "path");
+  response.setAttribute("class", "response-path");
+  response.setAttribute("d", makePath(responses, 800, 220, 0, Math.max(...responses, 1)));
+  svg.append(uptime, response);
+  chart.append(svg);
+}
+
+function renderSnmpDevices() {
+  const list = document.getElementById("snmpDeviceList");
+  list.replaceChildren();
+  if (!snmpDevices.length) {
+    const empty = document.createElement("p");
+    empty.className = "empty-state";
+    empty.textContent = "Add an SNMP v2c device to begin polling.";
+    list.append(empty);
+    return;
+  }
+  for (const device of snmpDevices) {
+    const card = document.createElement("article");
+    card.className = "snmp-device-card";
+    const header = document.createElement("header");
+    const name = document.createElement("strong");
+    name.textContent = device.name;
+    const status = document.createElement("span");
+    status.className = `status-label ${device.status === "up" ? "up" : "warn"}`;
+    status.textContent = device.status.toUpperCase();
+    header.append(name, status);
+    const identity = document.createElement("p");
+    identity.textContent = device.sysName || `${device.host}:${device.port}`;
+    const description = document.createElement("small");
+    description.textContent = device.status === "up"
+      ? `${device.sysDescription || "SNMP device"} · Uptime ${device.uptimeTicks == null ? "unknown" : Math.floor(device.uptimeTicks / 6000) + " min"}`
+      : device.lastError || "Waiting for first poll";
+    const actions = document.createElement("div");
+    actions.className = "snmp-card-actions";
+    const poll = document.createElement("button");
+    poll.className = "dark-button"; poll.textContent = "Poll now";
+    poll.addEventListener("click", async () => { await api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }); await loadSnmpDevices(); });
+    const remove = document.createElement("button");
+    remove.className = "dark-button"; remove.textContent = "Delete";
+    remove.addEventListener("click", async () => { if (window.confirm(`Delete ${device.name}?`)) { await api(`/api/snmp/devices/${device.id}`, { method: "DELETE" }); await loadSnmpDevices(); } });
+    actions.append(poll, remove);
+    card.append(header, identity, description, actions);
+    list.append(card);
+  }
+}
+
+async function loadSnmpDevices() {
+  snmpDevices = await api("/api/snmp/devices");
+  renderSnmpDevices();
+}
+
 async function openIncidents() {
   await loadIncidents();
   const list = document.getElementById("incidentsList");
@@ -265,6 +361,7 @@ document.getElementById("monitorForm").addEventListener("submit", async (event) 
     form.reset();
     monitorModal.hidden = true;
     await loadMonitors();
+    await loadGraph();
     showToast("Monitor created", "The first check has completed");
   } catch (err) {
     error.textContent = err.message;
@@ -282,6 +379,7 @@ document.getElementById("editMonitorForm").addEventListener("submit", async (eve
     await api(`/api/monitors/${values.id}`, { method: "PUT", body: JSON.stringify(values) });
     document.getElementById("detailsModal").hidden = true;
     await loadMonitors();
+    await loadGraph();
     showToast("Monitor updated", values.name);
   } catch (err) { document.getElementById("editMonitorError").textContent = err.message; }
 });
@@ -312,6 +410,20 @@ document.getElementById("testDiscord").addEventListener("click", async () => {
     await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
     showToast("Discord test sent", "Check your Discord channel");
   } catch (err) { document.getElementById("discordError").textContent = err.message; }
+});
+document.getElementById("addSnmpDevice").addEventListener("click", () => { document.getElementById("snmpModal").hidden = false; });
+document.getElementById("snmpForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const error = document.getElementById("snmpError");
+  error.textContent = "";
+  try {
+    await api("/api/snmp/devices", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) });
+    form.reset();
+    document.getElementById("snmpModal").hidden = true;
+    await loadSnmpDevices();
+    showToast("SNMP device added", "Initial poll completed");
+  } catch (err) { error.textContent = err.message; }
 });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
@@ -360,6 +472,8 @@ loadVersion();
 loadMonitors();
 loadIncidents();
 loadDiscordStatus();
+loadGraph();
+loadSnmpDevices();
     const details = document.createElement("button");
     details.className = "monitor-action";
     details.title = "Edit and view history";

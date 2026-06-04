@@ -97,10 +97,10 @@
         <section class="dashboard-grid">
           <article class="panel uptime-panel">
             <div class="panel-heading">
-              <div><span class="section-tag">HISTORY</span><h2>Uptime performance</h2></div>
-              <span class="connected-pill">Coming soon</span>
+              <div><span class="section-tag">REAL HEARTBEATS</span><h2>Uptime performance</h2></div>
+              <div class="legend"><span><i class="legend-line coral"></i>Uptime</span><span><i class="legend-line cream"></i>Response</span></div>
             </div>
-            <div class="coming-soon light"><strong>Historical uptime graphs are coming soon</strong><p>Heartbeat history is already being stored. Graphs and reporting ranges will be added in a future beta.</p></div>
+            <div class="real-chart" id="realChart"><p class="empty-state">Collecting heartbeat data...</p></div>
           </article>
 
           <article class="panel activity-panel">
@@ -110,10 +110,11 @@
 
           <article class="panel snmp-panel">
             <div class="panel-heading">
-              <div><span class="section-tag accent">SNMP PREVIEW</span><h2>Network intelligence</h2></div>
-              <span class="connected-pill">Coming soon</span>
+              <div><span class="section-tag accent">SNMP V2C</span><h2>Network intelligence</h2></div>
+              <button class="dark-button" id="addSnmpDevice">Add SNMP device <span>→</span></button>
             </div>
-            <div class="coming-soon"><strong>SNMP monitoring is coming soon</strong><p>Device discovery, OID polling, interface traffic, and network mapping will arrive in a future beta. Nothing is locked behind Pro.</p></div>
+            <div class="snmp-device-list" id="snmpDeviceList"><p class="empty-state">Add an SNMP v2c device to begin polling.</p></div>
+            <p class="snmp-footnote">SNMPv3, interface traffic, and network mapping are coming soon.</p>
           </article>
 
           <article class="panel monitor-panel">
@@ -211,6 +212,26 @@
         <button class="command-button" type="submit">Save Discord settings</button>
         <button class="soft-button" type="button" id="testDiscord">Send test notification</button>
         <p class="modal-error" id="discordError"></p>
+      </form>
+    </section>
+  </div>
+
+  <div class="modal-backdrop" id="snmpModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag accent">SNMP V2C</span><h2>Add SNMP device</h2></div><button class="modal-close" data-close="snmpModal" aria-label="Close">×</button></div>
+      <form class="monitor-form" id="snmpForm">
+        <label>Name<input name="name" required minlength="2" placeholder="Core switch"></label>
+        <label>Hostname or IP<input name="host" required placeholder="192.168.1.1"></label>
+        <div class="form-columns">
+          <label>Port<input name="port" type="number" value="161" min="1" max="65535"></label>
+          <label>Community<input name="community" required value="public"></label>
+        </div>
+        <div class="form-columns">
+          <label>Poll every<select name="intervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option></select></label>
+          <label>Timeout<select name="timeoutSeconds"><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select></label>
+        </div>
+        <button class="command-button" type="submit">Add and poll device</button>
+        <p class="modal-error" id="snmpError"></p>
       </form>
     </section>
   </div>

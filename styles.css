@@ -260,6 +260,13 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .rule-row strong { font-size: 12px; }
 .rule-row small { overflow-wrap: anywhere; color: #858e89; font-size: 10px; }
 .topology-map { display: grid; gap: 18px; min-height: 420px; }
+.topology-canvas { position: relative; min-height: 520px; overflow: hidden; border: 1px solid var(--line); border-radius: 12px; background-color: #f6f7f4; background-image: radial-gradient(#cbd2ce 1px, transparent 1px); background-size: 18px 18px; }
+.topology-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.topology-canvas line { vector-effect: non-scaling-stroke; stroke: #aab8b1; stroke-width: 1.2; }
+.topology-canvas line.manual { stroke: var(--coral); stroke-dasharray: 4 3; }
+.topology-canvas-node { position: absolute; z-index: 2; max-width: 135px; padding: 7px 9px; overflow: hidden; border: 1px solid #a8bbb1; border-radius: 7px; color: #30453b; background: #e4f0e8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; transform: translate(-50%, -50%); }
+.topology-canvas-node.manual { border-color: #769cc0; background: #e0ebf4; cursor: pointer; }
+.topology-canvas-node.down { border-color: var(--coral); color: #a33f31; background: #f7ddd7; }
 .topology-group { display: grid; gap: 9px; }
 .topology-group h2 { margin: 0; color: #78827d; font-family: "DM Mono"; font-size: 11px; text-transform: uppercase; }
 .topology-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
@@ -267,6 +274,13 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .topology-node strong { font-size: 12px; }
 .topology-node small { overflow: hidden; color: #858e89; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .topology-node span { color: #5e8c76; font-family: "DM Mono"; font-size: 9px; }
+.topology-node .monitor-action { justify-self: end; }
+.range-select { min-width: 145px; appearance: auto; }
+.severity-information { border-left-color: #3498db; }
+.severity-warning { border-left-color: #f1c40f; }
+.severity-average { border-left-color: #ff9800; }
+.severity-high { border-left-color: #e74c3c; }
+.severity-disaster { border-left-color: #992d22; }
 .docker-unavailable { padding: 18px; border: 1px dashed var(--line); border-radius: 9px; color: #7d8581; font-size: 11px; line-height: 1.6; }
 .truenas-metric-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
 .truenas-metric { display: grid; gap: 4px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }

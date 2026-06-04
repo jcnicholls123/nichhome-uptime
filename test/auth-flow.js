@@ -74,7 +74,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.14", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.15", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -120,6 +120,7 @@ async function waitForServer() {
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: false, webhookUrl: "" }) })).status, 200);
     assert.equal((await request("/api/dashboard/history")).status, 200);
+    assert.equal((await request("/api/dashboard/history?range=90d")).status, 200);
     const dockerStatus = await (await request("/api/docker/status")).json();
     assert.equal(dockerStatus.available, false);
     assert.deepEqual(await (await request("/api/docker/containers")).json(), []);
@@ -139,13 +140,24 @@ async function waitForServer() {
     assert.equal((await request(`/api/docker/containers/${encodeURIComponent(containers[0].id)}/details`)).status, 200);
     const alertOptions = await (await request("/api/alert-rules/options")).json();
     assert.equal(alertOptions.docker[0].metrics.some((metric) => metric.key === "restart_count"), true);
-    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Test restart rule", targetType: "docker", targetId: containers[0].id, metricKey: "restart_count", operator: ">", threshold: "-1" }) })).status, 201);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Test restart rule", targetType: "docker", targetId: containers[0].id, metricKey: "restart_count", operator: ">", threshold: "-1", severity: "high", description: "Container restart threshold", actionText: "Inspect container logs", triggerCount: 1, recoveryCount: 2 }) })).status, 201);
     const alertRules = await (await request("/api/alert-rules")).json();
     assert.equal(alertRules[0].active, true);
+    assert.equal(alertRules[0].severity, "high");
+    assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "PUT", body: JSON.stringify({ name: "Updated restart rule", severity: "warning", triggerCount: 2, recoveryCount: 2, enabled: true }) })).status, 200);
     assert.equal((await (await request("/api/incidents")).json()).some((incident) => incident.source === "rule"), true);
     const networkMap = await (await request("/api/network-map")).json();
     assert.equal(networkMap.nodes.some((node) => node.type === "docker"), true);
     assert.equal(networkMap.edges.some((edge) => edge.type === "contains"), true);
+    const mapNodeResponse = await request("/api/network-map/nodes", { method: "POST", body: JSON.stringify({ name: "Test site", nodeType: "site", detail: "Manual test node", status: "up", x: 25, y: 75 }) });
+    assert.equal(mapNodeResponse.status, 201);
+    const mapNode = await mapNodeResponse.json();
+    assert.equal((await request(`/api/network-map/nodes/${mapNode.id}`, { method: "PUT", body: JSON.stringify({ name: "Updated test site", nodeType: "site", detail: "Updated manual test node", status: "unknown", x: 30, y: 70 }) })).status, 200);
+    assert.equal((await request("/api/network-map/links", { method: "POST", body: JSON.stringify({ from: `manual:${mapNode.id}`, to: networkMap.nodes.find((node) => node.type === "docker").id, label: "Test link" }) })).status, 201);
+    const editedMap = await (await request("/api/network-map")).json();
+    assert.equal(editedMap.nodes.some((node) => node.id === `manual:${mapNode.id}`), true);
+    assert.equal(editedMap.edges.some((edge) => edge.manual && edge.label === "Test link"), true);
+    assert.equal((await request(`/api/network-map/nodes/${mapNode.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);
     assert.equal((await (await request("/api/docker/containers")).json()).length, 1);
     assert.ok(dockerContainerListRequests.length >= 2);

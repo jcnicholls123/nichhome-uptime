@@ -225,6 +225,32 @@ db.exec(`
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     resolved_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS map_nodes (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    node_type TEXT NOT NULL DEFAULT 'manual',
+    detail TEXT,
+    status TEXT NOT NULL DEFAULT 'up',
+    x INTEGER NOT NULL DEFAULT 50,
+    y INTEGER NOT NULL DEFAULT 50,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS map_links (
+    id INTEGER PRIMARY KEY,
+    from_node TEXT NOT NULL,
+    to_node TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS reporting_hourly (
+    source_key TEXT NOT NULL,
+    bucket TEXT NOT NULL,
+    up_count INTEGER NOT NULL DEFAULT 0,
+    total_count INTEGER NOT NULL DEFAULT 0,
+    response_sum INTEGER NOT NULL DEFAULT 0,
+    response_count INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY(source_key, bucket)
+  );
 `);
 
 function ensureColumn(table, column, definition) {
@@ -247,6 +273,14 @@ ensureColumn("snmp_interfaces", "out_discards", "INTEGER");
 ensureColumn("docker_containers", "host_id", "INTEGER");
 ensureColumn("docker_containers", "raw_container_id", "TEXT");
 ensureColumn("docker_incidents", "host_id", "INTEGER");
+ensureColumn("alert_rules", "severity", "TEXT NOT NULL DEFAULT 'warning'");
+ensureColumn("alert_rules", "description", "TEXT");
+ensureColumn("alert_rules", "action_text", "TEXT");
+ensureColumn("alert_rules", "trigger_count", "INTEGER NOT NULL DEFAULT 1");
+ensureColumn("alert_rules", "recovery_count", "INTEGER NOT NULL DEFAULT 1");
+ensureColumn("alert_rules", "failure_streak", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("alert_rules", "recovery_streak", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("alert_rules", "last_evaluated_at", "TEXT");
 
 function repairDockerFleetData() {
   db.transaction(() => {
@@ -511,6 +545,17 @@ function setSetting(key, value) {
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
 }
 
+function recordReportingPoint(sourceKey, status, responseMs = null) {
+  const bucket = new Date().toISOString().slice(0, 13) + ":00:00";
+  db.prepare(`
+    INSERT INTO reporting_hourly (source_key, bucket, up_count, total_count, response_sum, response_count)
+    VALUES (?, ?, ?, 1, ?, ?)
+    ON CONFLICT(source_key, bucket) DO UPDATE SET up_count = up_count + excluded.up_count, total_count = total_count + 1,
+      response_sum = response_sum + excluded.response_sum, response_count = response_count + excluded.response_count
+  `).run(sourceKey, bucket, status === "up" ? 1 : 0, responseMs == null ? 0 : Number(responseMs), responseMs == null ? 0 : 1);
+  db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', '-90 days')").run();
+}
+
 function alertRuleValue(rule) {
   if (rule.target_type === "snmp") {
     const separator = rule.metric_key.indexOf("|");
@@ -546,12 +591,15 @@ async function evaluateAlertRules(targetType, targetId) {
     const triggered = alertRuleTriggered(value, rule.operator, rule.threshold);
     const open = db.prepare("SELECT id FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id);
     const cause = `${rule.metric_key} is ${value}; expected ${rule.operator} ${rule.threshold}`;
-    if (triggered && !open) {
+    const failureStreak = triggered ? rule.failure_streak + 1 : 0;
+    const recoveryStreak = triggered ? 0 : rule.recovery_streak + 1;
+    db.prepare("UPDATE alert_rules SET failure_streak = ?, recovery_streak = ?, last_evaluated_at = CURRENT_TIMESTAMP WHERE id = ?").run(failureStreak, recoveryStreak, rule.id);
+    if (triggered && !open && failureStreak >= rule.trigger_count) {
       db.prepare("INSERT INTO alert_rule_incidents (rule_id, current_value, cause) VALUES (?, ?, ?)").run(rule.id, String(value), cause);
-      await sendDiscord(`[ALERT] **Alert rule ${rule.name} triggered**\n${cause}`);
-    } else if (!triggered && open) {
+      await sendDiscordAlert(rule, value, cause, false);
+    } else if (!triggered && open && recoveryStreak >= rule.recovery_count) {
       db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP, current_value = ? WHERE id = ?").run(String(value), open.id);
-      await sendDiscord(`[RECOVERED] **Alert rule ${rule.name} recovered**\nCurrent value: ${value}`);
+      await sendDiscordAlert(rule, value, cause, true);
     } else if (triggered && open) {
       db.prepare("UPDATE alert_rule_incidents SET current_value = ?, cause = ? WHERE id = ?").run(String(value), cause, open.id);
     }
@@ -863,6 +911,7 @@ async function pollSnmpDevice(id) {
       .run(status, sysName, sysDescription, uptimeTicks, message, Date.now() + device.interval_seconds * 1000, id);
     db.prepare("INSERT INTO snmp_metrics (device_id, status, uptime_ticks, response_ms, message) VALUES (?, ?, ?, ?, ?)")
       .run(id, status, uptimeTicks, responseMs, message);
+    recordReportingPoint(`snmp:${id}`, status, responseMs);
     db.prepare("DELETE FROM snmp_metrics WHERE id IN (SELECT id FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
     if (status === "down" && previousStatus !== "down") {
       db.prepare("INSERT INTO snmp_incidents (device_id, cause) VALUES (?, ?)").run(id, message);
@@ -877,19 +926,41 @@ async function pollSnmpDevice(id) {
   return db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
 }
 
-async function sendDiscord(content) {
+async function sendDiscord(content, embeds = undefined) {
   const config = discordConfig();
   if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return;
   try {
     await fetch(config.webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ content, username: "NichHome Uptime" }),
+      body: JSON.stringify({ content, embeds, username: "NichHome Uptime" }),
       signal: AbortSignal.timeout(10000)
     });
   } catch (error) {
     console.error("Discord notification failed:", error.message);
   }
+}
+
+const severityColours = { information: 3447003, warning: 16776960, average: 16753920, high: 15158332, disaster: 10038562 };
+
+async function sendDiscordAlert(rule, value, cause, recovered) {
+  const title = recovered ? `${rule.name} recovered` : rule.name;
+  const fields = [
+    { name: "Severity", value: recovered ? "Recovered" : rule.severity.toUpperCase(), inline: true },
+    { name: "Source", value: rule.target_type.toUpperCase(), inline: true },
+    { name: "Current Value", value: String(value).slice(0, 1024), inline: true },
+    { name: "Trigger", value: `${rule.metric_key} ${rule.operator} ${rule.threshold}`.slice(0, 1024), inline: false },
+    { name: "Reason", value: cause.slice(0, 1024), inline: false }
+  ];
+  if (rule.action_text) fields.push({ name: "Action", value: rule.action_text.slice(0, 1024), inline: false });
+  await sendDiscord("", [{
+    title,
+    description: rule.description || (recovered ? "The alert condition has cleared." : "A configured NichHome alert rule has triggered."),
+    color: recovered ? 5763719 : severityColours[rule.severity] || severityColours.warning,
+    fields,
+    footer: { text: `NichHome Uptime · ${new Date().toISOString()}` },
+    timestamp: new Date().toISOString()
+  }]);
 }
 
 let dockerFleetError = null;
@@ -1001,6 +1072,7 @@ async function pollDockerHost(hostOrId) {
       `).run(id, host.id, rawId, name, container.Image || "", state, container.Status || "", health, cpuPercent, memoryBytes, memoryLimitBytes, Number(inspect?.RestartCount || 0), container.Labels?.["com.docker.compose.project"] || "", container.Created || null);
       db.prepare("INSERT INTO docker_metrics (container_id, status, cpu_percent, memory_bytes, message) VALUES (?, ?, ?, ?, ?)")
         .run(id, status, cpuPercent, memoryBytes, status === "down" ? container.Status || health : null);
+      recordReportingPoint(`docker:${id}`, status);
       db.prepare("DELETE FROM docker_metrics WHERE id IN (SELECT id FROM docker_metrics WHERE container_id = ? ORDER BY polled_at DESC LIMIT -1 OFFSET 1000)").run(id);
       if (status === "down" && !openIncident && ((previous && previous.state === "running" && previous.health !== "unhealthy") || (!previous && health === "unhealthy"))) {
         db.prepare("INSERT INTO docker_incidents (container_id, host_id, container_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, container.Status || health);
@@ -1100,6 +1172,7 @@ async function runMonitor(id) {
       .run(status, responseMs, message, Date.now() + monitor.interval_seconds * 1000, id);
     db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, message) VALUES (?, ?, ?, ?)")
       .run(id, status, responseMs, message);
+    recordReportingPoint(`monitor:${id}`, status, responseMs);
     db.prepare("DELETE FROM heartbeats WHERE id IN (SELECT id FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT -1 OFFSET 1000)").run(id);
     if (status === "down" && previousStatus !== "down") {
       db.prepare("INSERT INTO incidents (monitor_id, cause) VALUES (?, ?)").run(id, message);
@@ -1298,7 +1371,7 @@ app.delete("/api/monitors/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/alert-rules", requireAuth, (req, res) => {
-  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
+  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, severity, description, action_text AS actionText, trigger_count AS triggerCount, recovery_count AS recoveryCount, failure_streak AS failureStreak, recovery_streak AS recoveryStreak, last_evaluated_at AS lastEvaluatedAt, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
   res.json(rules.map((rule) => ({
     ...rule,
     enabled: Boolean(rule.enabled),
@@ -1329,14 +1402,36 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const metricKey = String(req.body.metricKey || "").trim();
   const operator = String(req.body.operator || "");
   const threshold = String(req.body.threshold ?? "").trim();
+  const severity = String(req.body.severity || "warning");
+  const description = String(req.body.description || "").trim().slice(0, 500);
+  const actionText = String(req.body.actionText || "").trim().slice(0, 500);
+  const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || 1)));
+  const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold) return res.status(400).json({ error: "Choose a valid target, metric, operator, and threshold." });
+  if (!["snmp", "docker"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, severity, operator, and threshold." });
   const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
-  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold) VALUES (?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold);
+  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, severity, description, action_text, trigger_count, recovery_count) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold, severity, description, actionText, triggerCount, recoveryCount);
   await evaluateAlertRules(targetType, targetId);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.put("/api/alert-rules/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const rule = db.prepare("SELECT * FROM alert_rules WHERE id = ?").get(id);
+  if (!rule) return res.status(404).json({ error: "Alert rule not found." });
+  const name = String(req.body.name || rule.name).trim();
+  const severity = String(req.body.severity || rule.severity);
+  const description = String(req.body.description ?? rule.description ?? "").trim().slice(0, 500);
+  const actionText = String(req.body.actionText ?? rule.action_text ?? "").trim().slice(0, 500);
+  const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || rule.trigger_count)));
+  const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || rule.recovery_count)));
+  const enabled = req.body.enabled === false ? 0 : 1;
+  if (name.length < 2 || name.length > 100 || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name and severity." });
+  db.prepare("UPDATE alert_rules SET name = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, enabled = ? WHERE id = ?").run(name, severity, description, actionText, triggerCount, recoveryCount, enabled, id);
+  if (!enabled) db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE rule_id = ? AND resolved_at IS NULL").run(id);
+  if (enabled) await evaluateAlertRules(rule.target_type, rule.target_id);
+  res.json({ ok: true });
 });
 app.delete("/api/alert-rules/:id", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM alert_rules WHERE id = ?").run(Number(req.params.id));
@@ -1366,18 +1461,25 @@ app.get("/api/incidents", requireAuth, (req, res) => {
   res.json(incidents);
 });
 app.get("/api/dashboard/history", requireAuth, (req, res) => {
+  const ranges = { "1h": ["-1 hour", 300], "24h": ["-24 hours", 400], "7d": ["-7 days", 700], "30d": ["-30 days", 1000], "90d": ["-90 days", 1200] };
+  const range = String(req.query.range || "24h");
+  const [window, limit] = ranges[range] || ranges["24h"];
+  if (["7d", "30d", "90d"].includes(range)) {
+    const rows = db.prepare("SELECT bucket AS checkedAt, SUM(up_count) * 100.0 / SUM(total_count) AS uptime, CASE WHEN SUM(response_count) > 0 THEN SUM(response_sum) * 1.0 / SUM(response_count) END AS responseMs FROM reporting_hourly WHERE bucket >= datetime('now', ?) GROUP BY bucket ORDER BY bucket LIMIT ?").all(window, limit);
+    return res.json(rows);
+  }
   const rows = db.prepare(`
     SELECT checkedAt, status, responseMs FROM (
       SELECT checked_at AS checkedAt, status, response_ms AS responseMs
-      FROM heartbeats WHERE checked_at >= datetime('now', '-24 hours')
+      FROM heartbeats WHERE checked_at >= datetime('now', ?)
       UNION ALL
       SELECT polled_at AS checkedAt, status, response_ms AS responseMs
-      FROM snmp_metrics WHERE polled_at >= datetime('now', '-24 hours')
+      FROM snmp_metrics WHERE polled_at >= datetime('now', ?)
       UNION ALL
       SELECT polled_at AS checkedAt, status, NULL AS responseMs
-      FROM docker_metrics WHERE polled_at >= datetime('now', '-24 hours') AND status IN ('up', 'down')
-    ) ORDER BY checkedAt DESC LIMIT 400
-  `).all();
+      FROM docker_metrics WHERE polled_at >= datetime('now', ?) AND status IN ('up', 'down')
+    ) ORDER BY checkedAt DESC LIMIT ?
+  `).all(window, window, window, limit);
   res.json(rows.reverse().map((row) => ({
     checkedAt: row.checkedAt,
     uptime: row.status === "up" ? 100 : 0,
@@ -1609,7 +1711,39 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     const address = monitor.target.match(/(?:https?:\/\/)?(\d+\.\d+\.\d+\.\d+)/)?.[1];
     addSubnet(address, id);
   }
+  for (const node of db.prepare("SELECT id, name, node_type, detail, status, x, y FROM map_nodes ORDER BY name").all()) nodes.push({ id: `manual:${node.id}`, type: node.node_type, name: node.name, detail: node.detail || "Manual map node", status: node.status, x: node.x, y: node.y, manual: true });
+  for (const link of db.prepare("SELECT id, from_node AS 'from', to_node AS 'to', label FROM map_links ORDER BY id").all()) edges.push({ ...link, type: "manual", manual: true });
   res.json({ nodes, edges });
+});
+app.post("/api/network-map/nodes", requireAuth, (req, res) => {
+  const name = String(req.body.name || "").trim();
+  const nodeType = String(req.body.nodeType || "manual").trim();
+  const detail = String(req.body.detail || "").trim().slice(0, 300);
+  const status = String(req.body.status || "up");
+  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
+  const result = db.prepare("INSERT INTO map_nodes (name, node_type, detail, status, x, y) VALUES (?, ?, ?, ?, ?, ?)").run(name, nodeType, detail, status, Math.max(0, Math.min(100, Number(req.body.x || 50))), Math.max(0, Math.min(100, Number(req.body.y || 50))));
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.put("/api/network-map/nodes/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM map_nodes WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Map node not found." });
+  db.prepare("UPDATE map_nodes SET name = ?, node_type = ?, detail = ?, status = ?, x = ?, y = ? WHERE id = ?").run(String(req.body.name || current.name).trim().slice(0, 80), String(req.body.nodeType || current.node_type), String(req.body.detail ?? current.detail ?? "").trim().slice(0, 300), String(req.body.status || current.status), Math.max(0, Math.min(100, Number(req.body.x ?? current.x))), Math.max(0, Math.min(100, Number(req.body.y ?? current.y))), id);
+  res.json({ ok: true });
+});
+app.delete("/api/network-map/nodes/:id", requireAuth, (req, res) => {
+  const nodeId = `manual:${Number(req.params.id)}`;
+  db.transaction(() => { db.prepare("DELETE FROM map_links WHERE from_node = ? OR to_node = ?").run(nodeId, nodeId); db.prepare("DELETE FROM map_nodes WHERE id = ?").run(Number(req.params.id)); })();
+  res.json({ ok: true });
+});
+app.post("/api/network-map/links", requireAuth, (req, res) => {
+  const from = String(req.body.from || ""); const to = String(req.body.to || ""); const label = String(req.body.label || "").trim().slice(0, 80);
+  if (!from || !to || from === to) return res.status(400).json({ error: "Choose two different map nodes." });
+  const result = db.prepare("INSERT INTO map_links (from_node, to_node, label) VALUES (?, ?, ?)").run(from, to, label);
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+});
+app.delete("/api/network-map/links/:id", requireAuth, (req, res) => {
+  db.prepare("DELETE FROM map_links WHERE id = ?").run(Number(req.params.id)); res.json({ ok: true });
 });
 app.post("/api/docker/refresh", requireAuth, async (req, res) => {
   try {

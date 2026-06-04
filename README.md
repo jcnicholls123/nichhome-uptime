@@ -35,6 +35,7 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Unified SNMP/service uptime, incidents, Discord alerts, and live fault state
 - Ping IP/hostname monitors
 - Real heartbeat uptime and response-time graphs
+- Reporting ranges from one hour to 90 days with durable hourly rollups
 - TrueNAS SNMP profile with CPU, load, memory, storage, dataset/pool entries,
   interfaces, and TrueNAS MIB inventory
 - Docker Engine fleet discovery with state, health, image, CPU, RAM, restart
@@ -45,6 +46,9 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   automatic cleanup of stale historical fleet records
 - Dedicated Docker fleet details workspace and inferred infrastructure network
   topology map
+- Editable manual map nodes, relationships, positions, status, and details
+- Severity-based alert rules with consecutive-check thresholds and structured
+  Discord embed notifications
 - UniFi AP client totals and radio/VAP telemetry plus gateway WAN/LAN traffic,
   speed, error, and discard counters
 

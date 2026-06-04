@@ -13,6 +13,19 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.15] - 2026-06-04
+
+### Added
+
+- Selectable 1-hour, 24-hour, 7-day, 30-day, and 90-day reporting ranges
+- Durable hourly reporting rollups for long-range uptime and response charts
+- Zabbix-style alert severity, descriptions, recommended actions, editable
+  rules, pause controls, and consecutive trigger/recovery check counts
+- Structured colour-coded Discord alert embeds with source, current value,
+  trigger expression, reason, and recommended action
+- Persistent manual map nodes and links, editable node status/details/type/X/Y
+  position, deletions, and a visual linked topology canvas
+
 ## [1.0.0-beta.14] - 2026-06-04
 
 ### Added

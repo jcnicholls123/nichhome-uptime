@@ -12,6 +12,11 @@ let snmpProfiles = [];
 let dockerContainers = [];
 let dockerHosts = [];
 let dockerStatus = { available: false };
+let unifiNetworkHosts = [];
+let unifiNetworkSites = [];
+let unifiNetworkDevices = [];
+let unifiNetworkClients = [];
+let unifiNetworkStatus = { available: false };
 let protectHosts = [];
 let protectCameras = [];
 let protectStatus = { available: false };
@@ -19,21 +24,22 @@ let alertRules = [];
 let alertRuleOptions = { snmp: [], docker: [] };
 let alertTemplates = [];
 let adminSettings = null;
-let featureSettings = { snmp: true, docker: true, protect: true, networkMap: true };
+let featureSettings = { snmp: true, docker: true, network: true, protect: true, networkMap: true };
 let networkMap = { nodes: [], edges: [] };
 let reportingRange = "24h";
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
-  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
+  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
   document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
   if (name === "SNMP Devices") renderSnmpWorkspace();
   if (name === "Docker") renderDockerWorkspace();
+  if (name === "UniFi Network") renderUnifiNetworkWorkspace();
   if (name === "Protect") renderProtectWorkspace();
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
@@ -48,6 +54,7 @@ function applyFeatureVisibility() {
   const bindings = [
     ["snmp", ['[data-page="SNMP Devices"]', ".snmp-panel"]],
     ["docker", ['[data-page="Docker"]', ".docker-panel"]],
+    ["network", ['[data-page="UniFi Network"]']],
     ["protect", ['[data-page="Protect"]']],
     ["networkMap", ['[data-page="Network Map"]']]
   ];
@@ -55,7 +62,7 @@ function applyFeatureVisibility() {
     for (const selector of selectors) document.querySelectorAll(selector).forEach((item) => { item.hidden = !featureEnabled(feature); });
   }
   const activePage = document.querySelector(".nav-item.active")?.dataset.page;
-  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
+  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -81,6 +88,8 @@ function renderSearchResults() {
     ...(featureEnabled("snmp") ? snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })) : []),
     ...(featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })) : []),
     ...(featureEnabled("docker") ? dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) })) : []),
+    ...(featureEnabled("network") ? unifiNetworkDevices.filter((item) => `${item.name} ${item.model || ""} ${item.siteName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "UniFi Network", name: item.name, detail: item.model || item.siteName, open: () => showWorkspace("UniFi Network") })) : []),
+    ...(featureEnabled("network") ? unifiNetworkClients.filter((item) => `${item.name} ${item.address || ""} ${item.siteName || ""} ${item.type || ""}`.toLowerCase().includes(query)).map((item) => ({ kind: "UniFi Client", name: item.name, detail: item.address || item.siteName, open: () => showWorkspace("UniFi Network") })) : []),
     ...(featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") })) : [])
   ].slice(0, 8);
   if (!matches.length) {
@@ -147,6 +156,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "Docker") {
       showWorkspace("Docker");
+      return;
+    }
+    if (item.dataset.page === "UniFi Network") {
+      showWorkspace("UniFi Network");
       return;
     }
     if (item.dataset.page === "Protect") {
@@ -258,8 +271,9 @@ refreshButton.addEventListener("click", async () => {
       ...snmpDevices.filter((device) => device.enabled).map((device) => api(`/api/snmp/devices/${device.id}/poll`, { method: "POST", body: "{}" }))
     ]);
     if (dockerStatus.available) await api("/api/docker/refresh", { method: "POST", body: "{}" });
-    await Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadGraph(), loadIncidents()]);
-    showToast("Checks complete", `${monitors.length + snmpDevices.length + dockerContainers.length} monitored services checked`);
+    if (unifiNetworkStatus.available) await api("/api/unifi-network/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadUnifiNetworkFleet(), loadGraph(), loadIncidents()]);
+    showToast("Checks complete", `${monitors.length + snmpDevices.length + dockerContainers.length + unifiNetworkDevices.length} monitored services checked`);
   } finally {
     refreshButton.classList.remove("spinning");
   }
@@ -301,11 +315,12 @@ function renderMonitors() {
   const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   const visibleSnmp = featureEnabled("snmp") ? snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
   const visibleDockerHosts = featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
+  const visibleUnifiNetwork = featureEnabled("network") ? unifiNetworkDevices.filter((item) => `${item.name} ${item.model || ""} ${item.siteName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
   const visibleProtect = featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
-  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleProtect.length) {
+  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleUnifiNetwork.length && !visibleProtect.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length || protectCameras.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, Docker host, or Protect console to begin.";
+    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length || unifiNetworkDevices.length || protectCameras.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, Docker host, UniFi Network console, or Protect console to begin.";
     monitorList.append(empty);
     return;
   }
@@ -398,6 +413,18 @@ function renderMonitors() {
     const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
     row.append(icon, copy, actions, status); monitorList.append(row);
   }
+  for (const device of visibleUnifiNetwork) {
+    const row = document.createElement("div"); row.className = "monitor-row real-monitor";
+    const icon = makeIconBadge({ ...device, type: "unifi-device", icon: device.deviceType || "unifi" }, "service-icon smart-service");
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = device.name;
+    const detail = document.createElement("small"); detail.textContent = `UNIFI NETWORK · ${device.siteName || device.siteId} · ${device.model || device.deviceType || "Device"}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const open = document.createElement("button"); open.className = "monitor-action"; open.textContent = "i"; open.addEventListener("click", () => showWorkspace("UniFi Network"));
+    actions.append(open);
+    const status = document.createElement("span"); status.className = `status-label ${device.status === "up" ? "up" : "warn"}`; status.textContent = device.status.toUpperCase();
+    row.append(icon, copy, actions, status); monitorList.append(row);
+  }
   for (const camera of visibleProtect) {
     const row = document.createElement("div"); row.className = "monitor-row real-monitor";
     const icon = makeIconBadge({ ...camera, type: "protect", detail: camera.model || camera.hostName }, "service-icon smart-service");
@@ -417,6 +444,7 @@ function updateDashboardHealth() {
     ...monitors,
     ...(featureEnabled("snmp") ? snmpDevices : []),
     ...(featureEnabled("docker") ? [...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("network") ? [...unifiNetworkHosts, ...unifiNetworkDevices.map((item) => ({ ...item, enabled: true }))] : []),
     ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : [])
   ];
   const up = services.filter((item) => item.enabled && item.status === "up");
@@ -459,6 +487,9 @@ function formatDate(value) {
 function smartIconKey(item = {}) {
   const haystack = `${item.icon || ""} ${item.type || ""} ${item.name || ""} ${item.detail || ""} ${item.model || ""}`.toLowerCase();
   if (item.icon && item.icon !== "auto") return item.icon;
+  if (item.deviceType === "gateway") return "gateway";
+  if (item.deviceType === "switch") return "switch";
+  if (item.deviceType === "access-point") return "access-point";
   if (haystack.includes("protect") || haystack.includes("unifi")) return "unifi";
   if (haystack.includes("camera") || haystack.includes("cam") || item.type === "protect") return "camera";
   if (haystack.includes("gateway") || haystack.includes("router") || haystack.includes("ucg") || haystack.includes("udm")) return "gateway";
@@ -808,6 +839,75 @@ async function loadDockerFleet() {
   renderSearchResults();
 }
 
+async function loadUnifiNetworkFleet() {
+  [unifiNetworkStatus, unifiNetworkHosts, unifiNetworkSites, unifiNetworkDevices, unifiNetworkClients] = await Promise.all([api("/api/unifi-network/status"), api("/api/unifi-network/hosts"), api("/api/unifi-network/sites"), api("/api/unifi-network/devices"), api("/api/unifi-network/clients")]);
+  renderUnifiNetworkWorkspace();
+  renderMonitors();
+  updateDashboardHealth();
+  renderSearchResults();
+}
+
+function renderUnifiNetworkWorkspace() {
+  const metrics = document.getElementById("unifiNetworkMetrics"); const hosts = document.getElementById("unifiNetworkHostList"); const devices = document.getElementById("unifiNetworkDeviceList"); const clients = document.getElementById("unifiNetworkClientList"); const nav = document.getElementById("unifiNetworkNavCount");
+  if (!metrics || !hosts || !devices || !clients) return;
+  nav.textContent = unifiNetworkDevices.length;
+  metrics.replaceChildren(
+    metricCard("Network consoles", unifiNetworkStatus.hostCount || 0, `${unifiNetworkStatus.onlineHosts || 0} online`),
+    metricCard("Sites", unifiNetworkStatus.sites || 0, "local sites"),
+    metricCard("Devices", unifiNetworkStatus.devices || 0, `${unifiNetworkStatus.onlineDevices || 0} online`),
+    metricCard("Clients", unifiNetworkStatus.clients || 0, "connected now", (unifiNetworkStatus.offlineDevices || 0) > 0)
+  );
+  hosts.replaceChildren(); devices.replaceChildren(); clients.replaceChildren();
+  if (!unifiNetworkHosts.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Add a UniFi Network console with a Network API key to monitor sites, devices, and clients."; hosts.append(empty);
+  }
+  for (const host of unifiNetworkHosts) {
+    const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const detail = document.createElement("small"); detail.textContent = `${host.endpoint} · ${host.lastError || host.status}`; copy.append(name, detail);
+    const identity = document.createElement("div"); identity.className = "identity-row"; identity.append(makeIconBadge({ ...host, type: "unifi-network-host", icon: "unifi" }, "node-glyph"), copy);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openUnifiNetworkHostForm(host));
+    const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "↻"; poll.addEventListener("click", async () => { await api("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await loadUnifiNetworkFleet(); });
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete UniFi Network console ${host.name}?`)) { await api(`/api/unifi-network/hosts/${host.id}`, { method: "DELETE" }); await loadUnifiNetworkFleet(); } });
+    actions.append(edit, poll, remove);
+    const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+    row.append(identity, actions, status); hosts.append(row);
+  }
+  if (!unifiNetworkDevices.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = unifiNetworkHosts.length ? "Network connected, but no adopted devices were returned yet." : "No UniFi Network devices configured."; devices.append(empty);
+  }
+  for (const device of unifiNetworkDevices) {
+    const card = document.createElement("article"); card.className = `docker-detail-card ${device.status === "down" ? "down" : ""}`;
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = device.name; const status = document.createElement("span"); status.className = `status-label ${device.status === "up" ? "up" : "warn"}`; status.textContent = device.status.toUpperCase(); const identity = document.createElement("div"); identity.className = "identity-row"; identity.append(makeIconBadge(device, "node-glyph"), name); header.append(identity, status);
+    const detail = document.createElement("small"); detail.textContent = `${device.siteName || device.siteId} · ${device.model || device.deviceType || "UniFi device"} · ${device.address || "no address"}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${device.state || "--"} · Type ${device.deviceType || "--"} · MAC ${device.mac || "--"}`;
+    card.append(header, detail, values); devices.append(card);
+  }
+  if (!unifiNetworkClients.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = unifiNetworkHosts.length ? "No connected clients were returned yet." : "No UniFi clients configured."; clients.append(empty);
+  }
+  for (const client of unifiNetworkClients.slice(0, 120)) {
+    const card = document.createElement("article"); card.className = "docker-detail-card";
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = client.name; const status = document.createElement("span"); status.className = "status-label up"; status.textContent = "ONLINE"; const identity = document.createElement("div"); identity.className = "identity-row"; identity.append(makeIconBadge({ ...client, type: "unifi-client" }, "node-glyph"), name); header.append(identity, status);
+    const detail = document.createElement("small"); detail.textContent = `${client.siteName || client.siteId} · ${client.type || "Client"} · ${client.address || "no address"}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `MAC ${client.mac || "--"} · Connected ${formatDate(client.connectedAt || client.lastPolledAt)}`;
+    card.append(header, detail, values); clients.append(card);
+  }
+}
+
+function openUnifiNetworkHostForm(host = null) {
+  const form = document.getElementById("unifiNetworkHostForm"); form.reset(); form.elements.id.value = host?.id || "";
+  form.elements.name.value = host?.name || "";
+  form.elements.endpoint.value = host?.endpoint || "";
+  form.elements.apiKey.placeholder = host ? "Leave blank to keep existing key" : "UniFi Network API key";
+  form.elements.tlsVerify.checked = Boolean(host?.tlsVerify);
+  form.elements.enabled.checked = host?.enabled ?? true;
+  document.getElementById("unifiNetworkHostEnabledLabel").hidden = !host;
+  document.getElementById("unifiNetworkHostTitle").textContent = host ? `Edit ${host.name}` : "Add Network console";
+  document.getElementById("unifiNetworkHostError").textContent = "";
+  document.getElementById("unifiNetworkHostModal").hidden = false;
+}
+
 async function loadProtectFleet() {
   [protectStatus, protectHosts, protectCameras] = await Promise.all([api("/api/protect/status"), api("/api/protect/hosts"), api("/api/protect/cameras")]);
   renderProtectWorkspace();
@@ -1015,7 +1115,7 @@ function renderNetworkMap() {
   canvas.append(svg);
   for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); button.addEventListener("click", () => openMapNode(node)); canvas.append(button); }
   map.append(canvas);
-  for (const type of [...new Set(["subnet", "snmp", "docker-host", "docker", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
+  for (const type of [...new Set(["subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
     const group = document.createElement("section"); group.className = "topology-group"; const title = document.createElement("h2"); title.textContent = type.replace("-", " "); const cards = document.createElement("div"); cards.className = "topology-nodes";
     for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const header = document.createElement("div"); header.className = "topology-node-header"; const name = document.createElement("strong"); name.textContent = node.name; header.append(makeIconBadge(node, "node-glyph"), name); const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(header, detail, links); cards.append(card); }
@@ -1295,7 +1395,7 @@ async function loadAdminSettings() {
     metricCard("Discord", adminSettings.discord.enabled ? "ON" : "OFF", adminSettings.discord.webhookUrl || "not configured")
   );
   const featureForm = document.getElementById("featureSettingsForm");
-  if (featureForm) for (const key of ["snmp", "docker", "protect", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
+  if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
   for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
@@ -1529,6 +1629,31 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
 });
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
+document.getElementById("unifiNetworkPageAddHost").addEventListener("click", () => openUnifiNetworkHostForm());
+document.getElementById("addUnifiNetworkHost").addEventListener("click", () => openUnifiNetworkHostForm());
+document.getElementById("unifiNetworkPageRefresh").addEventListener("click", async () => {
+  try {
+    await api("/api/unifi-network/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadUnifiNetworkFleet(), loadIncidents(), loadNetworkMap()]);
+    showToast("UniFi Network refreshed", "Sites, devices, and clients updated");
+  } catch (err) {
+    showToast("UniFi Network unavailable", err.message);
+  }
+});
+document.getElementById("testUnifiNetworkHost").addEventListener("click", async () => {
+  const form = document.getElementById("unifiNetworkHostForm"); const error = document.getElementById("unifiNetworkHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked;
+  try { const result = await api("/api/unifi-network/hosts/test", { method: "POST", body: JSON.stringify(values) }); showToast("UniFi Network connected", `${result.sites} sites returned`); } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("unifiNetworkHostForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("unifiNetworkHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked; values.enabled = form.elements.enabled.checked;
+  try {
+    await api(values.id ? `/api/unifi-network/hosts/${values.id}` : "/api/unifi-network/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+    document.getElementById("unifiNetworkHostModal").hidden = true; form.reset(); await Promise.all([loadUnifiNetworkFleet(), loadIncidents(), loadNetworkMap()]); showToast("UniFi Network console saved", values.name);
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("protectPageAddHost").addEventListener("click", () => openProtectHostForm());
 document.getElementById("addProtectHost").addEventListener("click", () => openProtectHostForm());
 document.getElementById("protectPageRefresh").addEventListener("click", async () => {
@@ -1565,7 +1690,7 @@ document.getElementById("featureSettingsForm").addEventListener("submit", async 
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("featureSettingsError"); error.textContent = "";
   try {
-    const body = { snmp: form.elements.snmp.checked, docker: form.elements.docker.checked, protect: form.elements.protect.checked, networkMap: form.elements.networkMap.checked };
+    const body = { snmp: form.elements.snmp.checked, docker: form.elements.docker.checked, network: form.elements.network.checked, protect: form.elements.protect.checked, networkMap: form.elements.networkMap.checked };
     const result = await api("/api/admin/features", { method: "PUT", body: JSON.stringify(body) });
     featureSettings = result.features;
     applyFeatureVisibility();
@@ -1650,6 +1775,7 @@ loadGraph();
 loadSnmpDevices();
 loadSnmpProfiles();
 loadDockerFleet();
+loadUnifiNetworkFleet();
 loadProtectFleet();
 loadAlertRules();
 loadAlertTemplates();
@@ -1659,5 +1785,5 @@ document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
 const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
 if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadProtectFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadUnifiNetworkFleet(), loadProtectFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

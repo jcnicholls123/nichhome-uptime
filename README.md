@@ -19,7 +19,7 @@ Discord alert visibility.
 - Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
 - Admin feature visibility toggles for hiding unused SNMP, Docker, UniFi
-  Protect, or Network Map modules without deleting data
+  Network, UniFi Protect, or Network Map modules without deleting data
 - Mobile navigation and search across monitors, SNMP devices, Docker, and
   Protect cameras
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
@@ -51,6 +51,8 @@ Discord alert visibility.
   Docker API endpoint
 - Active-container Docker fleet tracking with duplicate-host protection and
   automatic cleanup of stale historical fleet records
+- UniFi Network Integration API host setup with site, adopted-device, connected
+  client, offline-device incident, Discord alert, and topology monitoring
 - UniFi Protect host setup with local API-key camera discovery, camera
   connection/recording state, incidents, Discord alerts, and topology mapping
 - Dedicated Docker fleet details workspace and inferred infrastructure network

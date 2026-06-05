@@ -19,6 +19,21 @@ const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const dockerContainerListRequests = [];
 const dockerServer = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
+  if (req.url === "/proxy/network/integration/v1/sites") {
+    if (req.headers["x-api-key"] !== "network-test-key") {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "bad key" }));
+    }
+    return res.end(JSON.stringify({ data: [{ id: "default", name: "Default" }] }));
+  }
+  if (req.url === "/proxy/network/integration/v1/sites/default/devices?offset=0&limit=250") return res.end(JSON.stringify({ data: [
+    { id: "gw1", name: "UCG Fiber", model: "UCG-Fiber", macAddress: "aa:bb:cc:dd:ee:01", ipAddress: "192.168.1.1", state: "ONLINE", features: ["gateway"] },
+    { id: "ap1", name: "U7 Pro Max", model: "U7-Pro-Max", macAddress: "aa:bb:cc:dd:ee:02", ipAddress: "192.168.1.2", state: "OFFLINE", features: ["accessPoint"] }
+  ] }));
+  if (req.url === "/proxy/network/integration/v1/sites/default/clients?offset=0&limit=500") return res.end(JSON.stringify({ data: [
+    { id: "client1", name: "iPhone", macAddress: "aa:bb:cc:dd:ee:10", ipAddress: "192.168.1.50", type: "WIRELESS", uplinkDeviceId: "ap1", connectedAt: new Date().toISOString() },
+    { id: "client2", name: "NAS", macAddress: "aa:bb:cc:dd:ee:11", ipAddress: "192.168.1.60", type: "WIRED", uplinkDeviceId: "gw1", connectedAt: new Date().toISOString() }
+  ] }));
   if (req.url === "/proxy/protect/integration/v1/cameras") {
     if (req.headers["x-api-key"] !== "protect-test-key") {
       res.statusCode = 401;
@@ -84,7 +99,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.21", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.22", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -162,13 +177,14 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.21");
-    assert.deepEqual(adminSettings.features, { snmp: true, docker: true, protect: true, networkMap: true });
-    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, protect: false, networkMap: false }) })).status, 200);
+    assert.equal(adminSettings.app.version, "1.0.0-beta.22");
+    assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
+    assert.equal(disabledFeatures.features.network, false);
     assert.equal(disabledFeatures.features.protect, false);
     assert.equal(disabledFeatures.features.networkMap, false);
-    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, protect: true, networkMap: true }) })).status, 200);
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: true, protect: true, networkMap: true }) })).status, 200);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 30, reason: "Test window" }) })).status, 200);
     assert.equal((await (await request("/api/admin/settings")).json()).maintenance.active, true);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 0 }) })).status, 200);
@@ -215,6 +231,31 @@ async function waitForServer() {
     assert.equal(protectMap.nodes.some((node) => node.type === "protect-host"), true);
     assert.equal(protectMap.nodes.some((node) => node.type === "protect"), true);
     assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await request("/api/unifi-network/status")).status, 200);
+    assert.deepEqual(await (await request("/api/unifi-network/devices")).json(), []);
+    assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: "{}" })).status, 400);
+    assert.equal((await request("/api/unifi-network/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "network-test-key" }) })).status, 200);
+    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "network-test-key" }) })).status, 201);
+    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Network", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "network-test-key" }) })).status, 409);
+    const networkHosts = await (await request("/api/unifi-network/hosts")).json();
+    assert.equal(networkHosts.length, 1);
+    assert.equal(networkHosts[0].status, "up");
+    const networkStatus = await (await request("/api/unifi-network/status")).json();
+    assert.equal(networkStatus.sites, 1);
+    assert.equal(networkStatus.devices, 2);
+    assert.equal(networkStatus.offlineDevices, 1);
+    assert.equal(networkStatus.clients, 2);
+    const networkDevices = await (await request("/api/unifi-network/devices")).json();
+    assert.equal(networkDevices.some((device) => device.name === "UCG Fiber" && device.deviceType === "gateway"), true);
+    assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.status === "down"), true);
+    const networkClients = await (await request("/api/unifi-network/clients")).json();
+    assert.equal(networkClients.length, 2);
+    assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: networkHosts[0].id }) })).status, 200);
+    const unifiMap = await (await request("/api/network-map")).json();
+    assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-network-host"), true);
+    assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-device"), true);
+    assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-client"), true);
+    assert.equal((await request(`/api/unifi-network/hosts/${networkHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/protect/hosts/${protectHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();

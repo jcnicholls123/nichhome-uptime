@@ -250,6 +250,62 @@ db.exec(`
     resolved_at TEXT,
     cause TEXT
   );
+  CREATE TABLE IF NOT EXISTS unifi_network_hosts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    tls_verify INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    last_polled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS unifi_network_sites (
+    id TEXT PRIMARY KEY,
+    host_id INTEGER NOT NULL REFERENCES unifi_network_hosts(id) ON DELETE CASCADE,
+    site_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS unifi_network_devices (
+    id TEXT PRIMARY KEY,
+    host_id INTEGER NOT NULL REFERENCES unifi_network_hosts(id) ON DELETE CASCADE,
+    site_id TEXT NOT NULL,
+    device_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    model TEXT,
+    mac TEXT,
+    address TEXT,
+    state TEXT,
+    device_type TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS unifi_network_clients (
+    id TEXT PRIMARY KEY,
+    host_id INTEGER NOT NULL REFERENCES unifi_network_hosts(id) ON DELETE CASCADE,
+    site_id TEXT NOT NULL,
+    client_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    mac TEXT,
+    address TEXT,
+    type TEXT,
+    uplink_device_id TEXT,
+    connected_at TEXT,
+    last_polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS unifi_network_incidents (
+    id INTEGER PRIMARY KEY,
+    device_id TEXT NOT NULL,
+    host_id INTEGER REFERENCES unifi_network_hosts(id) ON DELETE CASCADE,
+    device_name TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
+  );
   CREATE TABLE IF NOT EXISTS alert_rules (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -607,6 +663,7 @@ function featureSettings() {
   return {
     snmp: getSetting("feature_snmp_enabled", "true") === "true",
     docker: getSetting("feature_docker_enabled", "true") === "true",
+    network: getSetting("feature_unifi_network_enabled", "true") === "true",
     protect: getSetting("feature_protect_enabled", "true") === "true",
     networkMap: getSetting("feature_network_map_enabled", "true") === "true"
   };
@@ -1076,6 +1133,8 @@ let dockerFleetError = null;
 let dockerLastPolledAt = null;
 let protectFleetError = null;
 let protectLastPolledAt = null;
+let unifiNetworkFleetError = null;
+let unifiNetworkLastPolledAt = null;
 
 function validateDockerHost(input) {
   const name = String(input.name || "").trim();
@@ -1332,6 +1391,161 @@ async function pollProtectFleet() {
   return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
 }
 
+function validateUnifiNetworkHost(input) {
+  const name = String(input.name || "").trim();
+  let endpoint = String(input.endpoint || "").trim();
+  const apiKey = String(input.apiKey || input.api_key || "").trim();
+  const tlsVerify = input.tlsVerify === true;
+  if (name.length < 2 || name.length > 80) throw new Error("UniFi Network host name must be between 2 and 80 characters.");
+  const url = new URL(endpoint);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://192.168.1.1.");
+  endpoint = url.origin;
+  if (apiKey.length < 8 || apiKey.length > 500) throw new Error("Enter a UniFi Network API key.");
+  return { name, endpoint, apiKey, tlsVerify };
+}
+
+function unifiNetworkRequest(host, requestPath) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(requestPath, `${host.endpoint.replace(/\/+$/, "")}/`);
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      rejectUnauthorized: Boolean(host.tls_verify),
+      headers: { Accept: "application/json", "X-API-Key": host.api_key }
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`UniFi Network returned HTTP ${response.statusCode}`));
+        try { resolve(body ? JSON.parse(body) : null); } catch { resolve(body); }
+      });
+    });
+    request.setTimeout(12000, () => request.destroy(new Error("UniFi Network request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function unifiArray(payload) {
+  if (Array.isArray(payload)) return payload;
+  if (Array.isArray(payload?.data)) return payload.data;
+  if (Array.isArray(payload?.sites)) return payload.sites;
+  if (Array.isArray(payload?.devices)) return payload.devices;
+  if (Array.isArray(payload?.clients)) return payload.clients;
+  return [];
+}
+
+function unifiDeviceStatus(device) {
+  const state = String(device.state || device.status || "").toUpperCase();
+  if (["ONLINE", "CONNECTED", "UP"].includes(state)) return "up";
+  if (["OFFLINE", "DISCONNECTED", "DOWN"].includes(state)) return "down";
+  return state ? "up" : "pending";
+}
+
+function unifiDeviceType(device) {
+  const text = `${device.type || ""} ${(device.features || []).join(" ")} ${device.model || ""} ${device.name || ""}`.toLowerCase();
+  if (text.includes("gateway") || text.includes("router") || text.includes("ucg") || text.includes("udm")) return "gateway";
+  if (text.includes("switch") || text.includes("switching")) return "switch";
+  if (text.includes("access") || text.includes("ap") || text.includes("wifi") || text.includes("u7") || text.includes("u6")) return "access-point";
+  return "network-device";
+}
+
+async function pollUnifiNetworkHost(hostOrId) {
+  const host = typeof hostOrId === "object" ? hostOrId : db.prepare("SELECT * FROM unifi_network_hosts WHERE id = ?").get(Number(hostOrId));
+  if (!host || !host.enabled) return { available: false, error: "UniFi Network host not found or disabled." };
+  let sites;
+  try {
+    sites = unifiArray(await unifiNetworkRequest(host, "/proxy/network/integration/v1/sites"));
+  } catch (error) {
+    db.prepare("UPDATE unifi_network_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
+    if (host.status !== "down") await sendDiscordOperational(`UniFi Network ${host.name}`, false, error.message, [{ name: "Endpoint", value: host.endpoint }]);
+    return { available: false, error: error.message };
+  }
+  const seenSites = new Set();
+  const seenDevices = new Set();
+  const seenClients = new Set();
+  let deviceCount = 0;
+  let clientCount = 0;
+  for (const site of sites) {
+    const rawSiteId = String(site.id || site.siteId || site._id || site.name || "default");
+    const siteKey = `${host.id}:${rawSiteId}`;
+    const siteName = String(site.name || site.description || rawSiteId).slice(0, 120);
+    seenSites.add(siteKey);
+    db.prepare(`
+      INSERT INTO unifi_network_sites (id, host_id, site_id, name, status, last_polled_at)
+      VALUES (?, ?, ?, ?, 'up', CURRENT_TIMESTAMP)
+      ON CONFLICT(id) DO UPDATE SET name=excluded.name, status='up', last_polled_at=CURRENT_TIMESTAMP
+    `).run(siteKey, host.id, rawSiteId, siteName);
+    const devices = unifiArray(await unifiNetworkRequest(host, `/proxy/network/integration/v1/sites/${encodeURIComponent(rawSiteId)}/devices?offset=0&limit=250`));
+    for (const device of devices) {
+      const rawDeviceId = String(device.id || device.deviceId || device.macAddress || device.mac || device.name || "");
+      if (!rawDeviceId) continue;
+      const id = `${host.id}:${rawSiteId}:${rawDeviceId}`;
+      seenDevices.add(id);
+      deviceCount += 1;
+      const name = String(device.name || device.displayName || device.model || rawDeviceId).slice(0, 120);
+      const state = String(device.state || device.status || "").toUpperCase();
+      const status = unifiDeviceStatus(device);
+      const previous = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(id);
+      const openIncident = db.prepare("SELECT 1 FROM unifi_network_incidents WHERE device_id = ? AND resolved_at IS NULL").get(id);
+      db.transaction(() => {
+        db.prepare(`
+          INSERT INTO unifi_network_devices (id, host_id, site_id, device_id, name, model, mac, address, state, device_type, status, last_polled_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          ON CONFLICT(id) DO UPDATE SET name=excluded.name, model=excluded.model, mac=excluded.mac, address=excluded.address,
+            state=excluded.state, device_type=excluded.device_type, status=excluded.status, last_polled_at=CURRENT_TIMESTAMP
+        `).run(id, host.id, rawSiteId, rawDeviceId, name, device.model || "", device.macAddress || device.mac || "", device.ipAddress || device.ip || "", state, unifiDeviceType(device), status);
+        if (status === "down" && !openIncident) db.prepare("INSERT INTO unifi_network_incidents (device_id, host_id, device_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, state || "Device offline");
+        if (status === "up" && openIncident) db.prepare("UPDATE unifi_network_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
+      })();
+      if (status === "down" && !openIncident) await sendDiscordOperational(`UniFi device ${name}`, false, state || "Device offline", [{ name: "Host", value: host.name }, { name: "Site", value: siteName }, { name: "Model", value: device.model || "--" }]);
+      if (status === "up" && previous && previous.status === "down") await sendDiscordOperational(`UniFi device ${name}`, true, "Device is online again.", [{ name: "Host", value: host.name }, { name: "Site", value: siteName }]);
+    }
+    const clients = unifiArray(await unifiNetworkRequest(host, `/proxy/network/integration/v1/sites/${encodeURIComponent(rawSiteId)}/clients?offset=0&limit=500`));
+    for (const client of clients) {
+      const rawClientId = String(client.id || client.clientId || client.macAddress || client.mac || client.name || "");
+      if (!rawClientId) continue;
+      const id = `${host.id}:${rawSiteId}:${rawClientId}`;
+      seenClients.add(id);
+      clientCount += 1;
+      db.prepare(`
+        INSERT INTO unifi_network_clients (id, host_id, site_id, client_id, name, mac, address, type, uplink_device_id, connected_at, last_polled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name, mac=excluded.mac, address=excluded.address, type=excluded.type,
+          uplink_device_id=excluded.uplink_device_id, connected_at=excluded.connected_at, last_polled_at=CURRENT_TIMESTAMP
+      `).run(id, host.id, rawSiteId, rawClientId, String(client.name || client.hostname || client.macAddress || rawClientId).slice(0, 120), client.macAddress || client.mac || "", client.ipAddress || client.ip || "", client.type || client.access?.type || "", client.uplinkDeviceId || "", client.connectedAt || null);
+    }
+  }
+  db.transaction(() => {
+    for (const { id } of db.prepare("SELECT id FROM unifi_network_sites WHERE host_id = ?").all(host.id).filter((item) => !seenSites.has(item.id))) db.prepare("DELETE FROM unifi_network_sites WHERE id = ?").run(id);
+    for (const { id, name } of db.prepare("SELECT id, name FROM unifi_network_devices WHERE host_id = ?").all(host.id).filter((item) => !seenDevices.has(item.id))) {
+      db.prepare("INSERT INTO unifi_network_incidents (device_id, host_id, device_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, "Device no longer appears in UniFi Network");
+      db.prepare("DELETE FROM unifi_network_devices WHERE id = ?").run(id);
+    }
+    for (const { id } of db.prepare("SELECT id FROM unifi_network_clients WHERE host_id = ?").all(host.id).filter((item) => !seenClients.has(item.id))) db.prepare("DELETE FROM unifi_network_clients WHERE id = ?").run(id);
+    db.prepare("UPDATE unifi_network_hosts SET status = 'up', last_error = NULL, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(host.id);
+  })();
+  unifiNetworkLastPolledAt = new Date().toISOString();
+  return { available: true, sites: seenSites.size, devices: deviceCount, clients: clientCount, hostId: host.id };
+}
+
+async function pollUnifiNetworkFleet() {
+  const hosts = db.prepare("SELECT * FROM unifi_network_hosts WHERE enabled = 1 ORDER BY id").all();
+  if (!hosts.length) {
+    unifiNetworkFleetError = "Add a UniFi Network host to begin controller monitoring.";
+    return { available: false, error: unifiNetworkFleetError };
+  }
+  const results = [];
+  for (const host of hosts) results.push(await pollUnifiNetworkHost(host));
+  unifiNetworkFleetError = results.every((item) => !item.available) ? results.map((item) => item.error).filter(Boolean).join("; ") : null;
+  return { available: results.some((item) => item.available), devices: results.reduce((sum, item) => sum + (item.devices || 0), 0), clients: results.reduce((sum, item) => sum + (item.clients || 0), 0), results };
+}
+
 async function checkHttp(target, timeoutSeconds) {
   const started = Date.now();
   const response = await fetch(target, { signal: AbortSignal.timeout(timeoutSeconds * 1000), redirect: "follow" });
@@ -1413,6 +1627,7 @@ async function runMonitor(id) {
 let schedulerRunning = false;
 let nextDockerPoll = 0;
 let nextProtectPoll = 0;
+let nextUnifiNetworkPoll = 0;
 async function schedulerTick() {
   if (schedulerRunning) return;
   schedulerRunning = true;
@@ -1428,6 +1643,10 @@ async function schedulerTick() {
     if (Date.now() >= nextProtectPoll) {
       nextProtectPoll = Date.now() + 60000;
       try { await pollProtectFleet(); } catch (error) { console.error("Protect fleet poll failed:", error.message); }
+    }
+    if (Date.now() >= nextUnifiNetworkPoll) {
+      nextUnifiNetworkPoll = Date.now() + 60000;
+      try { await pollUnifiNetworkFleet(); } catch (error) { console.error("UniFi Network fleet poll failed:", error.message); }
     }
   } finally {
     schedulerRunning = false;
@@ -1756,6 +1975,10 @@ app.get("/api/incidents", requireAuth, (req, res) => {
         NULL AS acknowledgedAt, NULL AS acknowledgedBy, protect_incidents.cause AS cause, protect_incidents.camera_name AS monitorName, protect_incidents.camera_id AS target, 'protect' AS source
       FROM protect_incidents
       UNION ALL
+      SELECT -1750000-unifi_network_incidents.id AS id, unifi_network_incidents.started_at AS startedAt, unifi_network_incidents.resolved_at AS resolvedAt,
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, unifi_network_incidents.cause AS cause, unifi_network_incidents.device_name AS monitorName, unifi_network_incidents.device_id AS target, 'unifi-network' AS source
+      FROM unifi_network_incidents
+      UNION ALL
       SELECT -2000000-alert_rule_incidents.id AS id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.resolved_at AS resolvedAt,
         alert_rule_incidents.acknowledged_at AS acknowledgedAt, alert_rule_incidents.acknowledged_by AS acknowledgedBy, alert_rule_incidents.cause AS cause, alert_rules.name AS monitorName, alert_rules.metric_key AS target, 'rule' AS source
       FROM alert_rule_incidents JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
@@ -2078,6 +2301,87 @@ app.post("/api/protect/refresh", requireAuth, async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+app.get("/api/unifi-network/status", requireAuth, (req, res) => {
+  const hosts = db.prepare("SELECT * FROM unifi_network_hosts ORDER BY name").all();
+  const sites = db.prepare("SELECT * FROM unifi_network_sites ORDER BY name").all();
+  const devices = db.prepare("SELECT * FROM unifi_network_devices ORDER BY name").all();
+  const clients = db.prepare("SELECT * FROM unifi_network_clients ORDER BY name").all();
+  res.json({
+    available: hosts.some((item) => item.status === "up"),
+    error: unifiNetworkFleetError,
+    lastPolledAt: unifiNetworkLastPolledAt,
+    hostCount: hosts.length,
+    onlineHosts: hosts.filter((item) => item.status === "up").length,
+    sites: sites.length,
+    devices: devices.length,
+    onlineDevices: devices.filter((item) => item.status === "up").length,
+    offlineDevices: devices.filter((item) => item.status === "down").length,
+    clients: clients.length
+  });
+});
+app.get("/api/unifi-network/hosts", requireAuth, (req, res) => {
+  res.json(db.prepare("SELECT id, name, endpoint, tls_verify AS tlsVerify, enabled, status, last_error AS lastError, last_polled_at AS lastPolledAt FROM unifi_network_hosts ORDER BY name").all().map((item) => ({ ...item, tlsVerify: Boolean(item.tlsVerify), enabled: Boolean(item.enabled), configured: true })));
+});
+app.post("/api/unifi-network/hosts/test", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateUnifiNetworkHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const sites = unifiArray(await unifiNetworkRequest({ endpoint: host.endpoint, api_key: host.apiKey, tls_verify: host.tlsVerify ? 1 : 0 }, "/proxy/network/integration/v1/sites"));
+    res.json({ ok: true, sites: sites.length });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/unifi-network/hosts", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateUnifiNetworkHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM unifi_network_hosts WHERE endpoint = ?").get(host.endpoint)) return res.status(409).json({ error: "That UniFi Network console is already configured." });
+  const result = db.prepare("INSERT INTO unifi_network_hosts (name, endpoint, api_key, tls_verify) VALUES (?, ?, ?, ?)").run(host.name, host.endpoint, host.apiKey, host.tlsVerify ? 1 : 0);
+  const poll = await pollUnifiNetworkHost(Number(result.lastInsertRowid));
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), status: poll.available ? "up" : "down", error: poll.error });
+});
+app.put("/api/unifi-network/hosts/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM unifi_network_hosts WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "UniFi Network host not found." });
+  let host;
+  try { host = validateUnifiNetworkHost({ ...req.body, apiKey: req.body.apiKey || current.api_key }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM unifi_network_hosts WHERE endpoint = ? AND id != ?").get(host.endpoint, id)) return res.status(409).json({ error: "That UniFi Network console is already configured." });
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE unifi_network_hosts SET name = ?, endpoint = ?, api_key = ?, tls_verify = ?, enabled = ? WHERE id = ?").run(host.name, host.endpoint, host.apiKey, host.tlsVerify ? 1 : 0, enabled, id);
+  if (enabled) await pollUnifiNetworkHost(id);
+  res.json({ ok: true });
+});
+app.delete("/api/unifi-network/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  db.transaction(() => {
+    db.prepare("DELETE FROM unifi_network_incidents WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM unifi_network_clients WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM unifi_network_devices WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM unifi_network_sites WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM unifi_network_hosts WHERE id = ?").run(id);
+  })();
+  res.json({ ok: true });
+});
+app.get("/api/unifi-network/sites", requireAuth, (req, res) => {
+  const sites = db.prepare("SELECT unifi_network_sites.*, unifi_network_hosts.name AS host_name FROM unifi_network_sites JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_sites.host_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name").all();
+  res.json(sites.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, name: item.name, status: item.status, lastPolledAt: item.last_polled_at })));
+});
+app.get("/api/unifi-network/devices", requireAuth, (req, res) => {
+  const devices = db.prepare("SELECT unifi_network_devices.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_devices JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_devices.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_devices.host_id AND unifi_network_sites.site_id = unifi_network_devices.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_devices.name").all();
+  res.json(devices.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, deviceId: item.device_id, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, deviceType: item.device_type, status: item.status, lastPolledAt: item.last_polled_at })));
+});
+app.get("/api/unifi-network/clients", requireAuth, (req, res) => {
+  const clients = db.prepare("SELECT unifi_network_clients.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_clients JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_clients.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_clients.host_id AND unifi_network_sites.site_id = unifi_network_clients.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_clients.name").all();
+  res.json(clients.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, clientId: item.client_id, name: item.name, mac: item.mac, address: item.address, type: item.type, uplinkDeviceId: item.uplink_device_id, connectedAt: item.connected_at, lastPolledAt: item.last_polled_at })));
+});
+app.post("/api/unifi-network/refresh", requireAuth, async (req, res) => {
+  try {
+    const result = req.body.hostId ? await pollUnifiNetworkHost(Number(req.body.hostId)) : await pollUnifiNetworkFleet();
+    if (!result.available) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 app.get("/api/network-map", requireAuth, (req, res) => {
   const nodes = [];
   const edges = [];
@@ -2125,6 +2429,25 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     nodes.push({ id: `protect:${camera.id}`, type: "protect", name: camera.name, status: camera.status, detail: camera.model || camera.address || "UniFi Protect camera" });
     addEdge(`protect-host:${camera.host_id}`, `protect:${camera.id}`, "contains");
   }
+  for (const host of db.prepare("SELECT id, name, endpoint, status FROM unifi_network_hosts ORDER BY name").all()) {
+    const id = `unifi-network-host:${host.id}`;
+    nodes.push({ id, type: "unifi-network-host", name: host.name, status: host.status, detail: host.endpoint, icon: "unifi" });
+    addSubnet(rememberHost(host.endpoint, id), id);
+  }
+  for (const site of db.prepare("SELECT id, host_id, name, status FROM unifi_network_sites ORDER BY name").all()) {
+    nodes.push({ id: `unifi-site:${site.id}`, type: "unifi-site", name: site.name, status: site.status, detail: "UniFi Network site", icon: "unifi" });
+    addEdge(`unifi-network-host:${site.host_id}`, `unifi-site:${site.id}`, "contains");
+  }
+  for (const device of db.prepare("SELECT id, host_id, site_id, name, model, status, address, device_type FROM unifi_network_devices ORDER BY name").all()) {
+    nodes.push({ id: `unifi-device:${device.id}`, type: "unifi-device", name: device.name, status: device.status, detail: device.model || device.address || "UniFi device", icon: device.device_type || "unifi" });
+    addEdge(`unifi-site:${device.host_id}:${device.site_id}`, `unifi-device:${device.id}`, "contains");
+    addSubnet(rememberHost(device.address, `unifi-device:${device.id}`), `unifi-device:${device.id}`);
+  }
+  for (const client of db.prepare("SELECT id, host_id, site_id, name, address, type, uplink_device_id FROM unifi_network_clients ORDER BY name LIMIT 100").all()) {
+    nodes.push({ id: `unifi-client:${client.id}`, type: "unifi-client", name: client.name, status: "up", detail: client.address || client.type || "Connected client", icon: client.type && String(client.type).toLowerCase().includes("wireless") ? "web" : "node" });
+    const uplink = client.uplink_device_id ? db.prepare("SELECT id FROM unifi_network_devices WHERE host_id = ? AND site_id = ? AND device_id = ?").get(client.host_id, client.site_id, client.uplink_device_id) : null;
+    addEdge(uplink ? `unifi-device:${uplink.id}` : `unifi-site:${client.host_id}:${client.site_id}`, `unifi-client:${client.id}`, "connected");
+  }
   for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
     const id = `monitor:${monitor.id}`;
     nodes.push({ id, type: "monitor", name: monitor.name, status: monitor.status, detail: monitor.target });
@@ -2152,7 +2475,7 @@ app.post("/api/network-map/nodes", requireAuth, (req, res) => {
   const nodeType = String(req.body.nodeType || "manual").trim();
   const detail = String(req.body.detail || "").trim().slice(0, 300);
   const status = String(req.body.status || "up");
-  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
+  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service", "subnet", "snmp", "docker-host", "docker", "monitor", "protect-host", "protect", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
   const result = db.prepare("INSERT INTO map_nodes (name, node_type, detail, status, x, y) VALUES (?, ?, ?, ?, ?, ?)").run(name, nodeType, detail, status, Math.max(0, Math.min(100, Number(req.body.x || 50))), Math.max(0, Math.min(100, Number(req.body.y || 50))));
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -2175,7 +2498,7 @@ app.put("/api/network-map/overrides", requireAuth, (req, res) => {
   const icon = String(req.body.icon || "auto").trim().slice(0, 30);
   const x = Math.max(0, Math.min(100, Number(req.body.x ?? 50)));
   const y = Math.max(0, Math.min(100, Number(req.body.y ?? 50)));
-  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
+  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect|unifi-network-host|unifi-site|unifi-device|unifi-client):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
   db.prepare(`
     INSERT INTO map_node_overrides (node_id, name, detail, icon, x, y, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -2211,11 +2534,13 @@ app.put("/api/admin/features", requireAuth, (req, res) => {
   const features = {
     snmp: req.body.snmp !== false,
     docker: req.body.docker !== false,
+    network: req.body.network !== false,
     protect: req.body.protect !== false,
     networkMap: req.body.networkMap !== false
   };
   setSetting("feature_snmp_enabled", String(features.snmp));
   setSetting("feature_docker_enabled", String(features.docker));
+  setSetting("feature_unifi_network_enabled", String(features.network));
   setSetting("feature_protect_enabled", String(features.protect));
   setSetting("feature_network_map_enabled", String(features.networkMap));
   res.json({ ok: true, features });

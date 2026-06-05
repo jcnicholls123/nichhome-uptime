@@ -11,7 +11,19 @@ include breaking changes while the monitoring engine and integrations mature.
 
 - Additional historical reporting ranges
 - Public status pages
-- UniFi Network API integration for controller-wide gateway client totals
+
+## [1.0.0-beta.22] - 2026-06-05
+
+### Added
+
+- UniFi Network Integration API support for local consoles, including host
+  setup, API-key testing, site sync, adopted device sync, connected client sync,
+  background polling, and manual refresh
+- UniFi Network workspace with console, site/device, and connected-client views
+- Offline UniFi Network device incidents with Discord down/recovery alerts
+- UniFi Network topology nodes for consoles, sites, devices, and connected
+  clients, including uplink relationships when available
+- Admin visibility toggle for the UniFi Network module
 
 ## [1.0.0-beta.21] - 2026-06-05
 

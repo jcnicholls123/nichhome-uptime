@@ -100,7 +100,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.30", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.31", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -186,7 +186,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.30");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.31");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);
@@ -222,6 +222,12 @@ async function waitForServer() {
     assert.equal(editedMap.nodes.find((node) => node.id === dockerMapNode.id).icon, "docker");
     assert.equal(editedMap.edges.some((edge) => edge.manual && edge.label === "Test link"), true);
     assert.equal(editedMap.edges.some((edge) => edge.to === dockerMapNode.id && edge.type === "replace"), true);
+    assert.equal((await request("/api/network-map/layout/reset", { method: "POST", body: "{}" })).status, 200);
+    const resetMap = await (await request("/api/network-map")).json();
+    const resetDockerNode = resetMap.nodes.find((node) => node.id === dockerMapNode.id);
+    assert.equal(resetDockerNode.name, "Edited container icon");
+    assert.equal(resetDockerNode.x, undefined);
+    assert.equal(resetDockerNode.y, undefined);
     assert.equal((await request(`/api/network-map/nodes/${mapNode.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);
     assert.equal((await (await request("/api/docker/containers")).json()).length, 1);
@@ -271,8 +277,9 @@ async function waitForServer() {
     const unifiAlertOptions = await (await request("/api/alert-rules/options")).json();
     const unifiUpdateTarget = unifiAlertOptions.unifi.find((device) => device.name.includes("UCG Fiber"));
     assert.equal(unifiUpdateTarget.metrics.some((metric) => metric.key === "update_available" && metric.value === 1), true);
-    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber update available", targetType: "unifi", targetId: unifiUpdateTarget.id, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi update waiting", actionText: "Schedule firmware update", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
-    assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "unifi-updates", targetType: "unifi", targetId: unifiUpdateTarget.id }) })).status, 200);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber update available", targetType: "unifi", targetId: `unifi:${unifiUpdateTarget.id}`, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi update waiting", actionText: "Schedule firmware update", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber status", targetType: "unifi", targetId: unifiUpdateTarget.id, metricKey: "status", operator: "!=", threshold: "up", severity: "warning", description: "UniFi status changed", actionText: "Check UniFi Network", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
+    assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "unifi-updates", targetType: "unifi", targetId: `unifi:${unifiUpdateTarget.id}` }) })).status, 200);
     assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: networkHosts[0].id }) })).status, 200);
     const unifiMap = await (await request("/api/network-map")).json();
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-network-host"), true);

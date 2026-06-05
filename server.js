@@ -818,6 +818,11 @@ function alertRuleValue(rule) {
   return container[rule.metric_key] ?? null;
 }
 
+function normalizeAlertTargetId(targetType, targetId) {
+  const value = String(targetId || "");
+  return value.startsWith(`${targetType}:`) ? value.slice(targetType.length + 1) : value;
+}
+
 function alertRuleTriggered(value, operator, threshold) {
   const leftNumber = Number(value);
   const rightNumber = Number(threshold);
@@ -2033,7 +2038,7 @@ app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
 app.post("/api/alert-rules/templates/apply", requireAuth, async (req, res) => {
   const template = String(req.body.template || "");
   const targetType = String(req.body.targetType || "");
-  const targetId = String(req.body.targetId || "");
+  const targetId = normalizeAlertTargetId(targetType, req.body.targetId);
   const created = [];
   const skipped = [];
   const addRule = (rule) => {
@@ -2087,7 +2092,7 @@ app.post("/api/alert-rules/templates/apply", requireAuth, async (req, res) => {
 app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const name = String(req.body.name || "").trim();
   const targetType = String(req.body.targetType || "");
-  const targetId = String(req.body.targetId || "");
+  const targetId = normalizeAlertTargetId(targetType, req.body.targetId);
   const metricKey = String(req.body.metricKey || "").trim();
   const operator = String(req.body.operator || "");
   const threshold = String(req.body.threshold ?? "").trim();
@@ -2728,6 +2733,10 @@ app.put("/api/network-map/overrides", requireAuth, (req, res) => {
     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
     ON CONFLICT(node_id) DO UPDATE SET name=excluded.name, detail=excluded.detail, icon=excluded.icon, x=excluded.x, y=excluded.y, updated_at=CURRENT_TIMESTAMP
   `).run(nodeId, name, detail, icon === "auto" ? "" : icon, x, y);
+  res.json({ ok: true });
+});
+app.post("/api/network-map/layout/reset", requireAuth, (req, res) => {
+  db.prepare("UPDATE map_node_overrides SET x = NULL, y = NULL").run();
   res.json({ ok: true });
 });
 app.post("/api/network-map/links", requireAuth, (req, res) => {

@@ -12,6 +12,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.31] - 2026-06-05
+
+### Fixed
+
+- UniFi alert templates and manually-created UniFi alert rules now tolerate
+  prefixed target ids and submit the selected target unambiguously
+- Alert template target dropdowns now show a clear empty state instead of
+  posting a stale or malformed target
+- Network topology canvas contrast, labels, and manual/replace link styling
+  are more readable
+
+### Added
+
+- Network topology now has a reset-layout action that clears saved inferred
+  node positions without deleting devices, names, icons, or links
+
 ## [1.0.0-beta.30] - 2026-06-05
 
 ### Added

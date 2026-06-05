@@ -1062,12 +1062,16 @@ function renderAlertTemplates() {
   const select = document.getElementById("alertTemplateSelect"); const target = document.getElementById("alertTemplateTarget"); const list = document.getElementById("alertTemplateList");
   if (!select || !target || !list || !alertTemplates.length) return;
   const current = select.value;
+  const currentTarget = target.value;
   select.replaceChildren();
   for (const template of alertTemplates) { const option = document.createElement("option"); option.value = template.id; option.textContent = template.name; option.dataset.targetType = template.targetType; select.append(option); }
   if (current) select.value = current;
   const template = alertTemplates.find((item) => item.id === select.value) || alertTemplates[0];
+  select.value = template.id;
   target.replaceChildren();
-  for (const item of alertRuleOptions[template.targetType] || []) { const option = document.createElement("option"); option.value = `${template.targetType}:${item.id}`; option.textContent = item.name; target.append(option); }
+  for (const item of alertRuleOptions[template.targetType] || []) { const option = document.createElement("option"); option.value = String(item.id); option.dataset.targetType = template.targetType; option.textContent = item.name; target.append(option); }
+  if (currentTarget && [...target.options].some((option) => option.value === currentTarget)) target.value = currentTarget;
+  if (!target.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = `No ${template.targetType.toUpperCase()} targets available yet`; target.append(option); }
   list.replaceChildren();
   for (const item of alertTemplates) { const row = document.createElement("article"); row.className = "profile-row"; const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = item.name; const detail = document.createElement("small"); detail.textContent = item.description; copy.append(name, detail); const tag = document.createElement("small"); tag.textContent = item.targetType.toUpperCase(); row.append(copy, tag); list.append(row); }
 }
@@ -1195,7 +1199,7 @@ function renderNetworkMap() {
   const canvasNodes = networkMap.nodes.filter((node) => node.type !== "docker");
   canvasNodes.forEach((node, index) => positions.set(node.id, { x: node.x ?? (8 + (index % 6) * 17), y: node.y ?? Math.min(12 + Math.floor(index / 6) * 16, 94) }));
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
-  for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.manual ? "manual" : "inferred"); svg.append(line); }
+  for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.type === "replace" ? "replace" : edge.manual ? "manual" : "inferred"); svg.append(line); }
   canvas.append(svg);
   for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
   map.append(canvas);
@@ -1713,8 +1717,11 @@ document.getElementById("alertTemplateSelect").addEventListener("change", render
 document.getElementById("alertTemplateForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("alertTemplateError"); error.textContent = "";
-  const [targetType, targetId] = form.elements.target.value.split(":");
+  const template = alertTemplates.find((item) => item.id === form.elements.template.value);
+  const targetType = template?.targetType || form.elements.target.selectedOptions[0]?.dataset.targetType || "";
+  const targetId = form.elements.target.value;
   try {
+    if (!targetType || !targetId) throw new Error("Choose a target for this alert template.");
     const result = await api("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: form.elements.template.value, targetType, targetId }) });
     await Promise.all([loadAlertRules(), loadIncidents()]);
     showToast("Template applied", `${result.created.length} rules created, ${result.skipped.length} skipped`);
@@ -1838,6 +1845,7 @@ document.getElementById("mapNodeForm").addEventListener("submit", async (event) 
 });
 document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.querySelector("#mapLinkForm select[name=linkMode]").value = preferenceSettings.mapReplaceInferredByDefault ? "replace" : "manual"; document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
 document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast("Map link added", form.elements.label.value || "Manual relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
+document.getElementById("resetNetworkMapLayout").addEventListener("click", async () => { await api("/api/network-map/layout/reset", { method: "POST", body: "{}" }); await loadNetworkMap(); showToast("Topology layout reset", "Saved inferred-node positions were cleared"); });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) modal.hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);

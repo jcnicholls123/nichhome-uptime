@@ -12,6 +12,13 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.23] - 2026-06-05
+
+### Fixed
+
+- Feature visibility toggles now hide sidebar navigation items reliably even
+  when the nav button CSS sets its own display mode
+
 ## [1.0.0-beta.22] - 2026-06-05
 
 ### Added

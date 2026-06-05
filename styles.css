@@ -14,6 +14,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; background: var(--cream); color: var(--ink); font-family: "Manrope", sans-serif; }
 body.menu-open { overflow: hidden; }
 button, input { font: inherit; }

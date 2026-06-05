@@ -100,14 +100,22 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.29", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.30", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "passw0rd" }) })).status, 201);
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: false });
     assert.equal((await request("/")).status, 200);
-    assert.equal((await request("/api/me")).status, 200);
+    const initialProfile = await (await request("/api/me")).json();
+    assert.equal(initialProfile.username, "admin");
+    assert.equal(initialProfile.displayName, "");
+    assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "James" }) })).status, 200);
+    const namedProfile = await (await request("/api/me")).json();
+    assert.equal(namedProfile.displayName, "James");
+    assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "J" }) })).status, 400);
+    assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "" }) })).status, 200);
+    assert.equal((await (await request("/api/me")).json()).displayName, "");
     assert.equal((await request("/api/logout", { method: "POST", body: "{}" })).status, 200);
     cookie = "";
     assert.equal((await request("/api/me")).status, 401);
@@ -178,7 +186,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.29");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.30");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);

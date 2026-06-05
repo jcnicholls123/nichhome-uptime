@@ -197,6 +197,12 @@
     <section class="account-modal" role="dialog" aria-modal="true" aria-labelledby="accountTitle">
       <div class="modal-heading"><div><span class="section-tag accent">ACCOUNT SECURITY</span><h2 id="accountTitle">Your account</h2></div><button class="modal-close" id="closeAccount" aria-label="Close">×</button></div>
       <div class="account-summary"><span class="avatar large" id="modalAvatar">NH</span><div><strong id="modalUsername">Administrator</strong><small>Local administrator</small></div></div>
+      <form class="monitor-form compact-form" id="profileForm">
+        <label>Nickname / display name<input name="displayName" maxlength="60" placeholder="James"></label>
+        <button class="command-button" type="submit">Save nickname</button>
+        <p class="form-help">This changes the dashboard greeting only. Your login username stays the same.</p>
+        <p class="modal-error" id="profileError"></p>
+      </form>
       <div class="security-card">
         <div><strong>Authenticator MFA</strong><p id="mfaStatus">Checking security status...</p></div>
         <button class="soft-button" id="mfaAction">Configure</button>

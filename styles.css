@@ -348,6 +348,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .modal-error { min-height: 10px; color: #c84f40 !important; }
 .logout-button { width: 100%; margin-top: 18px; padding: 11px; border: 1px solid rgba(255,107,82,.22); border-radius: 8px; color: #c95746; background: rgba(255,107,82,.06); font-size: 8px; font-weight: 700; }
 .monitor-form { display: grid; gap: 11px; margin-top: 18px; }
+.compact-form { margin: -4px 0 13px; padding-bottom: 14px; border-bottom: 1px solid var(--line); }
 .monitor-form label { display: grid; gap: 5px; color: #68716d; font-size: 8px; font-weight: 700; }
 .monitor-form input, .monitor-form select { height: 38px; padding: 0 10px; border: 1px solid var(--line); border-radius: 7px; outline: none; background: white; font-size: 9px; }
 .monitor-form input:focus, .monitor-form select:focus { border-color: var(--coral); }

@@ -18,6 +18,7 @@ Discord alert visibility.
 - Secure password hashing and cookie-backed sessions
 - Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
+- Optional account nickname/display name for friendlier greetings
 - Admin feature visibility toggles for hiding unused SNMP, Docker, UniFi
   Network, UniFi Protect, or Network Map modules without deleting data
 - Mobile navigation and search across monitors, SNMP devices, Docker, and

@@ -30,6 +30,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT,
     password_hash TEXT NOT NULL,
     mfa_secret TEXT,
     mfa_enabled INTEGER NOT NULL DEFAULT 0,
@@ -372,6 +373,7 @@ function ensureColumn(table, column, definition) {
 }
 
 ensureColumn("snmp_devices", "version", "TEXT NOT NULL DEFAULT '2c'");
+ensureColumn("users", "display_name", "TEXT");
 ensureColumn("snmp_devices", "profile_id", "INTEGER REFERENCES snmp_profiles(id) ON DELETE SET NULL");
 ensureColumn("snmp_devices", "v3_username", "TEXT");
 ensureColumn("snmp_devices", "v3_security_level", "TEXT NOT NULL DEFAULT 'noAuthNoPriv'");
@@ -587,7 +589,7 @@ function getUser(req) {
   const token = parseCookies(req).nichhome_session;
   if (!token) return null;
   return db.prepare(`
-    SELECT users.id, users.username, users.mfa_enabled
+    SELECT users.id, users.username, users.display_name, users.mfa_enabled
     FROM sessions JOIN users ON users.id = sessions.user_id
     WHERE sessions.token_hash = ? AND sessions.expires_at > ?
   `).get(hashToken(token), Date.now()) || null;
@@ -1855,7 +1857,13 @@ app.post("/api/logout", (req, res) => {
   res.clearCookie("nichhome_session", { path: "/" });
   res.json({ ok: true });
 });
-app.get("/api/me", requireAuth, (req, res) => res.json({ username: req.user.username, mfaEnabled: Boolean(req.user.mfa_enabled) }));
+app.get("/api/me", requireAuth, (req, res) => res.json({ username: req.user.username, displayName: req.user.display_name || "", mfaEnabled: Boolean(req.user.mfa_enabled) }));
+app.put("/api/me", requireAuth, (req, res) => {
+  const displayName = String(req.body.displayName || "").trim();
+  if (displayName && (displayName.length < 2 || displayName.length > 60)) return res.status(400).json({ error: "Nickname must be 2-60 characters, or leave it blank to use your username." });
+  db.prepare("UPDATE users SET display_name = ? WHERE id = ?").run(displayName || null, req.user.id);
+  res.json({ ok: true, username: req.user.username, displayName, mfaEnabled: Boolean(req.user.mfa_enabled) });
+});
 app.post("/api/mfa/start", requireAuth, async (req, res) => {
   if (req.user.mfa_enabled) return res.status(409).json({ error: "MFA is already enabled." });
   const secret = base32Encode(crypto.randomBytes(20));

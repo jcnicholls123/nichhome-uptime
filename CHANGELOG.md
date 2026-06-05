@@ -12,6 +12,14 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.30] - 2026-06-05
+
+### Added
+
+- Account profiles now support an optional nickname/display name for the
+  dashboard greeting, account button, and avatar initials while keeping the
+  login username unchanged
+
 ## [1.0.0-beta.29] - 2026-06-05
 
 ### Added

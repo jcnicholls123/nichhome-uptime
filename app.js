@@ -296,12 +296,14 @@ document.addEventListener("keydown", (event) => {
 
 async function loadAccount() {
   currentUser = await api("/api/me");
-  const initials = currentUser.username.slice(0, 2).toUpperCase();
+  const displayName = currentUser.displayName || currentUser.username;
+  const initials = displayName.split(/\s+/).filter(Boolean).slice(0, 2).map((part) => part[0]).join("").slice(0, 2).toUpperCase() || currentUser.username.slice(0, 2).toUpperCase();
   const hour = new Date().getHours();
   const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
-  document.getElementById("welcomeGreeting").textContent = `${greeting}, ${currentUser.username}.`;
-  document.getElementById("accountName").textContent = currentUser.username;
-  document.getElementById("modalUsername").textContent = currentUser.username;
+  document.getElementById("welcomeGreeting").textContent = `${greeting}, ${displayName}.`;
+  document.getElementById("accountName").textContent = displayName;
+  document.getElementById("modalUsername").textContent = displayName;
+  document.querySelector("#profileForm input[name=displayName]").value = currentUser.displayName || "";
   document.getElementById("avatar").textContent = initials;
   document.getElementById("modalAvatar").textContent = initials;
   document.getElementById("accountSecurity").textContent = currentUser.mfaEnabled ? "MFA protected" : "Administrator";
@@ -1845,6 +1847,15 @@ document.getElementById("activeAlertStrip").addEventListener("click", openIncide
 document.getElementById("accountButton").addEventListener("click", () => { accountModal.hidden = false; });
 document.getElementById("closeAccount").addEventListener("click", () => { accountModal.hidden = true; });
 accountModal.addEventListener("click", (event) => { if (event.target === accountModal) accountModal.hidden = true; });
+document.getElementById("profileForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("profileError"); error.textContent = "";
+  try {
+    currentUser = await api("/api/me", { method: "PUT", body: JSON.stringify({ displayName: form.elements.displayName.value }) });
+    await loadAccount();
+    showToast("Nickname saved", currentUser.displayName ? `Hi ${currentUser.displayName}` : "Using your username again");
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("logoutButton").addEventListener("click", async () => {
   await api("/api/logout", { method: "POST", body: "{}" });
   window.location.href = "/auth";

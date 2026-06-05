@@ -27,12 +27,13 @@ let adminSettings = null;
 let featureSettings = { snmp: true, docker: true, network: true, protect: true, networkMap: true };
 let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
 let networkMap = { nodes: [], edges: [] };
+let notificationDiscordConfig = null;
 let reportingRange = "24h";
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
   if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
@@ -44,6 +45,7 @@ function showWorkspace(name) {
   if (name === "Protect") renderProtectWorkspace();
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
+  if (name === "Notifications") loadNotificationsPage();
   if (name === "Admin Settings") loadAdminSettings();
 }
 
@@ -173,6 +175,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "Network Map") {
       showWorkspace("Network Map");
+      return;
+    }
+    if (item.dataset.page === "Notifications") {
+      showWorkspace("Notifications");
       return;
     }
     if (item.dataset.page === "Admin Settings") {
@@ -558,6 +564,50 @@ function incidentElement(incident) {
   return row;
 }
 
+function renderNotificationsPage(discordConfig = null) {
+  if (discordConfig) notificationDiscordConfig = discordConfig;
+  discordConfig = notificationDiscordConfig;
+  const metrics = document.getElementById("notificationMetrics");
+  const list = document.getElementById("notificationEventList");
+  const channels = document.getElementById("notificationChannelList");
+  if (!metrics || !list || !channels) return;
+  const open = incidents.filter((incident) => !incident.resolvedAt).length;
+  const resolved = incidents.filter((incident) => incident.resolvedAt).length;
+  const ruleAlerts = incidents.filter((incident) => incident.source === "rule").length;
+  metrics.replaceChildren(
+    metricCard("Active alerts", open, "currently notifying", open > 0),
+    metricCard("Recent events", incidents.length, "all alert sources"),
+    metricCard("Recovered", resolved, "resolved incidents"),
+    metricCard("Rule alerts", ruleAlerts, "Zabbix-style triggers", ruleAlerts > 0)
+  );
+  list.replaceChildren();
+  if (!incidents.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No notifications yet. Beautifully boring.";
+    list.append(empty);
+  } else {
+    incidents.slice(0, 30).forEach((incident) => list.append(incidentElement(incident)));
+  }
+  channels.replaceChildren();
+  const browserState = "Notification" in window ? Notification.permission : "unsupported";
+  for (const [label, value, detail, alerting] of [
+    ["Browser notifications", preferenceSettings.browserNotifications ? "Enabled" : "Off", browserState === "granted" ? "permission granted" : browserState, preferenceSettings.browserNotifications && browserState !== "granted"],
+    ["Discord embeds", discordConfig?.enabled ? "Enabled" : "Off", discordConfig?.webhookUrl || "not configured", false],
+    ["Notification queue", open ? `${open} active` : "Clear", incidents[0] ? `Latest ${formatDate(incidents[0].startedAt)}` : "No events yet", open > 0]
+  ]) {
+    const row = document.createElement("article"); row.className = `profile-row ${alerting ? "active" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = label; const small = document.createElement("small"); small.textContent = detail; copy.append(name, small);
+    const state = document.createElement("span"); state.className = `status-label ${alerting ? "warn" : value === "Enabled" || value === "Clear" ? "up" : ""}`; state.textContent = value;
+    row.append(copy, state); channels.append(row);
+  }
+  const form = document.getElementById("notificationPreferenceForm");
+  if (form) form.elements.browserNotifications.checked = Boolean(preferenceSettings.browserNotifications);
+}
+
+async function loadNotificationsPage() {
+  const discordConfig = await api("/api/notifications/discord");
+  renderNotificationsPage(discordConfig);
+}
+
 async function loadIncidents() {
   incidents = await api("/api/incidents");
   const open = incidents.filter((incident) => !incident.resolvedAt).length;
@@ -571,6 +621,8 @@ async function loadIncidents() {
   lastOpenIncidentCount = open;
   document.getElementById("incidentCount").textContent = open;
   document.getElementById("incidentCount").classList.toggle("alerting", open > 0);
+  const notificationCount = document.getElementById("notificationNavCount");
+  if (notificationCount) { notificationCount.textContent = open; notificationCount.classList.toggle("alerting", open > 0); }
   document.querySelector(".notification-dot").classList.toggle("alerting", open > 0);
   document.querySelector(".sidebar-footer").classList.toggle("alerting", open > 0);
   document.getElementById("systemHealthText").textContent = open ? `${open} active alert${open === 1 ? "" : "s"}` : "All systems nominal";
@@ -587,6 +639,7 @@ async function loadIncidents() {
     incidents.slice(0, 4).forEach((incident) => list.append(incidentElement(incident)));
   }
   renderSnmpWorkspace();
+  renderNotificationsPage();
 }
 
 function makePath(values, width, height, minimum, maximum, left = 0, top = 0) {
@@ -1556,6 +1609,7 @@ document.getElementById("discordForm").addEventListener("submit", async (event) 
   try {
     await api("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ webhookUrl: form.elements.webhookUrl.value, enabled: form.elements.enabled.checked }) });
     document.getElementById("discordModal").hidden = true;
+    await loadNotificationsPage();
     showToast("Discord saved", form.elements.enabled.checked ? "Alerts are enabled" : "Alerts are disabled");
   } catch (err) { document.getElementById("discordError").textContent = err.message; }
 });
@@ -1564,6 +1618,28 @@ document.getElementById("testDiscord").addEventListener("click", async () => {
     await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
     showToast("Discord test sent", "Check your Discord channel");
   } catch (err) { document.getElementById("discordError").textContent = err.message; }
+});
+document.getElementById("refreshNotifications").addEventListener("click", async () => { await loadIncidents(); await loadNotificationsPage(); showToast("Notifications refreshed", "Latest alert state loaded"); });
+document.getElementById("notificationOpenIncidents").addEventListener("click", openIncidents);
+document.getElementById("notificationOpenDiscord").addEventListener("click", openDiscord);
+document.getElementById("notificationTestDiscord").addEventListener("click", async () => {
+  try {
+    await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
+    await loadNotificationsPage();
+    showToast("Discord test sent", "Check your Discord channel");
+  } catch (err) { showToast("Discord test failed", err.message); }
+});
+document.getElementById("notificationPreferenceForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("notificationPreferenceError"); error.textContent = "";
+  try {
+    const body = { ...preferenceSettings, browserNotifications: form.elements.browserNotifications.checked };
+    if (body.browserNotifications && "Notification" in window && Notification.permission === "default") await Notification.requestPermission();
+    const result = await api("/api/admin/preferences", { method: "PUT", body: JSON.stringify(body) });
+    preferenceSettings = result.preferences;
+    await loadNotificationsPage();
+    showToast("Notification preference saved", preferenceSettings.browserNotifications ? "Browser alerts enabled" : "Browser alerts disabled");
+  } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("refreshDocker").addEventListener("click", async () => {
   try {

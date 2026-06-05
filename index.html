@@ -34,7 +34,7 @@
         <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Connect</p>
-        <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications<span class="nav-pill">SOON</span></button>
+        <button class="nav-item" data-page="Notifications"><span class="nav-icon">◇</span>Notifications<span class="nav-alert" id="notificationNavCount">0</span></button>
         <button class="nav-item" data-page="Discord"><span class="nav-icon discord-icon">#</span>Discord<span class="status-dot" id="discordDot"></span></button>
         <button class="nav-item" data-page="Admin Settings"><span class="nav-icon">A</span>Admin Settings</button>
         <button class="nav-item" id="mobileAccountButton"><span class="nav-icon">◎</span>Account &amp; security</button>
@@ -179,6 +179,14 @@
       <div class="content" id="networkMapPage" hidden>
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / NETWORK MAP</p><h1>Infrastructure topology</h1><p class="subhead">Inferred infrastructure plus your own persistent nodes and links.</p></div><div class="heading-actions"><button class="soft-button" id="resetNetworkMapLayout">Reset layout</button><button class="soft-button" id="addMapLink">Add link</button><button class="soft-button" id="addMapNode">Add node</button><button class="command-button" id="refreshNetworkMap">Refresh map</button></div></section>
         <section class="panel"><div class="topology-map" id="topologyMap"></div></section>
+      </div>
+      <div class="content" id="notificationsPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / NOTIFICATIONS</p><h1>Notification centre</h1><p class="subhead">Alert delivery, browser notifications, Discord status, and recent events in one place.</p></div><div class="heading-actions"><button class="soft-button" id="notificationOpenDiscord">Discord settings</button><button class="command-button" id="refreshNotifications">Refresh notifications</button></div></section>
+        <section class="metric-grid" id="notificationMetrics"></section>
+        <section class="dashboard-grid">
+          <article class="panel"><div class="panel-heading"><div><span class="section-tag accent">LIVE EVENTS</span><h2>Recent notifications</h2></div><button class="soft-button" id="notificationOpenIncidents">View incidents</button></div><div class="activity-list notification-event-list" id="notificationEventList"><p class="empty-state">No incidents recorded.</p></div></article>
+          <article class="panel"><div class="panel-heading"><div><span class="section-tag blue">DELIVERY</span><h2>Channels</h2></div></div><div class="profile-list" id="notificationChannelList"></div><form class="monitor-form" id="notificationPreferenceForm"><label class="toggle-label"><input name="browserNotifications" type="checkbox"> Enable browser notifications for new incidents</label><button class="command-button" type="submit">Save notification preference</button><p class="form-help">Your browser may ask permission the first time this is enabled.</p><p class="modal-error" id="notificationPreferenceError"></p></form><button class="soft-button full-width-action" id="notificationTestDiscord">Send Discord test</button></article>
+        </section>
       </div>
       <div class="content" id="adminSettingsPage" hidden>
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / ADMIN</p><h1>Admin settings</h1><p class="subhead">Maintenance mode, notification status, alert behaviour, and local system details.</p></div><div class="heading-actions"><button class="command-button" id="refreshAdminSettings">Refresh settings</button></div></section>

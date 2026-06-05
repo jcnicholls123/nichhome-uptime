@@ -67,6 +67,8 @@ Discord alert visibility.
 - Relationship-aware reset-layout action for clearing odd topology positions
   without deleting data
 - Browser notification preferences for new active incidents
+- Dedicated notification centre with active alert metrics, channel status,
+  recent events, and quick Discord/browser controls
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
 - Alert sources for SNMP baseline/profile metrics, Docker containers, and

@@ -12,6 +12,18 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.33] - 2026-06-05
+
+### Added
+
+- Notifications is now a real workspace with active alert metrics, recent
+  events, browser notification preference, Discord status, and quick actions
+
+### Fixed
+
+- Topology canvas nodes now use a fixed icon column and clipped label column so
+  infrastructure icons cannot overlap device names
+
 ## [1.0.0-beta.32] - 2026-06-05
 
 ### Fixed

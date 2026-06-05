@@ -51,8 +51,9 @@ Discord alert visibility.
   Docker API endpoint
 - Active-container Docker fleet tracking with duplicate-host protection and
   automatic cleanup of stale historical fleet records
-- UniFi Network Integration API host setup with site, adopted-device, connected
-  client, offline-device incident, Discord alert, and topology monitoring
+- UniFi Network Integration API host setup with site, adopted-device,
+  expandable connected-client visibility, offline-device incident, Discord
+  alert, and topology monitoring
 - UniFi Protect host setup with local API-key camera discovery, camera
   connection/recording state, incidents, Discord alerts, and topology mapping
 - Dedicated Docker fleet details workspace and inferred infrastructure network
@@ -60,6 +61,7 @@ Discord alert visibility.
 - Editable manual map nodes, relationships, positions, status, and details
 - Editable inferred topology nodes with persistent names, positions, details,
   and intelligent infrastructure icons
+- Drag-to-position topology canvas nodes with saved overrides
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
 - Structured Discord embeds for monitor, SNMP, Docker, recovery, and test alerts

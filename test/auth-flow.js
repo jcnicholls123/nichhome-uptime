@@ -100,7 +100,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.25", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.26", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -178,7 +178,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.25");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.26");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
@@ -251,11 +251,12 @@ async function waitForServer() {
     assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.status === "down"), true);
     const networkClients = await (await request("/api/unifi-network/clients")).json();
     assert.equal(networkClients.length, 2);
+    assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.clientCount === 1), true);
     assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: networkHosts[0].id }) })).status, 200);
     const unifiMap = await (await request("/api/network-map")).json();
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-network-host"), true);
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-device"), true);
-    assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-client"), true);
+    assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-client"), false);
     assert.equal((await request(`/api/unifi-network/hosts/${networkHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/protect/hosts/${protectHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);

@@ -886,17 +886,34 @@ async function pollAssignedProfile(device) {
   if (!device.profile_id) return;
   const profile = db.prepare("SELECT id, source FROM snmp_profiles WHERE id = ?").get(device.profile_id);
   if (!profile || profile.source === "built-in") return;
-  const oids = db.prepare("SELECT oid, name, unit, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
+  const oids = db.prepare("SELECT oid, name, unit, value_type AS valueType, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
   const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
   const directOids = oids.filter((item) => !/\{#[A-Z0-9_]+\}/i.test(item.oid));
-  for (let index = 0; index < directOids.length; index += 20) {
+  const tableOids = directOids.filter((item) => String(item.valueType || "").toUpperCase() === "TABLE");
+  const scalarOids = directOids.filter((item) => !tableOids.includes(item));
+  for (const item of tableOids) {
     try {
-      const batch = directOids.slice(index, index + 20);
+      const values = await snmpSubtree(device, item.oid);
+      db.transaction(() => {
+        for (const varbind of values.slice(0, 250)) upsert.run(device.id, `template:${profile.id}`, varbind.oid, `${item.name} ${varbind.oid.slice(item.oid.length + 1)}`.slice(0, 160), applyValueExtraction(valueText(varbind.value), item.regex), item.unit || "");
+      })();
+    } catch {}
+  }
+  for (let index = 0; index < scalarOids.length; index += 20) {
+    try {
+      const batch = scalarOids.slice(index, index + 20);
       const result = await snmpGet(device, batch.map((item) => item.oid));
       db.transaction(() => {
         for (const item of batch) upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
       })();
-    } catch {}
+    } catch {
+      for (const item of scalarOids.slice(index, index + 20)) {
+        try {
+          const result = await snmpGet(device, [item.oid]);
+          upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
+        } catch {}
+      }
+    }
   }
 }
 
@@ -2412,7 +2429,8 @@ app.get("/api/unifi-network/sites", requireAuth, (req, res) => {
 });
 app.get("/api/unifi-network/devices", requireAuth, (req, res) => {
   const devices = db.prepare("SELECT unifi_network_devices.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_devices JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_devices.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_devices.host_id AND unifi_network_sites.site_id = unifi_network_devices.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_devices.name").all();
-  res.json(devices.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, deviceId: item.device_id, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, deviceType: item.device_type, status: item.status, lastPolledAt: item.last_polled_at })));
+  const clientCount = db.prepare("SELECT COUNT(*) AS count FROM unifi_network_clients WHERE host_id = ? AND site_id = ? AND uplink_device_id = ?");
+  res.json(devices.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, deviceId: item.device_id, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, deviceType: item.device_type, status: item.status, clientCount: clientCount.get(item.host_id, item.site_id, item.device_id).count, lastPolledAt: item.last_polled_at })));
 });
 app.get("/api/unifi-network/clients", requireAuth, (req, res) => {
   const clients = db.prepare("SELECT unifi_network_clients.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_clients JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_clients.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_clients.host_id AND unifi_network_sites.site_id = unifi_network_clients.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_clients.name").all();
@@ -2487,11 +2505,6 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     nodes.push({ id: `unifi-device:${device.id}`, type: "unifi-device", name: device.name, status: device.status, detail: device.model || device.address || "UniFi device", icon: device.device_type || "unifi" });
     addEdge(`unifi-site:${device.host_id}:${device.site_id}`, `unifi-device:${device.id}`, "contains");
     addSubnet(rememberHost(device.address, `unifi-device:${device.id}`), `unifi-device:${device.id}`);
-  }
-  for (const client of db.prepare("SELECT id, host_id, site_id, name, address, type, uplink_device_id FROM unifi_network_clients ORDER BY name LIMIT 100").all()) {
-    nodes.push({ id: `unifi-client:${client.id}`, type: "unifi-client", name: client.name, status: "up", detail: client.address || client.type || "Connected client", icon: client.type && String(client.type).toLowerCase().includes("wireless") ? "web" : "node" });
-    const uplink = client.uplink_device_id ? db.prepare("SELECT id FROM unifi_network_devices WHERE host_id = ? AND site_id = ? AND device_id = ?").get(client.host_id, client.site_id, client.uplink_device_id) : null;
-    addEdge(uplink ? `unifi-device:${uplink.id}` : `unifi-site:${client.host_id}:${client.site_id}`, `unifi-client:${client.id}`, "connected");
   }
   for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
     const id = `monitor:${monitor.id}`;

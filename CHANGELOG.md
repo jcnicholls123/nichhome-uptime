@@ -12,6 +12,26 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.26] - 2026-06-05
+
+### Added
+
+- UniFi Network device cards now show client counts and expandable client lists
+- Network topology nodes can be dragged and saved as position overrides
+
+### Changed
+
+- UniFi clients stay visible on the UniFi dashboard but are no longer added as
+  monitored-looking nodes on the global topology map
+- SNMP interface speed labels now make it clearer that IF-MIB speeds are
+  reported/capability values
+
+### Fixed
+
+- Imported SNMP profile polling now tolerates bad scalar OIDs and walks table
+  OIDs separately, allowing Raspberry Pi temperature and throttling extend
+  values to appear even when the same template includes table bases
+
 ## [1.0.0-beta.25] - 2026-06-05
 
 ### Added

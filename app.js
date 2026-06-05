@@ -880,8 +880,20 @@ function renderUnifiNetworkWorkspace() {
     const card = document.createElement("article"); card.className = `docker-detail-card ${device.status === "down" ? "down" : ""}`;
     const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = device.name; const status = document.createElement("span"); status.className = `status-label ${device.status === "up" ? "up" : "warn"}`; status.textContent = device.status.toUpperCase(); const identity = document.createElement("div"); identity.className = "identity-row"; identity.append(makeIconBadge(device, "node-glyph"), name); header.append(identity, status);
     const detail = document.createElement("small"); detail.textContent = `${device.siteName || device.siteId} · ${device.model || device.deviceType || "UniFi device"} · ${device.address || "no address"}`;
-    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${device.state || "--"} · Type ${device.deviceType || "--"} · MAC ${device.mac || "--"}`;
-    card.append(header, detail, values); devices.append(card);
+    const deviceClients = unifiNetworkClients.filter((client) => client.hostId === device.hostId && client.siteId === device.siteId && client.uplinkDeviceId === device.deviceId);
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${device.state || "--"} · Type ${device.deviceType || "--"} · MAC ${device.mac || "--"} · Clients ${device.clientCount ?? deviceClients.length}`;
+    card.append(header, detail, values);
+    if (deviceClients.length) {
+      const expansion = document.createElement("details"); expansion.className = "unifi-client-expansion";
+      const summary = document.createElement("summary"); summary.textContent = `Show ${deviceClients.length} client${deviceClients.length === 1 ? "" : "s"}`;
+      const list = document.createElement("div"); list.className = "client-chip-list";
+      for (const client of deviceClients.slice(0, 40)) {
+        const chip = document.createElement("span"); chip.className = "client-chip"; chip.textContent = `${client.name}${client.address ? ` · ${client.address}` : ""}`;
+        list.append(chip);
+      }
+      expansion.append(summary, list); card.append(expansion);
+    }
+    devices.append(card);
   }
   if (!unifiNetworkClients.length) {
     const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = unifiNetworkHosts.length ? "No connected clients were returned yet." : "No UniFi clients configured."; clients.append(empty);
@@ -1104,6 +1116,49 @@ function openMapNode(node = null) {
   document.getElementById("mapNodeTitle").textContent = node ? `Edit ${node.name}` : "Add manual node"; document.getElementById("mapNodeError").textContent = ""; document.getElementById("mapNodeModal").hidden = false;
 }
 
+function enableTopologyDrag(button, node, canvas, position) {
+  let start = null;
+  let moved = false;
+  const pointToPercent = (event) => {
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: Math.max(0, Math.min(100, ((event.clientX - rect.left) / rect.width) * 100)),
+      y: Math.max(0, Math.min(100, ((event.clientY - rect.top) / rect.height) * 100))
+    };
+  };
+  button.addEventListener("pointerdown", (event) => {
+    if (event.button !== 0) return;
+    start = { clientX: event.clientX, clientY: event.clientY, x: position.x, y: position.y };
+    moved = false;
+    button.setPointerCapture(event.pointerId);
+  });
+  button.addEventListener("pointermove", (event) => {
+    if (!start) return;
+    const dx = event.clientX - start.clientX;
+    const dy = event.clientY - start.clientY;
+    if (!moved && Math.hypot(dx, dy) < 4) return;
+    moved = true;
+    const next = pointToPercent(event);
+    position.x = next.x; position.y = next.y;
+    button.style.left = `${next.x}%`; button.style.top = `${next.y}%`;
+    button.classList.add("dragging");
+  });
+  button.addEventListener("pointerup", async (event) => {
+    if (!start) return;
+    const shouldSave = moved;
+    start = null;
+    button.releasePointerCapture(event.pointerId);
+    button.classList.remove("dragging");
+    if (!shouldSave) return;
+    button.dataset.dragged = "true";
+    setTimeout(() => { delete button.dataset.dragged; }, 0);
+    try {
+      await api("/api/network-map/overrides", { method: "PUT", body: JSON.stringify({ nodeId: node.id, name: node.name, detail: node.detail || "", icon: node.icon || "auto", x: position.x, y: position.y }) });
+      await loadNetworkMap();
+    } catch (error) { showToast("Map position not saved", error.message); }
+  });
+}
+
 function renderNetworkMap() {
   const map = document.getElementById("topologyMap"); if (!map) return; map.replaceChildren();
   const canvas = document.createElement("div"); canvas.className = "topology-canvas";
@@ -1113,7 +1168,7 @@ function renderNetworkMap() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
   for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.manual ? "manual" : "inferred"); svg.append(line); }
   canvas.append(svg);
-  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); button.addEventListener("click", () => openMapNode(node)); canvas.append(button); }
+  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
   map.append(canvas);
   for (const type of [...new Set(["subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
@@ -1136,6 +1191,15 @@ function formatBytes(value) {
   let unit = 0;
   while (amount >= 1024 && unit < units.length - 1) { amount /= 1024; unit += 1; }
   return `${amount.toFixed(unit ? 1 : 0)} ${units[unit]}`;
+}
+
+function formatInterfaceSpeed(value) {
+  const speed = Number(value);
+  if (!Number.isFinite(speed) || speed <= 0) return "--";
+  const mbps = speed / 1000000;
+  if (speed === 4294967295) return ">4 Gbps reported";
+  if (mbps >= 1000) return `${(mbps / 1000).toFixed(mbps % 1000 ? 1 : 0)} Gbps reported`;
+  return `${Math.round(mbps)} Mbps reported`;
 }
 
 async function openSnmpDetails(device) {
@@ -1168,7 +1232,7 @@ async function openSnmpDetails(device) {
   for (const item of shownInterfaces) {
     const row = document.createElement("tr");
     const interfaceStatus = item.operStatus === 1 ? "Up" : item.adminStatus === 2 ? "Disabled" : item.operStatus === 2 ? "Down" : "Unknown";
-    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, interfaceStatus, item.mac || "--", item.speedBps ? `${Math.round(item.speedBps / 1000000)} Mbps` : "--", formatBytes(item.inOctets), formatBytes(item.outOctets), String((item.inErrors || 0) + (item.outErrors || 0)), String((item.inDiscards || 0) + (item.outDiscards || 0))]) {
+    for (const value of [item.alias || item.name || `Interface ${item.interfaceIndex}`, interfaceStatus, item.mac || "--", formatInterfaceSpeed(item.speedBps), formatBytes(item.inOctets), formatBytes(item.outOctets), String((item.inErrors || 0) + (item.outErrors || 0)), String((item.inDiscards || 0) + (item.outDiscards || 0))]) {
       const cell = document.createElement("td"); cell.textContent = value; row.append(cell);
     }
     interfaces.append(row);
@@ -1185,9 +1249,12 @@ async function openSnmpDetails(device) {
   }
   const templateMetrics = document.getElementById("snmpTemplateMetrics");
   templateMetrics.replaceChildren();
-  const customMetrics = (data.profileMetrics || []).filter((item) => item.category.startsWith("template:"));
+  const customMetrics = (data.profileMetrics || []).filter((item) => item.category.startsWith("template:")).sort((a, b) => {
+    const rank = (item) => /temp|throttle|power|volt/i.test(`${item.label} ${item.metricKey}`) ? 0 : 1;
+    return rank(a) - rank(b) || String(a.label).localeCompare(String(b.label));
+  });
   if (!customMetrics.length) {
-    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No imported profile telemetry is assigned to this device."; templateMetrics.append(empty);
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = data.device.profile.assigned ? "Profile assigned, but no custom telemetry has been collected yet. Use Refresh data to poll the assigned OIDs now." : "No imported profile telemetry is assigned to this device."; templateMetrics.append(empty);
   } else for (const item of customMetrics) {
     const row = document.createElement("div"); row.className = "oid-detail";
     const label = document.createElement("small"); label.textContent = `${item.label} · ${item.metricKey}`;

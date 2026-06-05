@@ -881,7 +881,7 @@ function renderUnifiNetworkWorkspace() {
     const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = device.name; const status = document.createElement("span"); status.className = `status-label ${device.status === "up" ? "up" : "warn"}`; status.textContent = device.status.toUpperCase(); const identity = document.createElement("div"); identity.className = "identity-row"; identity.append(makeIconBadge(device, "node-glyph"), name); header.append(identity, status);
     const detail = document.createElement("small"); detail.textContent = `${device.siteName || device.siteId} · ${device.model || device.deviceType || "UniFi device"} · ${device.address || "no address"}`;
     const deviceClients = unifiNetworkClients.filter((client) => client.hostId === device.hostId && client.siteId === device.siteId && client.uplinkDeviceId === device.deviceId);
-    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${device.state || "--"} · Type ${device.deviceType || "--"} · MAC ${device.mac || "--"} · Clients ${device.clientCount ?? deviceClients.length}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${device.state || "--"} · Type ${device.deviceType || "--"} · MAC ${device.mac || "--"} · Clients ${device.clientCount ?? deviceClients.length}${device.updateAvailable ? " · Update available" : ""}`;
     card.append(header, detail, values);
     if (deviceClients.length) {
       const expansion = document.createElement("details"); expansion.className = "unifi-client-expansion";
@@ -1059,7 +1059,7 @@ function renderAlertRules() {
   const metrics = document.getElementById("alertRuleMetrics"); const list = document.getElementById("alertRuleList");
   if (!metrics || !list) return;
   const active = alertRules.filter((rule) => rule.active).length;
-  metrics.replaceChildren(metricCard("Configured rules", alertRules.length, "automatic triggers"), metricCard("Active alerts", active, "triggered now", active > 0), metricCard("SNMP rules", alertRules.filter((rule) => rule.targetType === "snmp").length, "profile telemetry"), metricCard("Docker rules", alertRules.filter((rule) => rule.targetType === "docker").length, "container metrics"));
+  metrics.replaceChildren(metricCard("Configured rules", alertRules.length, "automatic triggers"), metricCard("Active alerts", active, "triggered now", active > 0), metricCard("SNMP rules", alertRules.filter((rule) => rule.targetType === "snmp").length, "device telemetry"), metricCard("UniFi rules", alertRules.filter((rule) => rule.targetType === "unifi").length, "network updates"), metricCard("Docker rules", alertRules.filter((rule) => rule.targetType === "docker").length, "container metrics"));
   list.replaceChildren();
   for (const rule of alertRules) {
     const row = document.createElement("article"); row.className = `rule-row ${rule.active ? "active" : ""}`;
@@ -1078,12 +1078,14 @@ function renderAlertRules() {
 function updateAlertRuleTargets() {
   const form = document.getElementById("alertRuleForm"); const type = form.elements.targetType.value; const select = form.elements.targetId; select.replaceChildren();
   for (const target of alertRuleOptions[type] || []) { const option = document.createElement("option"); option.value = target.id; option.textContent = target.name; select.append(option); }
+  if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No targets available yet"; select.append(option); }
   updateAlertRuleMetrics();
 }
 
 function updateAlertRuleMetrics() {
   const form = document.getElementById("alertRuleForm"); const target = (alertRuleOptions[form.elements.targetType.value] || []).find((item) => String(item.id) === form.elements.targetId.value); const select = form.elements.metricKey; select.replaceChildren();
   for (const metric of target?.metrics || []) { const option = document.createElement("option"); option.value = metric.key; option.textContent = `${metric.label} · ${metric.value ?? "--"}${metric.unit ? ` ${metric.unit}` : ""}`; select.append(option); }
+  if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No metrics collected yet"; select.append(option); }
 }
 
 function openAlertRule(rule = null) {

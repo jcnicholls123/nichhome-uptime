@@ -310,7 +310,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS alert_rules (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker')),
+    target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi')),
     target_id TEXT NOT NULL,
     metric_key TEXT NOT NULL,
     operator TEXT NOT NULL,
@@ -397,6 +397,60 @@ ensureColumn("alert_rules", "last_evaluated_at", "TEXT");
 ensureColumn("alert_rules", "dependency_rule_id", "INTEGER");
 ensureColumn("alert_rule_incidents", "acknowledged_at", "TEXT");
 ensureColumn("alert_rule_incidents", "acknowledged_by", "TEXT");
+ensureColumn("unifi_network_devices", "firmware_version", "TEXT");
+ensureColumn("unifi_network_devices", "latest_firmware_version", "TEXT");
+ensureColumn("unifi_network_devices", "update_available", "INTEGER NOT NULL DEFAULT 0");
+
+function migrateAlertRuleTargets() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
+  if (!table?.sql || table.sql.includes("'unifi'")) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE alert_rule_incidents RENAME TO alert_rule_incidents_old;
+      ALTER TABLE alert_rules RENAME TO alert_rules_old;
+      CREATE TABLE alert_rules (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi')),
+        target_id TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        threshold TEXT NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        severity TEXT NOT NULL DEFAULT 'warning',
+        description TEXT,
+        action_text TEXT,
+        trigger_count INTEGER NOT NULL DEFAULT 1,
+        recovery_count INTEGER NOT NULL DEFAULT 1,
+        failure_streak INTEGER NOT NULL DEFAULT 0,
+        recovery_streak INTEGER NOT NULL DEFAULT 0,
+        last_evaluated_at TEXT,
+        dependency_rule_id INTEGER
+      );
+      CREATE TABLE alert_rule_incidents (
+        id INTEGER PRIMARY KEY,
+        rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+        current_value TEXT,
+        cause TEXT,
+        acknowledged_at TEXT,
+        acknowledged_by TEXT,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT
+      );
+      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
+      SELECT id, name, target_type, target_id, metric_key, operator, threshold, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
+      INSERT INTO alert_rule_incidents (id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at)
+      SELECT id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at FROM alert_rule_incidents_old WHERE rule_id IN (SELECT id FROM alert_rules);
+      DROP TABLE alert_rule_incidents_old;
+      DROP TABLE alert_rules_old;
+    `);
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+migrateAlertRuleTargets();
 
 function repairDockerFleetData() {
   db.transaction(() => {
@@ -682,12 +736,68 @@ function recordReportingPoint(sourceKey, status, responseMs = null) {
   db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', '-90 days')").run();
 }
 
+function snmpAlertMetrics(target) {
+  const latest = db.prepare("SELECT response_ms AS responseMs FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 1").get(target.id);
+  const summary = db.prepare(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN oper_status = 1 THEN 1 ELSE 0 END) AS up,
+      SUM(CASE WHEN oper_status = 2 THEN 1 ELSE 0 END) AS down,
+      SUM(COALESCE(in_errors, 0) + COALESCE(out_errors, 0)) AS errors,
+      SUM(COALESCE(in_discards, 0) + COALESCE(out_discards, 0)) AS discards
+    FROM snmp_interfaces WHERE device_id = ?
+  `).get(target.id);
+  const base = [
+    { key: "device|status", label: "Device status", value: target.status, unit: "" },
+    { key: "device|response_ms", label: "SNMP response time", value: latest?.responseMs ?? null, unit: "ms" },
+    { key: "device|uptime_days", label: "Device uptime", value: target.uptime_ticks == null ? null : Math.floor(Number(target.uptime_ticks) / 8640000), unit: "days" },
+    { key: "interfaces|total", label: "Interface count", value: summary.total || 0, unit: "" },
+    { key: "interfaces|up", label: "Interfaces up", value: summary.up || 0, unit: "" },
+    { key: "interfaces|down", label: "Interfaces down", value: summary.down || 0, unit: "" },
+    { key: "interfaces|errors", label: "Interface errors", value: summary.errors || 0, unit: "" },
+    { key: "interfaces|discards", label: "Interface discards", value: summary.discards || 0, unit: "" }
+  ];
+  const profile = db.prepare("SELECT category || '|' || metric_key AS key, label, value, unit FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, label LIMIT 3000").all(target.id);
+  return [...base, ...profile];
+}
+
+function unifiDeviceClientCount(device) {
+  return db.prepare("SELECT COUNT(*) AS count FROM unifi_network_clients WHERE host_id = ? AND site_id = ? AND uplink_device_id = ?").get(device.host_id, device.site_id, device.device_id).count;
+}
+
+function unifiAlertMetrics(device) {
+  return [
+    { key: "update_available", label: "Update available", value: Number(device.update_available || 0), unit: "" },
+    { key: "status", label: "Device status", value: device.status, unit: "" },
+    { key: "state", label: "Controller state", value: device.state || "", unit: "" },
+    { key: "client_count", label: "Connected clients", value: unifiDeviceClientCount(device), unit: "" },
+    { key: "firmware_version", label: "Firmware version", value: device.firmware_version || "", unit: "" },
+    { key: "latest_firmware_version", label: "Latest firmware version", value: device.latest_firmware_version || "", unit: "" }
+  ];
+}
+
 function alertRuleValue(rule) {
   if (rule.target_type === "snmp") {
     const separator = rule.metric_key.indexOf("|");
     if (separator < 1) return null;
+    const category = rule.metric_key.slice(0, separator);
+    const key = rule.metric_key.slice(separator + 1);
+    const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(rule.target_id));
+    if (!device) return null;
+    if (category === "device") {
+      if (key === "status") return device.status;
+      if (key === "uptime_days") return device.uptime_ticks == null ? null : Math.floor(Number(device.uptime_ticks) / 8640000);
+      if (key === "response_ms") return db.prepare("SELECT response_ms FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 1").get(Number(rule.target_id))?.response_ms ?? null;
+    }
+    if (category === "interfaces") return snmpAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.value ?? null;
     return db.prepare("SELECT value FROM snmp_profile_metrics WHERE device_id = ? AND category = ? AND metric_key = ?")
-      .get(Number(rule.target_id), rule.metric_key.slice(0, separator), rule.metric_key.slice(separator + 1))?.value ?? null;
+      .get(Number(rule.target_id), category, key)?.value ?? null;
+  }
+  if (rule.target_type === "unifi") {
+    const device = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(rule.target_id);
+    if (!device) return null;
+    if (rule.metric_key === "client_count") return unifiDeviceClientCount(device);
+    return device[rule.metric_key] ?? null;
   }
   const container = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(rule.target_id);
   if (!container) return null;
@@ -1486,6 +1596,14 @@ function unifiDeviceType(device) {
   return "network-device";
 }
 
+function unifiFirmwareInfo(device) {
+  const firmwareVersion = String(device.firmwareVersion || device.version || device.firmware?.version || device.fwVersion || "").slice(0, 80);
+  const latestVersion = String(device.latestFirmwareVersion || device.update?.version || device.upgrade?.version || device.firmware?.latestVersion || "").slice(0, 80);
+  const status = String(device.firmwareStatus || device.updateStatus || device.upgradeState || device.update?.status || "").toLowerCase();
+  const updateAvailable = Boolean(device.updateAvailable || device.update_available || device.upgradeable || device.hasUpdate || device.update?.available || status.includes("available") || status.includes("upgrade"));
+  return { firmwareVersion, latestVersion, updateAvailable: updateAvailable ? 1 : 0 };
+}
+
 async function pollUnifiNetworkHost(hostOrId) {
   const host = typeof hostOrId === "object" ? hostOrId : db.prepare("SELECT * FROM unifi_network_hosts WHERE id = ?").get(Number(hostOrId));
   if (!host || !host.enabled) return { available: false, error: "UniFi Network host not found or disabled." };
@@ -1522,18 +1640,21 @@ async function pollUnifiNetworkHost(hostOrId) {
       const name = String(device.name || device.displayName || device.model || rawDeviceId).slice(0, 120);
       const state = String(device.state || device.status || "").toUpperCase();
       const status = unifiDeviceStatus(device);
+      const firmware = unifiFirmwareInfo(device);
       const previous = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(id);
       const openIncident = db.prepare("SELECT 1 FROM unifi_network_incidents WHERE device_id = ? AND resolved_at IS NULL").get(id);
       db.transaction(() => {
         db.prepare(`
-          INSERT INTO unifi_network_devices (id, host_id, site_id, device_id, name, model, mac, address, state, device_type, status, last_polled_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+          INSERT INTO unifi_network_devices (id, host_id, site_id, device_id, name, model, mac, address, state, device_type, status, firmware_version, latest_firmware_version, update_available, last_polled_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
           ON CONFLICT(id) DO UPDATE SET name=excluded.name, model=excluded.model, mac=excluded.mac, address=excluded.address,
-            state=excluded.state, device_type=excluded.device_type, status=excluded.status, last_polled_at=CURRENT_TIMESTAMP
-        `).run(id, host.id, rawSiteId, rawDeviceId, name, device.model || "", device.macAddress || device.mac || "", device.ipAddress || device.ip || "", state, unifiDeviceType(device), status);
+            state=excluded.state, device_type=excluded.device_type, status=excluded.status, firmware_version=excluded.firmware_version,
+            latest_firmware_version=excluded.latest_firmware_version, update_available=excluded.update_available, last_polled_at=CURRENT_TIMESTAMP
+        `).run(id, host.id, rawSiteId, rawDeviceId, name, device.model || "", device.macAddress || device.mac || "", device.ipAddress || device.ip || "", state, unifiDeviceType(device), status, firmware.firmwareVersion, firmware.latestVersion, firmware.updateAvailable);
         if (status === "down" && !openIncident) db.prepare("INSERT INTO unifi_network_incidents (device_id, host_id, device_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, state || "Device offline");
         if (status === "up" && openIncident) db.prepare("UPDATE unifi_network_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE device_id = ? AND resolved_at IS NULL").run(id);
       })();
+      await evaluateAlertRules("unifi", id);
       if (status === "down" && !openIncident) await sendDiscordOperational(`UniFi device ${name}`, false, state || "Device offline", [{ name: "Host", value: host.name }, { name: "Site", value: siteName }, { name: "Model", value: device.model || "--" }]);
       if (status === "up" && previous && previous.status === "down") await sendDiscordOperational(`UniFi device ${name}`, true, "Device is online again.", [{ name: "Host", value: host.name }, { name: "Site", value: siteName }]);
     }
@@ -1556,6 +1677,7 @@ async function pollUnifiNetworkHost(hostOrId) {
     for (const { id } of db.prepare("SELECT id FROM unifi_network_sites WHERE host_id = ?").all(host.id).filter((item) => !seenSites.has(item.id))) db.prepare("DELETE FROM unifi_network_sites WHERE id = ?").run(id);
     for (const { id, name } of db.prepare("SELECT id, name FROM unifi_network_devices WHERE host_id = ?").all(host.id).filter((item) => !seenDevices.has(item.id))) {
       db.prepare("INSERT INTO unifi_network_incidents (device_id, host_id, device_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, "Device no longer appears in UniFi Network");
+      db.prepare("DELETE FROM alert_rules WHERE target_type = 'unifi' AND target_id = ?").run(id);
       db.prepare("DELETE FROM unifi_network_devices WHERE id = ?").run(id);
     }
     for (const { id } of db.prepare("SELECT id FROM unifi_network_clients WHERE host_id = ?").all(host.id).filter((item) => !seenClients.has(item.id))) db.prepare("DELETE FROM unifi_network_clients WHERE id = ?").run(id);
@@ -1861,9 +1983,9 @@ app.get("/api/alert-rules", requireAuth, (req, res) => {
   })));
 });
 app.get("/api/alert-rules/options", requireAuth, (req, res) => {
-  const snmpTargets = db.prepare("SELECT id, name FROM snmp_devices ORDER BY name").all().map((target) => ({
+  const snmpTargets = db.prepare("SELECT * FROM snmp_devices ORDER BY name").all().map((target) => ({
     ...target,
-    metrics: db.prepare("SELECT category || '|' || metric_key AS key, label, value, unit FROM snmp_profile_metrics WHERE device_id = ? ORDER BY category, label LIMIT 3000").all(target.id)
+    metrics: snmpAlertMetrics(target)
   }));
   const dockerTargets = db.prepare("SELECT container_id AS id, name FROM docker_containers WHERE state = 'running' ORDER BY name").all().map((target) => ({
     ...target,
@@ -1874,12 +1996,18 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
       { key: "health", label: "Container health", unit: "", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "health" }) }
     ]
   }));
-  res.json({ snmp: snmpTargets, docker: dockerTargets });
+  const unifiTargets = db.prepare("SELECT unifi_network_devices.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_devices JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_devices.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_devices.host_id AND unifi_network_sites.site_id = unifi_network_devices.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_devices.name").all().map((target) => ({
+    id: target.id,
+    name: `${target.name} (${target.site_name || target.site_id})`,
+    metrics: unifiAlertMetrics(target)
+  }));
+  res.json({ snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets });
 });
 app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
   res.json([
     { id: "snmp-storage", targetType: "snmp", name: "SNMP storage safety", description: "Creates high-usage rules for percentage storage/pool/dataset metrics.", severity: "high" },
     { id: "snmp-health", targetType: "snmp", name: "SNMP health/state checks", description: "Creates text-state rules for status and health metrics when present.", severity: "warning" },
+    { id: "unifi-updates", targetType: "unifi", name: "UniFi update available", description: "Alerts when a UniFi Network device reports firmware or software updates available.", severity: "information" },
     { id: "docker-baseline", targetType: "docker", name: "Docker baseline", description: "Creates CPU, memory, restart, and health rules for one running container.", severity: "warning" }
   ]);
 });
@@ -1907,6 +2035,10 @@ app.post("/api/alert-rules/templates/apply", requireAuth, async (req, res) => {
       ["Restarted", "restart_count", ">", "0", "warning", "The container has restarted.", "Inspect restart reason and recent logs."],
       ["Unhealthy", "health", "!=", "healthy", "high", "Container health is not healthy.", "Inspect healthcheck output and dependencies."]
     ]) addRule({ name: `${container.name} ${rule[0]}`, targetType, targetId, metricKey: rule[1], operator: rule[2], threshold: rule[3], severity: rule[4], description: rule[5], actionText: rule[6], triggerCount: 2, recoveryCount: 2 });
+  } else if (template === "unifi-updates" && targetType === "unifi") {
+    const device = db.prepare("SELECT id, name FROM unifi_network_devices WHERE id = ?").get(targetId);
+    if (!device) return res.status(400).json({ error: "Choose a UniFi Network device." });
+    addRule({ name: `${device.name} update available`, targetType, targetId, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi Network reports an update is available for this device.", actionText: "Review release notes in UniFi Network and schedule the update.", triggerCount: 1, recoveryCount: 1 });
   } else if (template.startsWith("snmp-") && targetType === "snmp") {
     const device = db.prepare("SELECT id, name FROM snmp_devices WHERE id = ?").get(Number(targetId));
     if (!device) return res.status(400).json({ error: "Choose an SNMP device." });
@@ -1947,8 +2079,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, severity, operator, and threshold." });
-  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!["snmp", "docker", "unifi"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, severity, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
@@ -2416,6 +2548,7 @@ app.delete("/api/unifi-network/hosts/:id", requireAuth, (req, res) => {
   const id = Number(req.params.id);
   db.transaction(() => {
     db.prepare("DELETE FROM unifi_network_incidents WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM alert_rules WHERE target_type = 'unifi' AND target_id IN (SELECT id FROM unifi_network_devices WHERE host_id = ?)").run(id);
     db.prepare("DELETE FROM unifi_network_clients WHERE host_id = ?").run(id);
     db.prepare("DELETE FROM unifi_network_devices WHERE host_id = ?").run(id);
     db.prepare("DELETE FROM unifi_network_sites WHERE host_id = ?").run(id);
@@ -2430,7 +2563,7 @@ app.get("/api/unifi-network/sites", requireAuth, (req, res) => {
 app.get("/api/unifi-network/devices", requireAuth, (req, res) => {
   const devices = db.prepare("SELECT unifi_network_devices.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_devices JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_devices.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_devices.host_id AND unifi_network_sites.site_id = unifi_network_devices.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_devices.name").all();
   const clientCount = db.prepare("SELECT COUNT(*) AS count FROM unifi_network_clients WHERE host_id = ? AND site_id = ? AND uplink_device_id = ?");
-  res.json(devices.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, deviceId: item.device_id, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, deviceType: item.device_type, status: item.status, clientCount: clientCount.get(item.host_id, item.site_id, item.device_id).count, lastPolledAt: item.last_polled_at })));
+  res.json(devices.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, siteId: item.site_id, siteName: item.site_name, deviceId: item.device_id, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, deviceType: item.device_type, status: item.status, firmwareVersion: item.firmware_version, latestFirmwareVersion: item.latest_firmware_version, updateAvailable: Boolean(item.update_available), clientCount: clientCount.get(item.host_id, item.site_id, item.device_id).count, lastPolledAt: item.last_polled_at })));
 });
 app.get("/api/unifi-network/clients", requireAuth, (req, res) => {
   const clients = db.prepare("SELECT unifi_network_clients.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_clients JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_clients.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_clients.host_id AND unifi_network_sites.site_id = unifi_network_clients.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_clients.name").all();

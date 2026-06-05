@@ -64,6 +64,8 @@ Discord alert visibility.
 - Drag-to-position topology canvas nodes with saved overrides
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
+- Alert sources for SNMP baseline/profile metrics, Docker containers, and
+  UniFi Network device update availability
 - Structured Discord embeds for monitor, SNMP, Docker, recovery, and test alerts
 - Easy alert templates, dependencies, acknowledgements, and admin maintenance
   mode without Zabbix-style setup complexity

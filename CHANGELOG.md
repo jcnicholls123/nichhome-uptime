@@ -12,6 +12,20 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.27] - 2026-06-05
+
+### Added
+
+- Alert rules now include baseline SNMP device metrics such as status,
+  response time, uptime, interface counts, errors, and discards
+- UniFi Network devices can now be alert targets, including an update-available
+  firmware/software metric and a ready-made update alert template
+
+### Fixed
+
+- Alert metric dropdowns now show useful empty states instead of appearing
+  broken when a source has no targets or no collected metrics
+
 ## [1.0.0-beta.26] - 2026-06-05
 
 ### Added

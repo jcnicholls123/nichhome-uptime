@@ -28,8 +28,8 @@ const dockerServer = http.createServer((req, res) => {
     return res.end(JSON.stringify({ data: [{ id: "default", name: "Default" }] }));
   }
   if (req.url === "/proxy/network/integration/v1/sites/default/devices?offset=0&limit=250") return res.end(JSON.stringify({ data: [
-    { id: "gw1", name: "UCG Fiber", model: "UCG-Fiber", macAddress: "aa:bb:cc:dd:ee:01", ipAddress: "192.168.1.1", state: "ONLINE", features: ["gateway"] },
-    { id: "ap1", name: "U7 Pro Max", model: "U7-Pro-Max", macAddress: "aa:bb:cc:dd:ee:02", ipAddress: "192.168.1.2", state: "OFFLINE", features: ["accessPoint"] }
+    { id: "gw1", name: "UCG Fiber", model: "UCG-Fiber", macAddress: "aa:bb:cc:dd:ee:01", ipAddress: "192.168.1.1", state: "ONLINE", features: ["gateway"], firmwareVersion: "4.1.0", latestFirmwareVersion: "4.1.2", updateAvailable: true },
+    { id: "ap1", name: "U7 Pro Max", model: "U7-Pro-Max", macAddress: "aa:bb:cc:dd:ee:02", ipAddress: "192.168.1.2", state: "OFFLINE", features: ["accessPoint"], firmwareVersion: "7.0.0" }
   ] }));
   if (req.url === "/proxy/network/integration/v1/sites/default/clients?offset=0&limit=500") return res.end(JSON.stringify({ data: [
     { id: "client1", name: "iPhone", macAddress: "aa:bb:cc:dd:ee:10", ipAddress: "192.168.1.50", type: "WIRELESS", uplinkDeviceId: "ap1", connectedAt: new Date().toISOString() },
@@ -100,7 +100,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.26", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.27", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -178,7 +178,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.26");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.27");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
@@ -248,10 +248,16 @@ async function waitForServer() {
     assert.equal(networkStatus.clients, 2);
     const networkDevices = await (await request("/api/unifi-network/devices")).json();
     assert.equal(networkDevices.some((device) => device.name === "UCG Fiber" && device.deviceType === "gateway"), true);
+    assert.equal(networkDevices.some((device) => device.name === "UCG Fiber" && device.updateAvailable === true), true);
     assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.status === "down"), true);
     const networkClients = await (await request("/api/unifi-network/clients")).json();
     assert.equal(networkClients.length, 2);
     assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.clientCount === 1), true);
+    const unifiAlertOptions = await (await request("/api/alert-rules/options")).json();
+    const unifiUpdateTarget = unifiAlertOptions.unifi.find((device) => device.name.includes("UCG Fiber"));
+    assert.equal(unifiUpdateTarget.metrics.some((metric) => metric.key === "update_available" && metric.value === 1), true);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber update available", targetType: "unifi", targetId: unifiUpdateTarget.id, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi update waiting", actionText: "Schedule firmware update", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
+    assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "unifi-updates", targetType: "unifi", targetId: unifiUpdateTarget.id }) })).status, 200);
     assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: networkHosts[0].id }) })).status, 200);
     const unifiMap = await (await request("/api/network-map")).json();
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-network-host"), true);
@@ -290,6 +296,8 @@ async function waitForServer() {
     assert.equal(snmpDevices.length, 1);
     assert.equal(snmpDevices[0].status, "down");
     assert.equal(snmpDevices[0].profile.type, "network-device");
+    const snmpAlertOptions = await (await request("/api/alert-rules/options")).json();
+    assert.equal(snmpAlertOptions.snmp.some((device) => String(device.id) === String(snmpDevices[0].id) && device.metrics.some((metric) => metric.key === "device|status")), true);
     assert.equal((await (await request("/api/incidents")).json()).length, 2);
     const snmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.ok(Array.isArray(snmpDetails.interfaces));

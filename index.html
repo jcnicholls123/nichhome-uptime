@@ -420,7 +420,7 @@
   <div class="modal-backdrop" id="templateImportModal" hidden>
     <section class="account-modal" role="dialog" aria-modal="true">
       <div class="modal-heading"><div><span class="section-tag accent">SNMP PROFILE</span><h2>Import Zabbix XML</h2></div><button class="modal-close" data-close="templateImportModal" aria-label="Close">x</button></div>
-      <form class="monitor-form" id="templateImportForm"><label>Profile name (optional)<input name="name" maxlength="80" placeholder="Use template name"></label><label>Zabbix XML template<input name="template" type="file" accept=".xml,text/xml,application/xml" required></label><p class="form-help">Numeric SNMP item OIDs are imported. Scripts and preprocessing are never executed.</p><button class="command-button" type="submit">Import SNMP profile</button><p class="modal-error" id="templateImportError"></p></form>
+      <form class="monitor-form" id="templateImportForm"><label>Profile name (optional)<input name="name" maxlength="80" placeholder="Use template name"></label><label>Zabbix XML template<input name="template" type="file" accept=".xml,text/xml,application/xml" required></label><p class="form-help">SNMP_AGENT item and item_prototype OIDs are imported, including string values and simple regex extraction. Scripts are never executed.</p><button class="command-button" type="submit">Import SNMP profile</button><p class="modal-error" id="templateImportError"></p></form>
     </section>
   </div>
 

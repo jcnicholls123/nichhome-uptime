@@ -5,6 +5,7 @@ const path = require("path");
 const { spawn } = require("child_process");
 const crypto = require("crypto");
 const http = require("http");
+const Database = require("better-sqlite3");
 
 const port = 18080 + Math.floor(Math.random() * 1000);
 const dockerPort = port + 2000;
@@ -99,7 +100,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.23", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.24", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -177,7 +178,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.23");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.24");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
@@ -260,11 +261,18 @@ async function waitForServer() {
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();
     assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));
-    const zabbixXml = `<?xml version="1.0"?><zabbix_export><templates><template><name>Test custom SNMP</name><items><item><name>System name</name><snmp_oid>1.3.6.1.2.1.1.5.0</snmp_oid><units>text</units></item><item><name>Ignored symbolic OID</name><snmp_oid>SNMPv2-MIB::sysName.0</snmp_oid></item></items></template></templates></zabbix_export>`;
+    const zabbixXml = `<?xml version="1.0"?><zabbix_export><templates><template><name>Test custom SNMP</name><items><item><name>System uptime</name><type>SNMP_AGENT</type><snmp_oid>1.3.6.1.2.1.1.3.0</snmp_oid><value_type>FLOAT</value_type><units>ticks</units></item><item><name>Pi temperature</name><type>SNMP_AGENT</type><snmp_oid>1.3.6.1.4.1.8072.1.3.2.4.1.2.4.116.101.109.112.1</snmp_oid><value_type>CHAR</value_type><units>C</units><preprocessing><step><type>REGEX</type><parameters>temp=([0-9.]+)'C
+\\1</parameters></step></preprocessing></item><item><name>Pi throttled</name><type>SNMP_AGENT</type><snmp_oid>1.3.6.1.4.1.8072.1.3.2.4.1.2.9.116.104.114.111.116.116.108.101.100.1</snmp_oid><value_type>TEXT</value_type></item><item><name>Ignored symbolic OID</name><type>SNMP_AGENT</type><snmp_oid>SNMPv2-MIB::sysName.0</snmp_oid></item></items><discovery_rules><discovery_rule><name>Interfaces</name><item_prototypes><item_prototype><name>Inbound bits on {#IFNAME}</name><type>SNMP_AGENT</type><snmp_oid>1.3.6.1.2.1.2.2.1.10.{#SNMPINDEX}</snmp_oid><value_type>UNSIGNED</value_type><units>bps</units></item_prototype></item_prototypes></discovery_rule></discovery_rules></template></templates></zabbix_export>`;
     const importedResponse = await request("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ xml: zabbixXml }) });
     assert.equal(importedResponse.status, 201);
     const imported = await importedResponse.json();
-    assert.equal(imported.imported, 1);
+    assert.equal(imported.imported, 4);
+    const testDb = new Database(path.join(dataDir, "nichhome.sqlite"), { readonly: true });
+    const importedOids = testDb.prepare("SELECT oid, value_type AS valueType, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid").all(imported.id);
+    testDb.close();
+    assert.equal(importedOids.some((item) => item.oid === "1.3.6.1.2.1.2.2.1.10.{#SNMPINDEX}"), true);
+    assert.equal(importedOids.some((item) => item.valueType === "CHAR" && item.regex === "temp=([0-9.]+)'C"), true);
+    assert.equal(importedOids.some((item) => item.valueType === "TEXT"), true);
     assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Test SNMP", host: "127.0.0.1", port: 1161, community: "public", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);

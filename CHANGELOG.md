@@ -12,6 +12,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.24] - 2026-06-05
+
+### Added
+
+- Zabbix SNMP imports now include top-level `item` and discovery
+  `item_prototype` SNMP_AGENT OIDs, including `{#SNMPINDEX}` prototypes
+- Imported SNMP profile metrics now support string values and optional regex
+  extraction for SNMP extend output such as Raspberry Pi temperature/throttling
+  values
+- Clicking outside a modal dialog now closes the popup
+
+### Fixed
+
+- Zabbix templates with valid SNMP_AGENT OIDs are no longer rejected just
+  because some items use CHAR or TEXT value types
+
 ## [1.0.0-beta.23] - 2026-06-05
 
 ### Fixed

@@ -168,6 +168,7 @@ db.exec(`
     name TEXT NOT NULL,
     unit TEXT,
     value_type TEXT,
+    regex TEXT,
     PRIMARY KEY(profile_id, oid)
   );
   CREATE TABLE IF NOT EXISTS docker_containers (
@@ -381,6 +382,7 @@ ensureColumn("snmp_interfaces", "in_errors", "INTEGER");
 ensureColumn("snmp_interfaces", "out_errors", "INTEGER");
 ensureColumn("snmp_interfaces", "in_discards", "INTEGER");
 ensureColumn("snmp_interfaces", "out_discards", "INTEGER");
+ensureColumn("snmp_profile_oids", "regex", "TEXT");
 ensureColumn("docker_containers", "host_id", "INTEGER");
 ensureColumn("docker_containers", "raw_container_id", "TEXT");
 ensureColumn("docker_incidents", "host_id", "INTEGER");
@@ -884,16 +886,28 @@ async function pollAssignedProfile(device) {
   if (!device.profile_id) return;
   const profile = db.prepare("SELECT id, source FROM snmp_profiles WHERE id = ?").get(device.profile_id);
   if (!profile || profile.source === "built-in") return;
-  const oids = db.prepare("SELECT oid, name, unit FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
+  const oids = db.prepare("SELECT oid, name, unit, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
   const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
-  for (let index = 0; index < oids.length; index += 20) {
+  const directOids = oids.filter((item) => !/\{#[A-Z0-9_]+\}/i.test(item.oid));
+  for (let index = 0; index < directOids.length; index += 20) {
     try {
-      const batch = oids.slice(index, index + 20);
+      const batch = directOids.slice(index, index + 20);
       const result = await snmpGet(device, batch.map((item) => item.oid));
       db.transaction(() => {
-        for (const item of batch) upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, String(result.values[item.oid] ?? ""), item.unit || "");
+        for (const item of batch) upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
       })();
     } catch {}
+  }
+}
+
+function applyValueExtraction(value, pattern) {
+  const text = String(value ?? "");
+  if (!pattern) return text;
+  try {
+    const match = text.match(new RegExp(pattern));
+    return match ? String(match[1] ?? match[0]) : text;
+  } catch {
+    return text;
   }
 }
 
@@ -2082,21 +2096,48 @@ app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
   const templates = parsed?.zabbix_export?.templates?.template;
   const template = Array.isArray(templates) ? templates[0] : templates;
   const name = requestedName || String(template?.name || template?.template || "Imported SNMP template").trim();
-  const rawItems = template?.items?.item;
-  const items = (Array.isArray(rawItems) ? rawItems : rawItems ? [rawItems] : []).map((item) => ({
-    oid: String(item.snmp_oid || item.oid || "").trim().replace(/^SNMPv2-SMI::/, ""),
-    name: String(item.name || item.key || "Imported OID").trim(),
-    unit: String(item.units || "").trim(),
-    valueType: String(item.value_type || "").trim()
-  })).filter((item) => /^\d+(?:\.\d+)+$/.test(item.oid)).slice(0, 500);
-  if (!items.length) return res.status(400).json({ error: "No numeric SNMP OIDs were found in this Zabbix template." });
+  const toArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
+  const collectItems = () => {
+    const collected = [...toArray(template?.items?.item), ...toArray(template?.item_prototypes?.item_prototype)];
+    for (const rule of toArray(template?.discovery_rules?.discovery_rule)) collected.push(...toArray(rule?.item_prototypes?.item_prototype));
+    return collected;
+  };
+  const regexFromPreprocessing = (item) => {
+    for (const step of toArray(item?.preprocessing?.step)) {
+      const type = String(step.type || "").toUpperCase();
+      if (type && type !== "REGEX" && type !== "5") continue;
+      const parameters = String(step.parameters || "");
+      const firstLine = parameters.split(/\r?\n/)[0]?.trim();
+      if (firstLine) return firstLine.slice(0, 200);
+    }
+    return "";
+  };
+  const supportedOid = (oid) => /^\d+(?:\.\d+)+(?:\.\{#[A-Z0-9_]+\})?$/i.test(oid);
+  const seenImportOids = new Set();
+  const items = collectItems().map((item) => {
+    const type = String(item.type || "").trim().toUpperCase();
+    const oid = String(item.snmp_oid || item.oid || "").trim().replace(/^SNMPv2-SMI::/, "");
+    return {
+      oid,
+      name: String(item.name || item.key || "Imported OID").trim(),
+      unit: String(item.units || "").trim(),
+      valueType: String(item.value_type || "").trim(),
+      regex: String(item.regex || item.extractRegex || regexFromPreprocessing(item)).trim(),
+      snmpAgent: !type || type === "SNMP_AGENT" || type === "4"
+    };
+  }).filter((item) => {
+    if (!item.snmpAgent || !supportedOid(item.oid) || seenImportOids.has(item.oid)) return false;
+    seenImportOids.add(item.oid);
+    return true;
+  }).slice(0, 500);
+  if (!items.length) return res.status(400).json({ error: "No supported SNMP_AGENT numeric or prototype OIDs were found in this Zabbix template." });
   const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "imported";
   let slug = slugBase;
   let suffix = 2;
   while (db.prepare("SELECT 1 FROM snmp_profiles WHERE slug = ?").get(slug)) slug = `${slugBase}-${suffix++}`;
   const result = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'zabbix', ?)").run(name.slice(0, 80), slug, `Imported Zabbix SNMP template with ${items.length} OIDs.`);
-  const insert = db.prepare("INSERT INTO snmp_profile_oids (profile_id, oid, name, unit, value_type) VALUES (?, ?, ?, ?, ?)");
-  db.transaction(() => items.forEach((item) => insert.run(result.lastInsertRowid, item.oid, item.name.slice(0, 160), item.unit.slice(0, 40), item.valueType.slice(0, 40))))();
+  const insert = db.prepare("INSERT INTO snmp_profile_oids (profile_id, oid, name, unit, value_type, regex) VALUES (?, ?, ?, ?, ?, ?)");
+  db.transaction(() => items.forEach((item) => insert.run(result.lastInsertRowid, item.oid, item.name.slice(0, 160), item.unit.slice(0, 40), item.valueType.slice(0, 40), item.regex.slice(0, 200))))();
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), imported: items.length });
 });
 app.delete("/api/snmp/profiles/:id", requireAuth, (req, res) => {

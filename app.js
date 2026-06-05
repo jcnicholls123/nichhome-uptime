@@ -1597,7 +1597,7 @@ document.getElementById("templateImportForm").addEventListener("submit", async (
     if (!file || file.size > 1024 * 1024) throw new Error("Choose an XML template smaller than 1 MB.");
     const result = await api("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ name: form.elements.name.value, xml: await file.text() }) });
     form.reset(); document.getElementById("templateImportModal").hidden = true; await loadSnmpProfiles();
-    showToast("SNMP profile imported", `${result.imported} numeric OIDs are ready to assign`);
+    showToast("SNMP profile imported", `${result.imported} SNMP OIDs are ready to assign`);
   } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("runFleetPoll").addEventListener("click", async () => {
@@ -1723,6 +1723,7 @@ document.getElementById("mapNodeForm").addEventListener("submit", async (event) 
 document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
 document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast("Map link added", form.elements.label.value || "Manual relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
+document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) modal.hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
 document.getElementById("activeAlertStrip").addEventListener("click", openIncidents);

@@ -153,14 +153,15 @@ Open **SNMP Devices** from the sidebar for the complete fleet workspace. From
 there you can run a bounded SNMP walk, assign built-in device profiles, import
 Zabbix XML templates, poll the fleet, and inspect active SNMP alerts.
 
-Zabbix imports accept numeric SNMP item OIDs only. NichHome does not execute
-template scripts or preprocessing. Walks use the saved device credentials and
+Zabbix imports accept SNMP_AGENT item and item_prototype OIDs, including
+prototype indexes such as `{#SNMPINDEX}`. String values are supported, and
+simple regex preprocessing can extract values from SNMP extend output. NichHome
+does not execute template scripts. Walks use the saved device credentials and
 return at most 1,000 results per request.
 
 UniFi AP client totals use the station counts reported by the AP VAP table.
-UniFi gateways expose WAN/LAN interface traffic over SNMP, but controller-wide
-client totals are not exposed by the gateway device SNMP service. That requires
-the planned UniFi Network API integration.
+Controller-wide sites, adopted devices, and connected clients are available
+through the UniFi Network API workspace.
 
 ### Using YAML/Compose
 

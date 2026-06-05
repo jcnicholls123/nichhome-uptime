@@ -12,6 +12,13 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.28] - 2026-06-05
+
+### Fixed
+
+- The dashboard greeting now uses the signed-in username and local time of day
+  instead of the hardcoded `Good evening, James.`
+
 ## [1.0.0-beta.27] - 2026-06-05
 
 ### Added

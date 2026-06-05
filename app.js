@@ -296,6 +296,9 @@ document.addEventListener("keydown", (event) => {
 async function loadAccount() {
   currentUser = await api("/api/me");
   const initials = currentUser.username.slice(0, 2).toUpperCase();
+  const hour = new Date().getHours();
+  const greeting = hour < 12 ? "Good morning" : hour < 18 ? "Good afternoon" : "Good evening";
+  document.getElementById("welcomeGreeting").textContent = `${greeting}, ${currentUser.username}.`;
   document.getElementById("accountName").textContent = currentUser.username;
   document.getElementById("modalUsername").textContent = currentUser.username;
   document.getElementById("avatar").textContent = initials;

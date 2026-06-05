@@ -2090,11 +2090,12 @@ app.get("/api/snmp/profiles", requireAuth, (req, res) => {
 app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
   const xml = String(req.body.xml || "");
   const requestedName = String(req.body.name || "").trim();
-  if (!xml || Buffer.byteLength(xml) > 1024 * 1024) return res.status(400).json({ error: "Choose a Zabbix XML template smaller than 1 MB." });
+  if (!xml || Buffer.byteLength(xml) > 1024 * 1024) return res.status(400).json({ error: "Choose an SNMP XML template smaller than 1 MB." });
   let parsed;
   try { parsed = new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: true, processEntities: false }).parse(xml); } catch { return res.status(400).json({ error: "The XML template could not be parsed." }); }
   const templates = parsed?.zabbix_export?.templates?.template;
-  const template = Array.isArray(templates) ? templates[0] : templates;
+  const template = (Array.isArray(templates) ? templates[0] : templates) || parsed?.nichhome_template?.template || parsed?.template;
+  const isZabbixExport = Boolean(parsed?.zabbix_export);
   const name = requestedName || String(template?.name || template?.template || "Imported SNMP template").trim();
   const toArray = (value) => Array.isArray(value) ? value : value ? [value] : [];
   const collectItems = () => {
@@ -2106,6 +2107,8 @@ app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
     for (const step of toArray(item?.preprocessing?.step)) {
       const type = String(step.type || "").toUpperCase();
       if (type && type !== "REGEX" && type !== "5") continue;
+      const pattern = String(step.pattern || "").trim();
+      if (pattern) return pattern.slice(0, 200);
       const parameters = String(step.parameters || "");
       const firstLine = parameters.split(/\r?\n/)[0]?.trim();
       if (firstLine) return firstLine.slice(0, 200);
@@ -2113,6 +2116,7 @@ app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
     return "";
   };
   const supportedOid = (oid) => /^\d+(?:\.\d+)+(?:\.\{#[A-Z0-9_]+\})?$/i.test(oid);
+  const supportedCustomTypes = new Set(["", "STRING", "TEXT", "CHAR", "NUMERIC", "FLOAT", "GAUGE", "COUNTER", "TIMETICKS", "TABLE", "INTEGER", "UNSIGNED"]);
   const seenImportOids = new Set();
   const items = collectItems().map((item) => {
     const type = String(item.type || "").trim().toUpperCase();
@@ -2120,22 +2124,22 @@ app.post("/api/snmp/profiles/import", requireAuth, (req, res) => {
     return {
       oid,
       name: String(item.name || item.key || "Imported OID").trim(),
-      unit: String(item.units || "").trim(),
-      valueType: String(item.value_type || "").trim(),
+      unit: String(item.units || item.unit || "").trim(),
+      valueType: String(item.value_type || item.type || "").trim(),
       regex: String(item.regex || item.extractRegex || regexFromPreprocessing(item)).trim(),
-      snmpAgent: !type || type === "SNMP_AGENT" || type === "4"
+      snmpAgent: isZabbixExport ? (!type || type === "SNMP_AGENT" || type === "4") : supportedCustomTypes.has(type)
     };
   }).filter((item) => {
     if (!item.snmpAgent || !supportedOid(item.oid) || seenImportOids.has(item.oid)) return false;
     seenImportOids.add(item.oid);
     return true;
   }).slice(0, 500);
-  if (!items.length) return res.status(400).json({ error: "No supported SNMP_AGENT numeric or prototype OIDs were found in this Zabbix template." });
+  if (!items.length) return res.status(400).json({ error: "No supported numeric or prototype SNMP OIDs were found in this template." });
   const slugBase = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "").slice(0, 50) || "imported";
   let slug = slugBase;
   let suffix = 2;
   while (db.prepare("SELECT 1 FROM snmp_profiles WHERE slug = ?").get(slug)) slug = `${slugBase}-${suffix++}`;
-  const result = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'zabbix', ?)").run(name.slice(0, 80), slug, `Imported Zabbix SNMP template with ${items.length} OIDs.`);
+  const result = db.prepare("INSERT INTO snmp_profiles (name, slug, source, description) VALUES (?, ?, 'zabbix', ?)").run(name.slice(0, 80), slug, `Imported SNMP XML template with ${items.length} OIDs.`);
   const insert = db.prepare("INSERT INTO snmp_profile_oids (profile_id, oid, name, unit, value_type, regex) VALUES (?, ?, ?, ?, ?, ?)");
   db.transaction(() => items.forEach((item) => insert.run(result.lastInsertRowid, item.oid, item.name.slice(0, 160), item.unit.slice(0, 40), item.valueType.slice(0, 40), item.regex.slice(0, 200))))();
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), imported: items.length });

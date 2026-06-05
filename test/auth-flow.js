@@ -100,7 +100,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.24", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.25", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -178,7 +178,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.24");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.25");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
     assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
@@ -273,6 +273,17 @@ async function waitForServer() {
     assert.equal(importedOids.some((item) => item.oid === "1.3.6.1.2.1.2.2.1.10.{#SNMPINDEX}"), true);
     assert.equal(importedOids.some((item) => item.valueType === "CHAR" && item.regex === "temp=([0-9.]+)'C"), true);
     assert.equal(importedOids.some((item) => item.valueType === "TEXT"), true);
+    const nichhomeXml = `<?xml version="1.0"?><nichhome_template version="1.0"><template><name>Raspberry Pi SNMP Only</name><items><item><name>System uptime</name><key>system.uptime</key><oid>1.3.6.1.2.1.1.3.0</oid><type>timeticks</type><unit>uptime</unit></item><item><name>Raspberry Pi temperature raw</name><key>raspberrypi.temperature.raw</key><oid>1.3.6.1.4.1.8072.1.3.2.3.1.1.11.116.101.109.112.101.114.97.116.117.114.101</oid><type>string</type><preprocessing><step><type>regex</type><pattern>temp=([0-9.]+)</pattern><output>\\1</output></step></preprocessing></item><item><name>Raspberry Pi throttled raw</name><key>raspberrypi.throttled.raw</key><oid>1.3.6.1.4.1.8072.1.3.2.3.1.1.9.116.104.114.111.116.116.108.101.100</oid><type>string</type><preprocessing><step><type>regex</type><pattern>throttled=(0x[0-9A-Fa-f]+)</pattern><output>\\1</output></step></preprocessing></item><item><name>Raspberry Pi temperature</name><key>raspberrypi.temperature</key><source_key>raspberrypi.temperature.raw</source_key><type>numeric</type><unit>C</unit></item></items></template></nichhome_template>`;
+    const raspiImportResponse = await request("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ name: "James Nicholls", xml: nichhomeXml }) });
+    assert.equal(raspiImportResponse.status, 201);
+    const raspiImport = await raspiImportResponse.json();
+    assert.equal(raspiImport.imported, 3);
+    const raspiDb = new Database(path.join(dataDir, "nichhome.sqlite"), { readonly: true });
+    const raspiOids = raspiDb.prepare("SELECT oid, unit, value_type AS valueType, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid").all(raspiImport.id);
+    raspiDb.close();
+    assert.equal(raspiOids.some((item) => item.unit === "uptime" && item.valueType === "timeticks"), true);
+    assert.equal(raspiOids.some((item) => item.valueType === "string" && item.regex === "temp=([0-9.]+)"), true);
+    assert.equal(raspiOids.some((item) => item.regex === "throttled=(0x[0-9A-Fa-f]+)"), true);
     assert.equal((await request("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: "Test SNMP", host: "127.0.0.1", port: 1161, community: "public", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
     const snmpDevices = await (await request("/api/snmp/devices")).json();
     assert.equal(snmpDevices.length, 1);

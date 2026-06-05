@@ -32,7 +32,7 @@ Discord alert visibility.
 - SNMP v2c and v3 device status, identity, uptime, and background polling
 - Dedicated SNMP fleet workspace with active alerts and fleet health
 - Assignable TrueNAS, UniFi, standard, and imported telemetry profiles
-- Safe Zabbix XML SNMP template import with custom OID polling
+- Safe Zabbix and NichHome XML SNMP template import with custom OID polling
 - Bounded SNMP walk administration tool with readable OID categories
 - UniFi-focused SNMP details with system OIDs and discovered interfaces
 - Profile-aware UniFi gateway, access point, and switch details
@@ -151,13 +151,15 @@ username, security level, and matching authentication/privacy credentials.
 
 Open **SNMP Devices** from the sidebar for the complete fleet workspace. From
 there you can run a bounded SNMP walk, assign built-in device profiles, import
-Zabbix XML templates, poll the fleet, and inspect active SNMP alerts.
+Zabbix or NichHome SNMP XML templates, poll the fleet, and inspect active SNMP
+alerts.
 
 Zabbix imports accept SNMP_AGENT item and item_prototype OIDs, including
-prototype indexes such as `{#SNMPINDEX}`. String values are supported, and
-simple regex preprocessing can extract values from SNMP extend output. NichHome
-does not execute template scripts. Walks use the saved device credentials and
-return at most 1,000 results per request.
+prototype indexes such as `{#SNMPINDEX}`. NichHome XML imports accept numeric
+OID fields and string/table/gauge/timeticks style metric types. String values
+are supported, and simple regex preprocessing can extract values from SNMP
+extend output. NichHome does not execute template scripts. Walks use the saved
+device credentials and return at most 1,000 results per request.
 
 UniFi AP client totals use the station counts reported by the AP VAP table.
 Controller-wide sites, adopted devices, and connected clients are available

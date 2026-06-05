@@ -12,6 +12,18 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.25] - 2026-06-05
+
+### Added
+
+- SNMP profile imports now accept NichHome XML templates with `<oid>` fields,
+  lowercase metric types, `<unit>` values, and regex `<pattern>` preprocessing
+
+### Fixed
+
+- Raspberry Pi SNMP-only templates no longer fail with a misleading
+  SNMP_AGENT/Zabbix-only OID error
+
 ## [1.0.0-beta.24] - 2026-06-05
 
 ### Added

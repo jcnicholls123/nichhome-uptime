@@ -143,7 +143,7 @@
       <div class="content snmp-workspace" id="snmpPage" hidden>
         <section class="page-heading">
           <div><p class="eyebrow">CONTROL ROOM / <span>SNMP FLEET</span></p><h1>SNMP intelligence</h1><p class="subhead">Device health, alerts, walks, credentials, and telemetry profiles in one place.</p></div>
-          <div class="heading-actions snmp-page-actions"><button class="soft-button" id="openSnmpWalk">Run SNMP walk</button><button class="soft-button" id="openTemplateImport">Import Zabbix XML</button><button class="command-button" id="addSnmpDevicePage">Add device</button></div>
+          <div class="heading-actions snmp-page-actions"><button class="soft-button" id="openSnmpWalk">Run SNMP walk</button><button class="soft-button" id="openTemplateImport">Import SNMP XML</button><button class="command-button" id="addSnmpDevicePage">Add device</button></div>
         </section>
         <section class="metric-grid snmp-metric-grid" id="snmpFleetMetrics"></section>
         <section class="dashboard-grid">
@@ -419,8 +419,8 @@
 
   <div class="modal-backdrop" id="templateImportModal" hidden>
     <section class="account-modal" role="dialog" aria-modal="true">
-      <div class="modal-heading"><div><span class="section-tag accent">SNMP PROFILE</span><h2>Import Zabbix XML</h2></div><button class="modal-close" data-close="templateImportModal" aria-label="Close">x</button></div>
-      <form class="monitor-form" id="templateImportForm"><label>Profile name (optional)<input name="name" maxlength="80" placeholder="Use template name"></label><label>Zabbix XML template<input name="template" type="file" accept=".xml,text/xml,application/xml" required></label><p class="form-help">SNMP_AGENT item and item_prototype OIDs are imported, including string values and simple regex extraction. Scripts are never executed.</p><button class="command-button" type="submit">Import SNMP profile</button><p class="modal-error" id="templateImportError"></p></form>
+      <div class="modal-heading"><div><span class="section-tag accent">SNMP PROFILE</span><h2>Import SNMP XML</h2></div><button class="modal-close" data-close="templateImportModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="templateImportForm"><label>Profile name (optional)<input name="name" maxlength="80" placeholder="Use template name"></label><label>Zabbix or NichHome XML template<input name="template" type="file" accept=".xml,text/xml,application/xml" required></label><p class="form-help">Zabbix SNMP_AGENT items/prototypes and NichHome SNMP XML OIDs are imported, including string values and simple regex extraction. Scripts are never executed.</p><button class="command-button" type="submit">Import SNMP profile</button><p class="modal-error" id="templateImportError"></p></form>
     </section>
   </div>
 

@@ -281,6 +281,15 @@ db.exec(`
     y INTEGER NOT NULL DEFAULT 50,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS map_node_overrides (
+    node_id TEXT PRIMARY KEY,
+    name TEXT,
+    detail TEXT,
+    icon TEXT,
+    x REAL,
+    y REAL,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE IF NOT EXISTS map_links (
     id INTEGER PRIMARY KEY,
     from_node TEXT NOT NULL,
@@ -592,6 +601,15 @@ function getSetting(key, fallback = null) {
 
 function setSetting(key, value) {
   db.prepare("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value").run(key, value);
+}
+
+function featureSettings() {
+  return {
+    snmp: getSetting("feature_snmp_enabled", "true") === "true",
+    docker: getSetting("feature_docker_enabled", "true") === "true",
+    protect: getSetting("feature_protect_enabled", "true") === "true",
+    networkMap: getSetting("feature_network_map_enabled", "true") === "true"
+  };
 }
 
 function recordReportingPoint(sourceKey, status, responseMs = null) {
@@ -2115,6 +2133,17 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     else addSubnet(address, id);
   }
   for (const node of db.prepare("SELECT id, name, node_type, detail, status, x, y FROM map_nodes ORDER BY name").all()) nodes.push({ id: `manual:${node.id}`, type: node.node_type, name: node.name, detail: node.detail || "Manual map node", status: node.status, x: node.x, y: node.y, manual: true });
+  const overrides = new Map(db.prepare("SELECT node_id, name, detail, icon, x, y FROM map_node_overrides").all().map((item) => [item.node_id, item]));
+  for (const node of nodes) {
+    const override = overrides.get(node.id);
+    if (!override) continue;
+    if (override.name) node.name = override.name;
+    if (override.detail) node.detail = override.detail;
+    if (override.icon) node.icon = override.icon;
+    if (override.x != null) node.x = override.x;
+    if (override.y != null) node.y = override.y;
+    node.customised = true;
+  }
   for (const link of db.prepare("SELECT id, from_node AS 'from', to_node AS 'to', label FROM map_links ORDER BY id").all()) edges.push({ ...link, type: "manual", manual: true });
   res.json({ nodes, edges });
 });
@@ -2136,7 +2165,22 @@ app.put("/api/network-map/nodes/:id", requireAuth, (req, res) => {
 });
 app.delete("/api/network-map/nodes/:id", requireAuth, (req, res) => {
   const nodeId = `manual:${Number(req.params.id)}`;
-  db.transaction(() => { db.prepare("DELETE FROM map_links WHERE from_node = ? OR to_node = ?").run(nodeId, nodeId); db.prepare("DELETE FROM map_nodes WHERE id = ?").run(Number(req.params.id)); })();
+  db.transaction(() => { db.prepare("DELETE FROM map_links WHERE from_node = ? OR to_node = ?").run(nodeId, nodeId); db.prepare("DELETE FROM map_node_overrides WHERE node_id = ?").run(nodeId); db.prepare("DELETE FROM map_nodes WHERE id = ?").run(Number(req.params.id)); })();
+  res.json({ ok: true });
+});
+app.put("/api/network-map/overrides", requireAuth, (req, res) => {
+  const nodeId = String(req.body.nodeId || "").trim();
+  const name = String(req.body.name || "").trim().slice(0, 80);
+  const detail = String(req.body.detail || "").trim().slice(0, 300);
+  const icon = String(req.body.icon || "auto").trim().slice(0, 30);
+  const x = Math.max(0, Math.min(100, Number(req.body.x ?? 50)));
+  const y = Math.max(0, Math.min(100, Number(req.body.y ?? 50)));
+  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
+  db.prepare(`
+    INSERT INTO map_node_overrides (node_id, name, detail, icon, x, y, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(node_id) DO UPDATE SET name=excluded.name, detail=excluded.detail, icon=excluded.icon, x=excluded.x, y=excluded.y, updated_at=CURRENT_TIMESTAMP
+  `).run(nodeId, name, detail, icon === "auto" ? "" : icon, x, y);
   res.json({ ok: true });
 });
 app.post("/api/network-map/links", requireAuth, (req, res) => {
@@ -2159,8 +2203,22 @@ app.get("/api/admin/settings", requireAuth, (req, res) => {
       acknowledgedRules: db.prepare("SELECT COUNT(*) AS count FROM alert_rule_incidents WHERE resolved_at IS NULL AND acknowledged_at IS NOT NULL").get().count
     },
     discord: { ...discordConfig(), webhookUrl: discordConfig().webhookUrl ? "configured" : "" },
+    features: featureSettings(),
     storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
   });
+});
+app.put("/api/admin/features", requireAuth, (req, res) => {
+  const features = {
+    snmp: req.body.snmp !== false,
+    docker: req.body.docker !== false,
+    protect: req.body.protect !== false,
+    networkMap: req.body.networkMap !== false
+  };
+  setSetting("feature_snmp_enabled", String(features.snmp));
+  setSetting("feature_docker_enabled", String(features.docker));
+  setSetting("feature_protect_enabled", String(features.protect));
+  setSetting("feature_network_map_enabled", String(features.networkMap));
+  res.json({ ok: true, features });
 });
 app.put("/api/admin/maintenance", requireAuth, (req, res) => {
   const minutes = Number(req.body.minutes || 0);

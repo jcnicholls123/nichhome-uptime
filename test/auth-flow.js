@@ -84,7 +84,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.20", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.21", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -162,7 +162,13 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.20");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.21");
+    assert.deepEqual(adminSettings.features, { snmp: true, docker: true, protect: true, networkMap: true });
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, protect: false, networkMap: false }) })).status, 200);
+    const disabledFeatures = await (await request("/api/admin/settings")).json();
+    assert.equal(disabledFeatures.features.protect, false);
+    assert.equal(disabledFeatures.features.networkMap, false);
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, protect: true, networkMap: true }) })).status, 200);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 30, reason: "Test window" }) })).status, 200);
     assert.equal((await (await request("/api/admin/settings")).json()).maintenance.active, true);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 0 }) })).status, 200);
@@ -177,8 +183,12 @@ async function waitForServer() {
     const mapNode = await mapNodeResponse.json();
     assert.equal((await request(`/api/network-map/nodes/${mapNode.id}`, { method: "PUT", body: JSON.stringify({ name: "Updated test site", nodeType: "site", detail: "Updated manual test node", status: "unknown", x: 30, y: 70 }) })).status, 200);
     assert.equal((await request("/api/network-map/links", { method: "POST", body: JSON.stringify({ from: `manual:${mapNode.id}`, to: networkMap.nodes.find((node) => node.type === "docker").id, label: "Test link" }) })).status, 201);
+    const dockerMapNode = networkMap.nodes.find((node) => node.type === "docker");
+    assert.equal((await request("/api/network-map/overrides", { method: "PUT", body: JSON.stringify({ nodeId: dockerMapNode.id, name: "Edited container icon", detail: "Custom detail", icon: "docker", x: 42, y: 24 }) })).status, 200);
     const editedMap = await (await request("/api/network-map")).json();
     assert.equal(editedMap.nodes.some((node) => node.id === `manual:${mapNode.id}`), true);
+    assert.equal(editedMap.nodes.find((node) => node.id === dockerMapNode.id).name, "Edited container icon");
+    assert.equal(editedMap.nodes.find((node) => node.id === dockerMapNode.id).icon, "docker");
     assert.equal(editedMap.edges.some((edge) => edge.manual && edge.label === "Test link"), true);
     assert.equal((await request(`/api/network-map/nodes/${mapNode.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);

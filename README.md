@@ -18,6 +18,8 @@ Discord alert visibility.
 - Secure password hashing and cookie-backed sessions
 - Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
+- Admin feature visibility toggles for hiding unused SNMP, Docker, UniFi
+  Protect, or Network Map modules without deleting data
 - Mobile navigation and search across monitors, SNMP devices, Docker, and
   Protect cameras
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
@@ -54,6 +56,8 @@ Discord alert visibility.
 - Dedicated Docker fleet details workspace and inferred infrastructure network
   topology map
 - Editable manual map nodes, relationships, positions, status, and details
+- Editable inferred topology nodes with persistent names, positions, details,
+  and intelligent infrastructure icons
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
 - Structured Discord embeds for monitor, SNMP, Docker, recovery, and test alerts

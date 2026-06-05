@@ -19,6 +19,7 @@ let alertRules = [];
 let alertRuleOptions = { snmp: [], docker: [] };
 let alertTemplates = [];
 let adminSettings = null;
+let featureSettings = { snmp: true, docker: true, protect: true, networkMap: true };
 let networkMap = { nodes: [], edges: [] };
 let reportingRange = "24h";
 let searchFilter = "";
@@ -26,6 +27,7 @@ let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
   const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
+  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
@@ -36,6 +38,24 @@ function showWorkspace(name) {
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
   if (name === "Admin Settings") loadAdminSettings();
+}
+
+function featureEnabled(name) {
+  return featureSettings?.[name] !== false;
+}
+
+function applyFeatureVisibility() {
+  const bindings = [
+    ["snmp", ['[data-page="SNMP Devices"]', ".snmp-panel"]],
+    ["docker", ['[data-page="Docker"]', ".docker-panel"]],
+    ["protect", ['[data-page="Protect"]']],
+    ["networkMap", ['[data-page="Network Map"]']]
+  ];
+  for (const [feature, selectors] of bindings) {
+    for (const selector of selectors) document.querySelectorAll(selector).forEach((item) => { item.hidden = !featureEnabled(feature); });
+  }
+  const activePage = document.querySelector(".nav-item.active")?.dataset.page;
+  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -58,10 +78,10 @@ function renderSearchResults() {
   const query = searchFilter.toLowerCase();
   const matches = [
     ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
-    ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })),
-    ...dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })),
-    ...dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) })),
-    ...protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") }))
+    ...(featureEnabled("snmp") ? snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })) : []),
+    ...(featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })) : []),
+    ...(featureEnabled("docker") ? dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) })) : []),
+    ...(featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") })) : [])
   ].slice(0, 8);
   if (!matches.length) {
     const empty = document.createElement("p");
@@ -279,9 +299,9 @@ async function loadVersion() {
 function renderMonitors() {
   monitorList.replaceChildren();
   const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  const visibleSnmp = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  const visibleDockerHosts = dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  const visibleProtect = protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
+  const visibleSnmp = featureEnabled("snmp") ? snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
+  const visibleDockerHosts = featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
+  const visibleProtect = featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
   if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleProtect.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
@@ -341,9 +361,7 @@ function renderMonitors() {
   for (const device of visibleSnmp) {
     const row = document.createElement("div");
     row.className = "monitor-row real-monitor";
-    const icon = document.createElement("span");
-    icon.className = "service-icon snmp";
-    icon.textContent = "S";
+    const icon = makeIconBadge({ ...device, type: "snmp", detail: device.sysDescription || device.host }, "service-icon smart-service");
     const copy = document.createElement("div");
     const name = document.createElement("strong"); name.textContent = device.name;
     const detail = document.createElement("small");
@@ -368,7 +386,7 @@ function renderMonitors() {
   }
   for (const host of visibleDockerHosts) {
     const row = document.createElement("div"); row.className = "monitor-row real-monitor";
-    const icon = document.createElement("span"); icon.className = "service-icon api"; icon.textContent = "D";
+    const icon = makeIconBadge({ ...host, type: "docker-host", detail: host.endpoint }, "service-icon smart-service");
     const copy = document.createElement("div");
     const name = document.createElement("strong"); name.textContent = host.name;
     const detail = document.createElement("small"); detail.textContent = `DOCKER HOST · ${host.endpoint} · ${host.lastError || host.status}`;
@@ -382,7 +400,7 @@ function renderMonitors() {
   }
   for (const camera of visibleProtect) {
     const row = document.createElement("div"); row.className = "monitor-row real-monitor";
-    const icon = document.createElement("span"); icon.className = "service-icon api"; icon.textContent = "C";
+    const icon = makeIconBadge({ ...camera, type: "protect", detail: camera.model || camera.hostName }, "service-icon smart-service");
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name;
     const detail = document.createElement("small"); detail.textContent = `PROTECT · ${camera.hostName} · ${camera.model || camera.state || "Camera"}`;
     copy.append(name, detail);
@@ -395,7 +413,12 @@ function renderMonitors() {
 }
 
 function updateDashboardHealth() {
-  const services = [...monitors, ...snmpDevices, ...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true })), ...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))];
+  const services = [
+    ...monitors,
+    ...(featureEnabled("snmp") ? snmpDevices : []),
+    ...(featureEnabled("docker") ? [...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : [])
+  ];
   const up = services.filter((item) => item.enabled && item.status === "up");
   const down = services.filter((item) => item.enabled && item.status === "down");
   const checked = up.length + down.length;
@@ -431,6 +454,35 @@ function formatDate(value) {
   }
   const date = new Date(/[zZ]$|[+-]\d\d:\d\d$/.test(text) ? text : `${text}Z`);
   return Number.isNaN(date.getTime()) ? text : date.toLocaleString();
+}
+
+function smartIconKey(item = {}) {
+  const haystack = `${item.icon || ""} ${item.type || ""} ${item.name || ""} ${item.detail || ""} ${item.model || ""}`.toLowerCase();
+  if (item.icon && item.icon !== "auto") return item.icon;
+  if (haystack.includes("protect") || haystack.includes("unifi")) return "unifi";
+  if (haystack.includes("camera") || haystack.includes("cam") || item.type === "protect") return "camera";
+  if (haystack.includes("gateway") || haystack.includes("router") || haystack.includes("ucg") || haystack.includes("udm")) return "gateway";
+  if (haystack.includes("switch")) return "switch";
+  if (haystack.includes("access point") || haystack.includes("u7") || haystack.includes("u6") || haystack.includes("ap")) return "access-point";
+  if (haystack.includes("docker") || item.type === "docker" || item.type === "docker-host") return "docker";
+  if (haystack.includes("cloud")) return "cloud";
+  if (haystack.includes("http") || haystack.includes("web")) return "web";
+  if (item.status === "down") return "alert";
+  if (item.type === "server" || item.type === "snmp") return "server";
+  return "node";
+}
+
+function iconText(key) {
+  return { unifi: "U", camera: "CAM", gateway: "GW", switch: "SW", "access-point": "AP", docker: "DK", server: "SRV", cloud: "CLD", web: "WEB", alert: "!", node: "N" }[key] || "N";
+}
+
+function makeIconBadge(item, className = "smart-icon") {
+  const key = smartIconKey(item);
+  const icon = document.createElement("span");
+  icon.className = `${className} icon-${key}`;
+  icon.textContent = iconText(key);
+  icon.title = key.replace("-", " ");
+  return icon;
 }
 
 function incidentElement(incident) {
@@ -776,20 +828,21 @@ function renderProtectWorkspace() {
   for (const host of protectHosts) {
     const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const detail = document.createElement("small"); detail.textContent = `${host.endpoint} · ${host.lastError || host.status}`; copy.append(name, detail);
+    const hostIdentity = document.createElement("div"); hostIdentity.className = "identity-row"; hostIdentity.append(makeIconBadge({ ...host, type: "protect-host", icon: "unifi" }, "node-glyph"), copy);
     const actions = document.createElement("div"); actions.className = "monitor-actions";
     const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openProtectHostForm(host));
     const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "↻"; poll.addEventListener("click", async () => { await api("/api/protect/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await loadProtectFleet(); });
     const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete Protect console ${host.name}?`)) { await api(`/api/protect/hosts/${host.id}`, { method: "DELETE" }); await loadProtectFleet(); } });
     actions.append(edit, poll, remove);
     const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
-    row.append(copy, actions, status); hosts.append(row);
+    row.append(hostIdentity, actions, status); hosts.append(row);
   }
   if (!protectCameras.length) {
     const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = protectHosts.length ? "Protect connected, but no cameras were returned yet." : "No Protect cameras configured."; cameras.append(empty);
   }
   for (const camera of protectCameras) {
     const card = document.createElement("article"); card.className = `docker-detail-card ${camera.status === "down" ? "down" : ""}`;
-    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name; const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase(); header.append(name, status);
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name; const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase(); const cameraIdentity = document.createElement("div"); cameraIdentity.className = "identity-row"; cameraIdentity.append(makeIconBadge({ ...camera, type: "protect", icon: "camera" }, "node-glyph"), name); header.append(cameraIdentity, status);
     const detail = document.createElement("small"); detail.textContent = `${camera.hostName} · ${camera.model || "Protect camera"} · ${camera.address || "no address"}`;
     const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${camera.state || "--"} · Recording ${camera.recordingMode || "--"} · Last seen ${formatDate(camera.lastSeen || camera.lastPolledAt)}`;
     card.append(header, detail, values); cameras.append(card);
@@ -936,8 +989,18 @@ function openAlertRule(rule = null) {
 async function loadNetworkMap() { networkMap = await api("/api/network-map"); renderNetworkMap(); }
 
 function openMapNode(node = null) {
-  const form = document.getElementById("mapNodeForm"); form.reset(); form.elements.id.value = node?.id.split(":")[1] || "";
-  if (node) { form.elements.name.value = node.name; form.elements.nodeType.value = node.type; form.elements.detail.value = node.detail || ""; form.elements.status.value = node.status; form.elements.x.value = node.x; form.elements.y.value = node.y; }
+  const form = document.getElementById("mapNodeForm"); form.reset(); form.elements.id.value = node ? (node.manual ? node.id.split(":")[1] : node.id) : "";
+  if (node) {
+    form.elements.name.value = node.name;
+    form.elements.nodeType.value = node.type;
+    form.elements.detail.value = node.detail || "";
+    form.elements.status.value = node.status;
+    form.elements.icon.value = node.icon || "auto";
+    form.elements.x.value = node.x ?? 50;
+    form.elements.y.value = node.y ?? 50;
+  }
+  form.elements.nodeType.disabled = Boolean(node && !node.manual);
+  form.elements.status.disabled = Boolean(node && !node.manual);
   document.getElementById("mapNodeTitle").textContent = node ? `Edit ${node.name}` : "Add manual node"; document.getElementById("mapNodeError").textContent = ""; document.getElementById("mapNodeModal").hidden = false;
 }
 
@@ -946,19 +1009,19 @@ function renderNetworkMap() {
   const canvas = document.createElement("div"); canvas.className = "topology-canvas";
   const positions = new Map();
   const canvasNodes = networkMap.nodes.filter((node) => node.type !== "docker");
-  canvasNodes.forEach((node, index) => positions.set(node.id, { x: node.manual ? node.x : 8 + (index % 6) * 17, y: node.manual ? node.y : Math.min(12 + Math.floor(index / 6) * 16, 94) }));
+  canvasNodes.forEach((node, index) => positions.set(node.id, { x: node.x ?? (8 + (index % 6) * 17), y: node.y ?? Math.min(12 + Math.floor(index / 6) * 16, 94) }));
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
   for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.manual ? "manual" : "inferred"); svg.append(line); }
   canvas.append(svg);
-  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.textContent = node.name; button.title = `${node.type}: ${node.detail}`; if (node.manual) button.addEventListener("click", () => openMapNode(node)); canvas.append(button); }
+  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); button.addEventListener("click", () => openMapNode(node)); canvas.append(button); }
   map.append(canvas);
   for (const type of [...new Set(["subnet", "snmp", "docker-host", "docker", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
     const group = document.createElement("section"); group.className = "topology-group"; const title = document.createElement("h2"); title.textContent = type.replace("-", " "); const cards = document.createElement("div"); cards.className = "topology-nodes";
-    for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const name = document.createElement("strong"); name.textContent = node.name; const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(name, detail, links); cards.append(card); }
-    for (const node of nodes.filter((item) => item.manual)) {
+    for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const header = document.createElement("div"); header.className = "topology-node-header"; const name = document.createElement("strong"); name.textContent = node.name; header.append(makeIconBadge(node, "node-glyph"), name); const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(header, detail, links); cards.append(card); }
+    for (const node of nodes) {
       const matching = [...cards.children].find((card) => card.querySelector("strong")?.textContent === node.name);
-      if (matching) { const actions = document.createElement("div"); actions.className = "monitor-actions"; const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openMapNode(node)); const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete map node ${node.name}?`)) { await api(`/api/network-map/nodes/${node.id.split(":")[1]}`, { method: "DELETE" }); await loadNetworkMap(); } }); actions.append(edit, remove); matching.append(actions); }
+      if (matching) { const actions = document.createElement("div"); actions.className = "monitor-actions"; const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openMapNode(node)); actions.append(edit); if (node.manual) { const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete map node ${node.name}?`)) { await api(`/api/network-map/nodes/${node.id.split(":")[1]}`, { method: "DELETE" }); await loadNetworkMap(); } }); actions.append(remove); } matching.append(actions); }
     }
     group.append(title, cards); map.append(group);
   }
@@ -1221,6 +1284,8 @@ async function loadDiscordStatus() {
 
 async function loadAdminSettings() {
   adminSettings = await api("/api/admin/settings");
+  featureSettings = adminSettings.features || featureSettings;
+  applyFeatureVisibility();
   const metrics = document.getElementById("adminSettingsMetrics"); const list = document.getElementById("adminSystemList");
   if (!metrics || !list) return;
   metrics.replaceChildren(
@@ -1229,6 +1294,8 @@ async function loadAdminSettings() {
     metricCard("Active rule alerts", adminSettings.alerts.activeRules, `${adminSettings.alerts.acknowledgedRules} acknowledged`, adminSettings.alerts.activeRules > 0),
     metricCard("Discord", adminSettings.discord.enabled ? "ON" : "OFF", adminSettings.discord.webhookUrl || "not configured")
   );
+  const featureForm = document.getElementById("featureSettingsForm");
+  if (featureForm) for (const key of ["snmp", "docker", "protect", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
   for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
@@ -1494,10 +1561,40 @@ document.getElementById("maintenanceForm").addEventListener("submit", async (eve
   const form = event.currentTarget; const error = document.getElementById("maintenanceError"); error.textContent = "";
   try { await api("/api/admin/maintenance", { method: "PUT", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); await loadAdminSettings(); showToast("Maintenance updated", document.getElementById("maintenanceStatus").textContent); } catch (err) { error.textContent = err.message; }
 });
+document.getElementById("featureSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("featureSettingsError"); error.textContent = "";
+  try {
+    const body = { snmp: form.elements.snmp.checked, docker: form.elements.docker.checked, protect: form.elements.protect.checked, networkMap: form.elements.networkMap.checked };
+    const result = await api("/api/admin/features", { method: "PUT", body: JSON.stringify(body) });
+    featureSettings = result.features;
+    applyFeatureVisibility();
+    renderMonitors();
+    updateDashboardHealth();
+    renderSearchResults();
+    showToast("Feature visibility saved", "Unused modules are hidden from the dashboard");
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("snmpBandwidthRange").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("snmpGraphSelect").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("addMapNode").addEventListener("click", () => openMapNode());
-document.getElementById("mapNodeForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; const values = Object.fromEntries(new FormData(form)); try { await api(values.id ? `/api/network-map/nodes/${values.id}` : "/api/network-map/nodes", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) }); document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value); } catch (err) { document.getElementById("mapNodeError").textContent = err.message; } });
+document.getElementById("mapNodeForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const values = Object.fromEntries(new FormData(form));
+  values.nodeType = form.elements.nodeType.value;
+  values.status = form.elements.status.value;
+  try {
+    if (values.id && values.id.includes(":")) await api("/api/network-map/overrides", { method: "PUT", body: JSON.stringify({ nodeId: values.id, name: values.name, detail: values.detail, icon: values.icon, x: values.x, y: values.y }) });
+    else {
+      const result = await api(values.id ? `/api/network-map/nodes/${values.id}` : "/api/network-map/nodes", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+      const nodeId = `manual:${values.id || result.id}`;
+      await api("/api/network-map/overrides", { method: "PUT", body: JSON.stringify({ nodeId, name: values.name, detail: values.detail, icon: values.icon, x: values.x, y: values.y }) });
+    }
+    form.elements.nodeType.disabled = false; form.elements.status.disabled = false;
+    document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value);
+  } catch (err) { document.getElementById("mapNodeError").textContent = err.message; }
+});
 document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
 document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast("Map link added", form.elements.label.value || "Manual relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));

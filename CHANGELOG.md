@@ -13,6 +13,23 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.21] - 2026-06-05
+
+### Added
+
+- Admin feature visibility toggles for SNMP, Docker, UniFi Protect, and Network
+  Map modules without deleting saved data
+- Persistent topology overrides for discovered nodes so inferred SNMP, Docker,
+  monitor, subnet, and Protect nodes can be renamed, repositioned, and assigned
+  icons
+- Smart infrastructure icon badges for UniFi, Protect cameras, gateways,
+  switches, access points, Docker, servers, cloud, web services, and alerts
+
+### Changed
+
+- UniFi Protect rows now use branded UniFi and camera identity badges instead
+  of plain text initials
+
 ## [1.0.0-beta.20] - 2026-06-05
 
 ### Added

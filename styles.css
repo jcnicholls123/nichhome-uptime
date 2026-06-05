@@ -215,6 +215,20 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .service-icon.dns { color: #94702e; background: #efe2c4; }
 .service-icon.vpn { color: #6565b5; background: #e1e0f2; }
 .service-icon.snmp { color: #4f7f69; background: #d8ece1; }
+.smart-icon, .node-glyph { display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 7px; font-family: "DM Mono"; font-weight: 800; letter-spacing: -.5px; }
+.smart-service { width: 31px; height: 31px; font-size: 8px; }
+.node-glyph { width: 24px; height: 24px; margin-right: 7px; font-size: 7px; color: #30453b; background: #d8ece1; }
+.identity-row { display: flex; align-items: center; min-width: 0; }
+.icon-unifi { color: #0b63ce; background: #d9eafe; box-shadow: inset 0 0 0 1px rgba(11,99,206,.18); }
+.icon-camera { color: #4e5f68; background: #dfe7ea; }
+.icon-gateway { color: #8d5f21; background: #efe0c5; }
+.icon-switch { color: #3d7b65; background: #d8ece1; }
+.icon-access-point { color: #5b65a9; background: #e2e3f4; }
+.icon-docker { color: #246fa8; background: #d9ecf8; }
+.icon-server { color: #49515b; background: #e2e5e8; }
+.icon-cloud { color: #5d7e9e; background: #dfeaf2; }
+.icon-web { color: #bd5d4c; background: #f4d8cf; }
+.icon-alert { color: #b24a3a; background: #f4d8cf; }
 .monitor-row div:nth-child(2) { display: grid; gap: 3px; min-width: 0; }
 .monitor-row strong { font-size: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .monitor-row small { color: #9da29f; font-size: 6px; }
@@ -264,13 +278,14 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .topology-canvas svg { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
 .topology-canvas line { vector-effect: non-scaling-stroke; stroke: #aab8b1; stroke-width: 1.2; }
 .topology-canvas line.manual { stroke: var(--coral); stroke-dasharray: 4 3; }
-.topology-canvas-node { position: absolute; z-index: 2; max-width: 135px; padding: 7px 9px; overflow: hidden; border: 1px solid #a8bbb1; border-radius: 7px; color: #30453b; background: #e4f0e8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; transform: translate(-50%, -50%); }
-.topology-canvas-node.manual { border-color: #769cc0; background: #e0ebf4; cursor: pointer; }
+.topology-canvas-node { position: absolute; z-index: 2; display: inline-flex; align-items: center; max-width: 170px; padding: 7px 9px; overflow: hidden; border: 1px solid #a8bbb1; border-radius: 8px; color: #30453b; background: #e4f0e8; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; transform: translate(-50%, -50%); }
+.topology-canvas-node.manual, .topology-canvas-node.customised { border-color: #769cc0; background: #e0ebf4; }
 .topology-canvas-node.down { border-color: var(--coral); color: #a33f31; background: #f7ddd7; }
 .topology-group { display: grid; gap: 9px; }
 .topology-group h2 { margin: 0; color: #78827d; font-family: "DM Mono"; font-size: 11px; text-transform: uppercase; }
 .topology-nodes { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 8px; }
 .topology-node { display: grid; gap: 5px; padding: 13px; border: 1px solid var(--line); border-left: 3px solid #79b89a; border-radius: 8px; background: rgba(255,255,255,.32); }
+.topology-node-header { display: flex; align-items: center; min-width: 0; }
 .topology-node strong { font-size: 12px; }
 .topology-node small { overflow: hidden; color: #858e89; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
 .topology-node span { color: #5e8c76; font-family: "DM Mono"; font-size: 9px; }

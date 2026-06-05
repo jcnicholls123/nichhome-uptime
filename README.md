@@ -64,7 +64,8 @@ Discord alert visibility.
   and intelligent infrastructure icons
 - Drag-to-position topology canvas nodes with saved overrides
 - Replace-mode topology links for correcting inferred parent relationships
-- Reset-layout action for clearing odd topology positions without deleting data
+- Relationship-aware reset-layout action for clearing odd topology positions
+  without deleting data
 - Browser notification preferences for new active incidents
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications

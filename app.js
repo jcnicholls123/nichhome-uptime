@@ -1192,16 +1192,61 @@ function enableTopologyDrag(button, node, canvas, position) {
   });
 }
 
+function defaultTopologyPositions(nodes, edges) {
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const incoming = new Map(nodes.map((node) => [node.id, []]));
+  const outgoing = new Map(nodes.map((node) => [node.id, []]));
+  for (const edge of edges) {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to)) continue;
+    incoming.get(edge.to).push(edge.from);
+    outgoing.get(edge.from).push(edge.to);
+  }
+  const roots = nodes.filter((node) => !incoming.get(node.id).length).map((node) => node.id);
+  const queue = roots.length ? [...roots] : nodes.slice(0, 1).map((node) => node.id);
+  const levels = new Map(queue.map((id) => [id, 0]));
+  while (queue.length) {
+    const id = queue.shift();
+    const nextLevel = (levels.get(id) || 0) + 1;
+    for (const child of outgoing.get(id) || []) {
+      if (!levels.has(child) || nextLevel < levels.get(child)) {
+        levels.set(child, nextLevel);
+        queue.push(child);
+      }
+    }
+  }
+  for (const node of nodes) if (!levels.has(node.id)) levels.set(node.id, 0);
+  const grouped = new Map();
+  for (const node of nodes) {
+    const level = Math.min(levels.get(node.id) || 0, 5);
+    if (!grouped.has(level)) grouped.set(level, []);
+    grouped.get(level).push(node);
+  }
+  const typeRank = { subnet: 0, "unifi-network-host": 1, "protect-host": 1, "docker-host": 1, snmp: 2, "unifi-site": 2, "unifi-device": 3, protect: 3, monitor: 4, manual: 5 };
+  const positions = new Map();
+  const sortedLevels = [...grouped.keys()].sort((a, b) => a - b);
+  for (const level of sortedLevels) {
+    const group = grouped.get(level);
+    const sorted = group.sort((a, b) => (typeRank[a.type] ?? 9) - (typeRank[b.type] ?? 9) || a.name.localeCompare(b.name));
+    const levelIndex = sortedLevels.indexOf(level);
+    const x = sortedLevels.length === 1 ? 50 : 8 + (levelIndex * (84 / Math.max(sortedLevels.length - 1, 1)));
+    sorted.forEach((node, index) => {
+      const step = 84 / (sorted.length + 1);
+      positions.set(node.id, { x: Math.max(5, Math.min(95, x)), y: Math.max(8, Math.min(92, 8 + step * (index + 1))) });
+    });
+  }
+  return positions;
+}
+
 function renderNetworkMap() {
   const map = document.getElementById("topologyMap"); if (!map) return; map.replaceChildren();
   const canvas = document.createElement("div"); canvas.className = "topology-canvas";
-  const positions = new Map();
   const canvasNodes = networkMap.nodes.filter((node) => node.type !== "docker");
-  canvasNodes.forEach((node, index) => positions.set(node.id, { x: node.x ?? (8 + (index % 6) * 17), y: node.y ?? Math.min(12 + Math.floor(index / 6) * 16, 94) }));
+  const positions = defaultTopologyPositions(canvasNodes, networkMap.edges);
+  canvasNodes.forEach((node) => { if (node.x != null && node.y != null) positions.set(node.id, { x: node.x, y: node.y }); });
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
   for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.type === "replace" ? "replace" : edge.manual ? "manual" : "inferred"); svg.append(line); }
   canvas.append(svg);
-  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; button.append(makeIconBadge(node, "node-glyph"), document.createTextNode(node.name)); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
+  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; const label = document.createElement("span"); label.className = "topology-node-label"; label.textContent = node.name; button.append(makeIconBadge(node, "node-glyph"), label); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
   map.append(canvas);
   for (const type of [...new Set(["subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;

@@ -12,6 +12,17 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.32] - 2026-06-05
+
+### Fixed
+
+- Network topology now uses a relationship-aware default layout instead of a
+  flat row grid, so reset-layout produces clearer columns
+- Topology node labels now render in their own clipped label area so icons do
+  not overlap device names
+- Topology links and canvas nodes have stronger contrast and spacing for large
+  maps
+
 ## [1.0.0-beta.31] - 2026-06-05
 
 ### Fixed

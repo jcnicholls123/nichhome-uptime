@@ -12,6 +12,17 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.29] - 2026-06-05
+
+### Added
+
+- Topology links can now replace an inferred parent, so incorrect relationships
+  can be corrected without deleting devices
+- Admin preferences now control browser notifications, inferred topology links,
+  UniFi client topology visibility, and default map-link behaviour
+- UniFi, gateway, switch, access point, camera, Docker, server, cloud, web, and
+  alert badges now render as line icons instead of plain text initials
+
 ## [1.0.0-beta.28] - 2026-06-05
 
 ### Fixed

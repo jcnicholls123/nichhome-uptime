@@ -62,6 +62,8 @@ Discord alert visibility.
 - Editable inferred topology nodes with persistent names, positions, details,
   and intelligent infrastructure icons
 - Drag-to-position topology canvas nodes with saved overrides
+- Replace-mode topology links for correcting inferred parent relationships
+- Browser notification preferences for new active incidents
 - Severity-based alert rules with consecutive-check thresholds and structured
   Discord embed notifications
 - Alert sources for SNMP baseline/profile metrics, Docker containers, and

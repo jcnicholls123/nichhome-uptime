@@ -352,6 +352,7 @@ db.exec(`
     from_node TEXT NOT NULL,
     to_node TEXT NOT NULL,
     label TEXT,
+    link_mode TEXT NOT NULL DEFAULT 'manual',
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE TABLE IF NOT EXISTS reporting_hourly (
@@ -400,6 +401,7 @@ ensureColumn("alert_rule_incidents", "acknowledged_by", "TEXT");
 ensureColumn("unifi_network_devices", "firmware_version", "TEXT");
 ensureColumn("unifi_network_devices", "latest_firmware_version", "TEXT");
 ensureColumn("unifi_network_devices", "update_available", "INTEGER NOT NULL DEFAULT 0");
+ensureColumn("map_links", "link_mode", "TEXT NOT NULL DEFAULT 'manual'");
 
 function migrateAlertRuleTargets() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
@@ -722,6 +724,15 @@ function featureSettings() {
     network: getSetting("feature_unifi_network_enabled", "true") === "true",
     protect: getSetting("feature_protect_enabled", "true") === "true",
     networkMap: getSetting("feature_network_map_enabled", "true") === "true"
+  };
+}
+
+function preferenceSettings() {
+  return {
+    browserNotifications: getSetting("browser_notifications_enabled", "false") === "true",
+    mapShowInferredLinks: getSetting("map_show_inferred_links", "true") === "true",
+    mapShowUnifiClients: getSetting("map_show_unifi_clients", "false") === "true",
+    mapReplaceInferredByDefault: getSetting("map_replace_inferred_by_default", "true") === "true"
   };
 }
 
@@ -2579,6 +2590,7 @@ app.post("/api/unifi-network/refresh", requireAuth, async (req, res) => {
   }
 });
 app.get("/api/network-map", requireAuth, (req, res) => {
+  const preferences = preferenceSettings();
   const nodes = [];
   const edges = [];
   const subnetIds = new Set();
@@ -2590,6 +2602,7 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     return address;
   };
   const addEdge = (from, to, type = "network") => {
+    if (!preferences.mapShowInferredLinks && type !== "manual" && type !== "replace") return;
     if (from && to && from !== to && !edges.some((edge) => edge.from === from && edge.to === to && edge.type === type)) edges.push({ from, to, type });
   };
   const addSubnet = (address, childId) => {
@@ -2639,6 +2652,13 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     addEdge(`unifi-site:${device.host_id}:${device.site_id}`, `unifi-device:${device.id}`, "contains");
     addSubnet(rememberHost(device.address, `unifi-device:${device.id}`), `unifi-device:${device.id}`);
   }
+  if (preferences.mapShowUnifiClients) {
+    for (const client of db.prepare("SELECT id, host_id, site_id, name, address, type, uplink_device_id FROM unifi_network_clients ORDER BY name LIMIT 100").all()) {
+      nodes.push({ id: `unifi-client:${client.id}`, type: "unifi-client", name: client.name, status: "up", detail: client.address || client.type || "Connected client", icon: client.type && String(client.type).toLowerCase().includes("wireless") ? "web" : "node" });
+      const uplink = client.uplink_device_id ? db.prepare("SELECT id FROM unifi_network_devices WHERE host_id = ? AND site_id = ? AND device_id = ?").get(client.host_id, client.site_id, client.uplink_device_id) : null;
+      addEdge(uplink ? `unifi-device:${uplink.id}` : `unifi-site:${client.host_id}:${client.site_id}`, `unifi-client:${client.id}`, "connected");
+    }
+  }
   for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
     const id = `monitor:${monitor.id}`;
     nodes.push({ id, type: "monitor", name: monitor.name, status: monitor.status, detail: monitor.target });
@@ -2658,7 +2678,12 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     if (override.y != null) node.y = override.y;
     node.customised = true;
   }
-  for (const link of db.prepare("SELECT id, from_node AS 'from', to_node AS 'to', label FROM map_links ORDER BY id").all()) edges.push({ ...link, type: "manual", manual: true });
+  const manualLinks = db.prepare("SELECT id, from_node AS 'from', to_node AS 'to', label, link_mode AS linkMode FROM map_links ORDER BY id").all();
+  const replacementTargets = new Set(manualLinks.filter((link) => link.linkMode === "replace").map((link) => link.to));
+  if (replacementTargets.size) {
+    for (let index = edges.length - 1; index >= 0; index -= 1) if (replacementTargets.has(edges[index].to)) edges.splice(index, 1);
+  }
+  for (const link of manualLinks) edges.push({ ...link, type: link.linkMode === "replace" ? "replace" : "manual", manual: true });
   res.json({ nodes, edges });
 });
 app.post("/api/network-map/nodes", requireAuth, (req, res) => {
@@ -2699,8 +2724,10 @@ app.put("/api/network-map/overrides", requireAuth, (req, res) => {
 });
 app.post("/api/network-map/links", requireAuth, (req, res) => {
   const from = String(req.body.from || ""); const to = String(req.body.to || ""); const label = String(req.body.label || "").trim().slice(0, 80);
+  const linkMode = String(req.body.linkMode || "manual") === "replace" ? "replace" : "manual";
   if (!from || !to || from === to) return res.status(400).json({ error: "Choose two different map nodes." });
-  const result = db.prepare("INSERT INTO map_links (from_node, to_node, label) VALUES (?, ?, ?)").run(from, to, label);
+  if (linkMode === "replace") db.prepare("DELETE FROM map_links WHERE to_node = ? AND link_mode = 'replace'").run(to);
+  const result = db.prepare("INSERT INTO map_links (from_node, to_node, label, link_mode) VALUES (?, ?, ?, ?)").run(from, to, label, linkMode);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
 app.delete("/api/network-map/links/:id", requireAuth, (req, res) => {
@@ -2718,6 +2745,7 @@ app.get("/api/admin/settings", requireAuth, (req, res) => {
     },
     discord: { ...discordConfig(), webhookUrl: discordConfig().webhookUrl ? "configured" : "" },
     features: featureSettings(),
+    preferences: preferenceSettings(),
     storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
   });
 });
@@ -2735,6 +2763,19 @@ app.put("/api/admin/features", requireAuth, (req, res) => {
   setSetting("feature_protect_enabled", String(features.protect));
   setSetting("feature_network_map_enabled", String(features.networkMap));
   res.json({ ok: true, features });
+});
+app.put("/api/admin/preferences", requireAuth, (req, res) => {
+  const preferences = {
+    browserNotifications: Boolean(req.body.browserNotifications),
+    mapShowInferredLinks: req.body.mapShowInferredLinks !== false,
+    mapShowUnifiClients: Boolean(req.body.mapShowUnifiClients),
+    mapReplaceInferredByDefault: req.body.mapReplaceInferredByDefault !== false
+  };
+  setSetting("browser_notifications_enabled", String(preferences.browserNotifications));
+  setSetting("map_show_inferred_links", String(preferences.mapShowInferredLinks));
+  setSetting("map_show_unifi_clients", String(preferences.mapShowUnifiClients));
+  setSetting("map_replace_inferred_by_default", String(preferences.mapReplaceInferredByDefault));
+  res.json({ ok: true, preferences });
 });
 app.put("/api/admin/maintenance", requireAuth, (req, res) => {
   const minutes = Number(req.body.minutes || 0);

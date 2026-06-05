@@ -217,6 +217,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .service-icon.vpn { color: #6565b5; background: #e1e0f2; }
 .service-icon.snmp { color: #4f7f69; background: #d8ece1; }
 .smart-icon, .node-glyph { display: inline-grid; place-items: center; flex: 0 0 auto; border-radius: 7px; font-family: "DM Mono"; font-weight: 800; letter-spacing: -.5px; }
+.smart-icon svg, .node-glyph svg, .service-icon svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.smart-service svg { width: 18px; height: 18px; }
 .smart-service { width: 31px; height: 31px; font-size: 8px; }
 .node-glyph { width: 24px; height: 24px; margin-right: 7px; font-size: 7px; color: #30453b; background: #d8ece1; }
 .identity-row { display: flex; align-items: center; min-width: 0; }

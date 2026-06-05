@@ -21,10 +21,11 @@ let protectHosts = [];
 let protectCameras = [];
 let protectStatus = { available: false };
 let alertRules = [];
-let alertRuleOptions = { snmp: [], docker: [] };
+let alertRuleOptions = { snmp: [], docker: [], unifi: [] };
 let alertTemplates = [];
 let adminSettings = null;
 let featureSettings = { snmp: true, docker: true, network: true, protect: true, networkMap: true };
+let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
 let networkMap = { nodes: [], edges: [] };
 let reportingRange = "24h";
 let searchFilter = "";
@@ -510,11 +511,29 @@ function iconText(key) {
   return { unifi: "U", camera: "CAM", gateway: "GW", switch: "SW", "access-point": "AP", docker: "DK", server: "SRV", cloud: "CLD", web: "WEB", alert: "!", node: "N" }[key] || "N";
 }
 
+function iconSvg(key) {
+  const icons = {
+    unifi: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="5"/><circle cx="12" cy="12" r="4"/><path d="M8 12h8M12 8v8"/></svg>`,
+    gateway: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="6" width="18" height="12" rx="3"/><path d="M7 12h3m4 0h3M8 18v2m8-2v2"/></svg>`,
+    switch: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="10" rx="2"/><path d="M7 12h1m3 0h1m3 0h1m3 0h1"/></svg>`,
+    "access-point": `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="2"/><path d="M12 5v2m0 10v2m-7-7h2m10 0h2"/></svg>`,
+    camera: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="7" width="12" height="10" rx="2"/><path d="m16 10 4-2v8l-4-2z"/><circle cx="10" cy="12" r="2"/></svg>`,
+    docker: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13h15c-.7 4-3.2 6-7.4 6H8.5C5.8 19 4 16.8 4 13z"/><path d="M6 10h3v3H6zm4 0h3v3h-3zm4 0h3v3h-3zM10 6h3v3h-3z"/></svg>`,
+    server: `<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4" width="14" height="7" rx="2"/><rect x="5" y="13" width="14" height="7" rx="2"/><path d="M8 8h.1M8 17h.1"/></svg>`,
+    cloud: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 18h10a4 4 0 0 0 0-8 6 6 0 0 0-11.5 1.8A3.2 3.2 0 0 0 7 18z"/></svg>`,
+    web: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M4 12h16M12 4a13 13 0 0 1 0 16M12 4a13 13 0 0 0 0 16"/></svg>`,
+    alert: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4 3 20h18z"/><path d="M12 9v5m0 3h.1"/></svg>`,
+    node: `<svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="7"/><path d="M12 5v14M5 12h14"/></svg>`
+  };
+  return icons[key] || icons.node;
+}
+
 function makeIconBadge(item, className = "smart-icon") {
   const key = smartIconKey(item);
   const icon = document.createElement("span");
   icon.className = `${className} icon-${key}`;
-  icon.textContent = iconText(key);
+  icon.innerHTML = iconSvg(key);
+  icon.dataset.fallback = iconText(key);
   icon.title = key.replace("-", " ");
   return icon;
 }
@@ -543,6 +562,9 @@ async function loadIncidents() {
   if (lastOpenIncidentCount !== null && open > lastOpenIncidentCount) {
     const newest = incidents.find((incident) => !incident.resolvedAt);
     showToast("New active alert", newest ? `${newest.monitorName} is down` : `${open} incidents need attention`);
+    if (preferenceSettings.browserNotifications && "Notification" in window && Notification.permission === "granted") {
+      new Notification("NichHome Uptime alert", { body: newest ? `${newest.monitorName}: ${newest.cause || newest.target}` : `${open} incidents need attention` });
+    }
   }
   lastOpenIncidentCount = open;
   document.getElementById("incidentCount").textContent = open;
@@ -1457,6 +1479,7 @@ async function loadDiscordStatus() {
 async function loadAdminSettings() {
   adminSettings = await api("/api/admin/settings");
   featureSettings = adminSettings.features || featureSettings;
+  preferenceSettings = adminSettings.preferences || preferenceSettings;
   applyFeatureVisibility();
   const metrics = document.getElementById("adminSettingsMetrics"); const list = document.getElementById("adminSystemList");
   if (!metrics || !list) return;
@@ -1468,6 +1491,8 @@ async function loadAdminSettings() {
   );
   const featureForm = document.getElementById("featureSettingsForm");
   if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
+  const preferenceForm = document.getElementById("preferenceSettingsForm");
+  if (preferenceForm) for (const key of ["browserNotifications", "mapShowInferredLinks", "mapShowUnifiClients", "mapReplaceInferredByDefault"]) preferenceForm.elements[key].checked = Boolean(preferenceSettings[key]);
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
   for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
@@ -1772,6 +1797,23 @@ document.getElementById("featureSettingsForm").addEventListener("submit", async 
     showToast("Feature visibility saved", "Unused modules are hidden from the dashboard");
   } catch (err) { error.textContent = err.message; }
 });
+document.getElementById("preferenceSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("preferenceSettingsError"); error.textContent = "";
+  try {
+    const body = {
+      browserNotifications: form.elements.browserNotifications.checked,
+      mapShowInferredLinks: form.elements.mapShowInferredLinks.checked,
+      mapShowUnifiClients: form.elements.mapShowUnifiClients.checked,
+      mapReplaceInferredByDefault: form.elements.mapReplaceInferredByDefault.checked
+    };
+    if (body.browserNotifications && "Notification" in window && Notification.permission === "default") await Notification.requestPermission();
+    const result = await api("/api/admin/preferences", { method: "PUT", body: JSON.stringify(body) });
+    preferenceSettings = result.preferences;
+    await loadNetworkMap();
+    showToast("Preferences saved", "Interface behaviour updated");
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("snmpBandwidthRange").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("snmpGraphSelect").addEventListener("change", (event) => renderSnmpBandwidth(event.target.dataset.deviceId));
 document.getElementById("addMapNode").addEventListener("click", () => openMapNode());
@@ -1792,7 +1834,7 @@ document.getElementById("mapNodeForm").addEventListener("submit", async (event) 
     document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value);
   } catch (err) { document.getElementById("mapNodeError").textContent = err.message; }
 });
-document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
+document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.querySelector("#mapLinkForm select[name=linkMode]").value = preferenceSettings.mapReplaceInferredByDefault ? "replace" : "manual"; document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
 document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast("Map link added", form.elements.label.value || "Manual relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) modal.hidden = true; }));

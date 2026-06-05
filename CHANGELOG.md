@@ -13,6 +13,23 @@ include breaking changes while the monitoring engine and integrations mature.
 - Public status pages
 - UniFi Network API integration for controller-wide gateway client totals
 
+## [1.0.0-beta.20] - 2026-06-05
+
+### Added
+
+- UniFi Protect host setup with local API-key camera discovery, camera
+  connection and recording state, offline incidents, Discord alerts, and
+  network-map topology nodes
+- Protect cameras now appear in monitored services, global search, fleet health,
+  and the dedicated UniFi Protect workspace
+
+### Changed
+
+- Mobile readability has been increased across cards, forms, status labels,
+  tables, and graph labels
+- Uptime response graphs now skip missing samples and scale around normal
+  response values so occasional outliers do not dominate low-latency charts
+
 ## [1.0.0-beta.19] - 2026-06-05
 
 ### Added

@@ -12,6 +12,9 @@ let snmpProfiles = [];
 let dockerContainers = [];
 let dockerHosts = [];
 let dockerStatus = { available: false };
+let protectHosts = [];
+let protectCameras = [];
+let protectStatus = { available: false };
 let alertRules = [];
 let alertRuleOptions = { snmp: [], docker: [] };
 let alertTemplates = [];
@@ -22,13 +25,14 @@ let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", "Admin Settings": "adminSettingsPage" };
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
   document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
   if (name === "SNMP Devices") renderSnmpWorkspace();
   if (name === "Docker") renderDockerWorkspace();
+  if (name === "Protect") renderProtectWorkspace();
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
   if (name === "Admin Settings") loadAdminSettings();
@@ -56,7 +60,8 @@ function renderSearchResults() {
     ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
     ...snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })),
     ...dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })),
-    ...dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) }))
+    ...dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) })),
+    ...protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") }))
   ].slice(0, 8);
   if (!matches.length) {
     const empty = document.createElement("p");
@@ -122,6 +127,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "Docker") {
       showWorkspace("Docker");
+      return;
+    }
+    if (item.dataset.page === "Protect") {
+      showWorkspace("Protect");
       return;
     }
     if (item.dataset.page === "Alert Rules") {
@@ -272,10 +281,11 @@ function renderMonitors() {
   const visible = monitors.filter((monitor) => `${monitor.name} ${monitor.target} ${monitor.type} ${monitor.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   const visibleSnmp = snmpDevices.filter((device) => `${device.name} ${device.host} ${device.sysName || ""} ${device.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
   const visibleDockerHosts = dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
-  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length) {
+  const visibleProtect = protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase()));
+  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleProtect.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, or Docker host to begin.";
+    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length || protectCameras.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, Docker host, or Protect console to begin.";
     monitorList.append(empty);
     return;
   }
@@ -370,10 +380,22 @@ function renderMonitors() {
     const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
     row.append(icon, copy, actions, status); monitorList.append(row);
   }
+  for (const camera of visibleProtect) {
+    const row = document.createElement("div"); row.className = "monitor-row real-monitor";
+    const icon = document.createElement("span"); icon.className = "service-icon api"; icon.textContent = "C";
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name;
+    const detail = document.createElement("small"); detail.textContent = `PROTECT · ${camera.hostName} · ${camera.model || camera.state || "Camera"}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const open = document.createElement("button"); open.className = "monitor-action"; open.textContent = "i"; open.addEventListener("click", () => showWorkspace("Protect"));
+    actions.append(open);
+    const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase();
+    row.append(icon, copy, actions, status); monitorList.append(row);
+  }
 }
 
 function updateDashboardHealth() {
-  const services = [...monitors, ...snmpDevices, ...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))];
+  const services = [...monitors, ...snmpDevices, ...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true })), ...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))];
   const up = services.filter((item) => item.enabled && item.status === "up");
   const down = services.filter((item) => item.enabled && item.status === "down");
   const checked = up.length + down.length;
@@ -403,7 +425,12 @@ async function loadMonitors() {
 function formatDate(value) {
   if (!value) return "Open";
   const text = String(value);
-  return new Date(/[zZ]$|[+-]\d\d:\d\d$/.test(text) ? text : `${text}Z`).toLocaleString();
+  if (/^\d+$/.test(text)) {
+    const numeric = Number(text);
+    return new Date(numeric > 100000000000 ? numeric : numeric * 1000).toLocaleString();
+  }
+  const date = new Date(/[zZ]$|[+-]\d\d:\d\d$/.test(text) ? text : `${text}Z`);
+  return Number.isNaN(date.getTime()) ? text : date.toLocaleString();
 }
 
 function incidentElement(incident) {
@@ -462,6 +489,20 @@ function makePath(values, width, height, minimum, maximum, left = 0, top = 0) {
   }).join(" ");
 }
 
+function makeSparsePath(values, width, height, minimum, maximum, left = 0, top = 0) {
+  if (values.filter((value) => value != null).length < 2) return "";
+  const range = Math.max(1, maximum - minimum);
+  let started = false;
+  return values.map((value, index) => {
+    if (value == null) { started = false; return ""; }
+    const x = left + (index / (values.length - 1)) * width;
+    const y = top + height - ((Math.min(value, maximum) - minimum) / range) * height;
+    const command = started ? "L" : "M";
+    started = true;
+    return `${command}${x.toFixed(1)},${y.toFixed(1)}`;
+  }).filter(Boolean).join(" ");
+}
+
 function chartText(svg, x, y, value, anchor = "start") {
   const text = document.createElementNS("http://www.w3.org/2000/svg", "text"); text.setAttribute("x", x); text.setAttribute("y", y); text.setAttribute("text-anchor", anchor); text.setAttribute("class", "chart-label"); text.textContent = value; svg.append(text);
 }
@@ -481,7 +522,10 @@ async function loadGraph() {
   const svg = document.createElementNS(ns, "svg");
   svg.setAttribute("viewBox", "0 0 860 280");
   const left = 52; const top = 20; const width = 756; const height = 220;
-  const maxResponse = Math.max(...history.map((point) => point.responseMs ?? 0), 1);
+  const responseValues = history.map((point) => point.responseMs).filter((value) => value != null).map(Number).filter(Number.isFinite).sort((a, b) => a - b);
+  const percentile = responseValues.length ? responseValues[Math.max(0, Math.ceil(responseValues.length * 0.9) - 1)] : 1;
+  const highestResponse = responseValues[responseValues.length - 1] || percentile;
+  const maxResponse = Math.max(5, Math.ceil(Math.min(highestResponse, Math.max(percentile * 3, percentile + 5))));
   for (let index = 0; index <= 4; index += 1) {
     const y = top + (height / 4) * index;
     const line = document.createElementNS(ns, "line");
@@ -496,10 +540,10 @@ async function loadGraph() {
   const uptime = document.createElementNS(ns, "path");
   uptime.setAttribute("class", "uptime-path");
   uptime.setAttribute("d", makePath(history.map((point) => point.uptime ?? 0), width, height, 0, 100, left, top));
-  const responses = history.map((point) => point.responseMs ?? 0);
+  const responses = history.map((point) => point.responseMs == null ? null : Number(point.responseMs));
   const response = document.createElementNS(ns, "path");
   response.setAttribute("class", "response-path");
-  response.setAttribute("d", makePath(responses, width, height, 0, maxResponse, left, top));
+  response.setAttribute("d", makeSparsePath(responses, width, height, 0, maxResponse, left, top));
   svg.append(uptime, response);
   chart.append(svg);
 }
@@ -710,6 +754,59 @@ async function loadDockerFleet() {
   renderMonitors();
   updateDashboardHealth();
   renderSearchResults();
+}
+
+async function loadProtectFleet() {
+  [protectStatus, protectHosts, protectCameras] = await Promise.all([api("/api/protect/status"), api("/api/protect/hosts"), api("/api/protect/cameras")]);
+  renderProtectWorkspace();
+  renderMonitors();
+  updateDashboardHealth();
+  renderSearchResults();
+}
+
+function renderProtectWorkspace() {
+  const metrics = document.getElementById("protectMetrics"); const hosts = document.getElementById("protectHostList"); const cameras = document.getElementById("protectCameraList"); const nav = document.getElementById("protectNavCount");
+  if (!metrics || !hosts || !cameras) return;
+  nav.textContent = protectCameras.length;
+  metrics.replaceChildren(metricCard("Protect consoles", protectStatus.hostCount || 0, `${protectStatus.onlineHosts || 0} online`), metricCard("Cameras", protectStatus.total || 0, "discovered"), metricCard("Online", protectStatus.online || 0, "connected"), metricCard("Offline", protectStatus.offline || 0, "needs attention", (protectStatus.offline || 0) > 0));
+  hosts.replaceChildren(); cameras.replaceChildren();
+  if (!protectHosts.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Add a UniFi Protect console with a Protect API key to monitor cameras."; hosts.append(empty);
+  }
+  for (const host of protectHosts) {
+    const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const detail = document.createElement("small"); detail.textContent = `${host.endpoint} · ${host.lastError || host.status}`; copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openProtectHostForm(host));
+    const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "↻"; poll.addEventListener("click", async () => { await api("/api/protect/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await loadProtectFleet(); });
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete Protect console ${host.name}?`)) { await api(`/api/protect/hosts/${host.id}`, { method: "DELETE" }); await loadProtectFleet(); } });
+    actions.append(edit, poll, remove);
+    const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+    row.append(copy, actions, status); hosts.append(row);
+  }
+  if (!protectCameras.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = protectHosts.length ? "Protect connected, but no cameras were returned yet." : "No Protect cameras configured."; cameras.append(empty);
+  }
+  for (const camera of protectCameras) {
+    const card = document.createElement("article"); card.className = `docker-detail-card ${camera.status === "down" ? "down" : ""}`;
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name; const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase(); header.append(name, status);
+    const detail = document.createElement("small"); detail.textContent = `${camera.hostName} · ${camera.model || "Protect camera"} · ${camera.address || "no address"}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `State ${camera.state || "--"} · Recording ${camera.recordingMode || "--"} · Last seen ${formatDate(camera.lastSeen || camera.lastPolledAt)}`;
+    card.append(header, detail, values); cameras.append(card);
+  }
+}
+
+function openProtectHostForm(host = null) {
+  const form = document.getElementById("protectHostForm"); form.reset(); form.elements.id.value = host?.id || "";
+  form.elements.name.value = host?.name || "";
+  form.elements.endpoint.value = host?.endpoint || "";
+  form.elements.apiKey.placeholder = host ? "Leave blank to keep existing key" : "UniFi Protect API key";
+  form.elements.tlsVerify.checked = Boolean(host?.tlsVerify);
+  form.elements.enabled.checked = host?.enabled ?? true;
+  document.getElementById("protectHostEnabledLabel").hidden = !host;
+  document.getElementById("protectHostTitle").textContent = host ? `Edit ${host.name}` : "Add Protect console";
+  document.getElementById("protectHostError").textContent = "";
+  document.getElementById("protectHostModal").hidden = false;
 }
 
 function metricCard(label, value, note, alerting = false) {
@@ -1365,6 +1462,31 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
 });
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
+document.getElementById("protectPageAddHost").addEventListener("click", () => openProtectHostForm());
+document.getElementById("addProtectHost").addEventListener("click", () => openProtectHostForm());
+document.getElementById("protectPageRefresh").addEventListener("click", async () => {
+  try {
+    await api("/api/protect/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadProtectFleet(), loadIncidents(), loadNetworkMap()]);
+    showToast("Protect refreshed", "Camera state has been updated");
+  } catch (err) {
+    showToast("Protect refresh unavailable", err.message);
+  }
+});
+document.getElementById("testProtectHost").addEventListener("click", async () => {
+  const form = document.getElementById("protectHostForm"); const error = document.getElementById("protectHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked;
+  try { const result = await api("/api/protect/hosts/test", { method: "POST", body: JSON.stringify(values) }); showToast("Protect connected", `${result.cameras} cameras returned`); } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("protectHostForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("protectHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked; values.enabled = form.elements.enabled.checked;
+  try {
+    await api(values.id ? `/api/protect/hosts/${values.id}` : "/api/protect/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+    document.getElementById("protectHostModal").hidden = true; form.reset(); await Promise.all([loadProtectFleet(), loadIncidents(), loadNetworkMap()]); showToast("Protect console saved", values.name);
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("refreshNetworkMap").addEventListener("click", loadNetworkMap);
 document.getElementById("refreshAdminSettings").addEventListener("click", loadAdminSettings);
 document.getElementById("maintenanceForm").addEventListener("submit", async (event) => {
@@ -1431,6 +1553,7 @@ loadGraph();
 loadSnmpDevices();
 loadSnmpProfiles();
 loadDockerFleet();
+loadProtectFleet();
 loadAlertRules();
 loadAlertTemplates();
 loadNetworkMap();
@@ -1439,5 +1562,5 @@ document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
 const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
 if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadProtectFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

@@ -4,11 +4,12 @@
 [![Build container](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml/badge.svg)](https://github.com/jcnicholls123/nichhome-uptime/actions/workflows/container.yml)
 
 NichHome Uptime is a local-first infrastructure dashboard focused on uptime,
-SNMP network telemetry, Docker container health, and Discord alert visibility.
+SNMP network telemetry, Docker container health, UniFi Protect camera state, and
+Discord alert visibility.
 
 > [!IMPORTANT]
 > Authentication, uptime checks, SNMP telemetry, Docker fleet monitoring,
-> incidents, and Discord alerts are operational.
+> UniFi Protect camera monitoring, incidents, and Discord alerts are operational.
 
 ## Current Features
 
@@ -17,7 +18,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
 - Secure password hashing and cookie-backed sessions
 - Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
-- Mobile navigation and search across monitors and SNMP devices
+- Mobile navigation and search across monitors, SNMP devices, Docker, and
+  Protect cameras
 - Persistent HTTP/HTTPS and TCP monitors with automatic checks
 - Private-network TCP auto-discovery with editable service names and selective
   monitor import
@@ -47,6 +49,8 @@ SNMP network telemetry, Docker container health, and Discord alert visibility.
   Docker API endpoint
 - Active-container Docker fleet tracking with duplicate-host protection and
   automatic cleanup of stale historical fleet records
+- UniFi Protect host setup with local API-key camera discovery, camera
+  connection/recording state, incidents, Discord alerts, and topology mapping
 - Dedicated Docker fleet details workspace and inferred infrastructure network
   topology map
 - Editable manual map nodes, relationships, positions, status, and details

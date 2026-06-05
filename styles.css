@@ -466,7 +466,12 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .subhead, .metric-card p, .trend, .micro-copy, .section-tag, .eyebrow { font-size: 12px; line-height: 1.55; }
   .panel-heading h2 { font-size: 17px; }
   .activity-item strong, .monitor-row strong, .snmp-device-card strong { font-size: 14px; }
-  .activity-item p, .activity-item small, .monitor-row small, .snmp-device-card p, .snmp-device-card small, .empty-state, .text-button, .dark-button { font-size: 12px; line-height: 1.5; }
+  .activity-item p, .activity-item small, .monitor-row small, .snmp-device-card p, .snmp-device-card small,
+  .docker-host-row small, .docker-detail-card small, .docker-detail-card .container-metrics,
+  .rule-row small, .profile-row small, .oid-detail small, .oid-detail strong, .interface-table,
+  .empty-state, .text-button, .dark-button, .form-help, .history-row { font-size: 13px; line-height: 1.55; }
+  .docker-host-row strong, .docker-detail-card strong, .rule-row strong, .profile-row strong, .detail-stat strong { font-size: 14px; }
+  .status-label, .connected-pill, .real-chart .chart-label { font-size: 11px; }
   .storage-row { grid-template-columns: 1fr; }
   .docker-host-row { grid-template-columns: 1fr auto; }
   .docker-host-row .status-label { grid-column: 1; justify-self: start; }
@@ -500,5 +505,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .account-modal { max-height: calc(100vh - 24px); padding: 18px; overflow: auto; }
   .modal-backdrop { padding: 12px; }
   .form-columns { grid-template-columns: 1fr; }
-  .mfa-setup p, .mfa-setup a, .mfa-setup label, .monitor-form label, .monitor-form input, .monitor-form select, .security-card p { font-size: 13px; }
+  .mfa-setup p, .mfa-setup a, .mfa-setup label, .monitor-form label, .monitor-form input, .monitor-form select, .security-card p, .form-help { font-size: 14px; }
+  .activity-item p, .activity-item small, .monitor-row small, .docker-host-row small, .docker-detail-card small, .docker-detail-card .container-metrics { font-size: 13.5px; }
+  .status-label, .connected-pill { font-size: 12px; }
 }

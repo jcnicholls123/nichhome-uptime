@@ -215,6 +215,41 @@ db.exec(`
     last_polled_at TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
+  CREATE TABLE IF NOT EXISTS protect_hosts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    api_key TEXT NOT NULL,
+    tls_verify INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    last_polled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS protect_cameras (
+    id TEXT PRIMARY KEY,
+    host_id INTEGER NOT NULL REFERENCES protect_hosts(id) ON DELETE CASCADE,
+    camera_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    model TEXT,
+    mac TEXT,
+    address TEXT,
+    state TEXT,
+    recording_mode TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_seen TEXT,
+    last_polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS protect_incidents (
+    id INTEGER PRIMARY KEY,
+    camera_id TEXT NOT NULL,
+    host_id INTEGER REFERENCES protect_hosts(id) ON DELETE CASCADE,
+    camera_name TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
+  );
   CREATE TABLE IF NOT EXISTS alert_rules (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -1021,6 +1056,8 @@ async function sendDiscordOperational(title, recovered, description, fields = []
 
 let dockerFleetError = null;
 let dockerLastPolledAt = null;
+let protectFleetError = null;
+let protectLastPolledAt = null;
 
 function validateDockerHost(input) {
   const name = String(input.name || "").trim();
@@ -1171,6 +1208,112 @@ async function pollDockerFleet() {
   return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
 }
 
+function validateProtectHost(input) {
+  const name = String(input.name || "").trim();
+  let endpoint = String(input.endpoint || "").trim();
+  const apiKey = String(input.apiKey || input.api_key || "").trim();
+  const tlsVerify = input.tlsVerify === true;
+  if (name.length < 2 || name.length > 80) throw new Error("Protect host name must be between 2 and 80 characters.");
+  const url = new URL(endpoint);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://192.168.1.1.");
+  endpoint = url.origin;
+  if (apiKey.length < 8 || apiKey.length > 500) throw new Error("Enter a UniFi Protect API key.");
+  return { name, endpoint, apiKey, tlsVerify };
+}
+
+function protectRequest(host, requestPath) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(requestPath, `${host.endpoint.replace(/\/+$/, "")}/`);
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      rejectUnauthorized: Boolean(host.tls_verify),
+      headers: { Accept: "application/json", "X-API-Key": host.api_key }
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`UniFi Protect returned HTTP ${response.statusCode}`));
+        try { resolve(body ? JSON.parse(body) : null); } catch { resolve(body); }
+      });
+    });
+    request.setTimeout(12000, () => request.destroy(new Error("UniFi Protect request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function protectCameraStatus(camera) {
+  const state = String(camera.state || camera.status || "").toUpperCase();
+  if (camera.isConnected === true || state === "CONNECTED") return "up";
+  if (camera.isConnected === false || ["DISCONNECTED", "OFFLINE"].includes(state)) return "down";
+  return state ? "up" : "pending";
+}
+
+async function pollProtectHost(hostOrId) {
+  const host = typeof hostOrId === "object" ? hostOrId : db.prepare("SELECT * FROM protect_hosts WHERE id = ?").get(Number(hostOrId));
+  if (!host || !host.enabled) return { available: false, error: "Protect host not found or disabled." };
+  let cameras;
+  try {
+    cameras = await protectRequest(host, "/proxy/protect/integration/v1/cameras");
+    if (!Array.isArray(cameras)) cameras = cameras?.cameras || cameras?.data || [];
+  } catch (error) {
+    db.prepare("UPDATE protect_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
+    if (host.status !== "down") await sendDiscordOperational(`UniFi Protect ${host.name}`, false, error.message, [{ name: "Endpoint", value: host.endpoint }]);
+    return { available: false, error: error.message };
+  }
+  const seen = new Set();
+  for (const camera of cameras) {
+    const rawId = String(camera.id || camera._id || camera.mac || camera.name || "");
+    if (!rawId) continue;
+    const id = `${host.id}:${rawId}`;
+    seen.add(id);
+    const name = String(camera.name || camera.displayName || rawId).slice(0, 120);
+    const state = String(camera.state || camera.status || (camera.isConnected ? "CONNECTED" : "DISCONNECTED")).toUpperCase();
+    const status = protectCameraStatus(camera);
+    const previous = db.prepare("SELECT * FROM protect_cameras WHERE id = ?").get(id);
+    const openIncident = db.prepare("SELECT 1 FROM protect_incidents WHERE camera_id = ? AND resolved_at IS NULL").get(id);
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO protect_cameras (id, host_id, camera_id, name, model, mac, address, state, recording_mode, status, last_seen, last_polled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name, model=excluded.model, mac=excluded.mac, address=excluded.address, state=excluded.state,
+          recording_mode=excluded.recording_mode, status=excluded.status, last_seen=excluded.last_seen, last_polled_at=CURRENT_TIMESTAMP
+      `).run(id, host.id, rawId, name, camera.marketName || camera.modelKey || camera.type || "", camera.mac || "", camera.host || camera.connectionHost || camera.ip || "", state, camera.recordingSettings?.mode || camera.recordingMode || "", status, camera.lastSeen || camera.lastSeenTime || null);
+      if (status === "down" && !openIncident) db.prepare("INSERT INTO protect_incidents (camera_id, host_id, camera_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, state || "Camera disconnected");
+      if (status === "up" && openIncident) db.prepare("UPDATE protect_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE camera_id = ? AND resolved_at IS NULL").run(id);
+    })();
+    if (status === "down" && !openIncident) await sendDiscordOperational(`Protect camera ${name}`, false, state || "Camera disconnected", [{ name: "Host", value: host.name }, { name: "Model", value: camera.marketName || camera.modelKey || "--" }]);
+    if (status === "up" && previous && previous.status === "down") await sendDiscordOperational(`Protect camera ${name}`, true, "Camera is connected again.", [{ name: "Host", value: host.name }]);
+  }
+  db.transaction(() => {
+    for (const { id, name } of db.prepare("SELECT id, name FROM protect_cameras WHERE host_id = ?").all(host.id).filter((item) => !seen.has(item.id))) {
+      db.prepare("INSERT INTO protect_incidents (camera_id, host_id, camera_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, "Camera no longer appears in Protect");
+      db.prepare("DELETE FROM protect_cameras WHERE id = ?").run(id);
+    }
+    db.prepare("UPDATE protect_hosts SET status = 'up', last_error = NULL, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(host.id);
+  })();
+  protectLastPolledAt = new Date().toISOString();
+  return { available: true, count: seen.size, hostId: host.id };
+}
+
+async function pollProtectFleet() {
+  const hosts = db.prepare("SELECT * FROM protect_hosts WHERE enabled = 1 ORDER BY id").all();
+  if (!hosts.length) {
+    protectFleetError = "Add a UniFi Protect host to begin camera monitoring.";
+    return { available: false, error: protectFleetError };
+  }
+  const results = [];
+  for (const host of hosts) results.push(await pollProtectHost(host));
+  protectFleetError = results.every((item) => !item.available) ? results.map((item) => item.error).filter(Boolean).join("; ") : null;
+  return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
+}
+
 async function checkHttp(target, timeoutSeconds) {
   const started = Date.now();
   const response = await fetch(target, { signal: AbortSignal.timeout(timeoutSeconds * 1000), redirect: "follow" });
@@ -1251,6 +1394,7 @@ async function runMonitor(id) {
 
 let schedulerRunning = false;
 let nextDockerPoll = 0;
+let nextProtectPoll = 0;
 async function schedulerTick() {
   if (schedulerRunning) return;
   schedulerRunning = true;
@@ -1262,6 +1406,10 @@ async function schedulerTick() {
     if (Date.now() >= nextDockerPoll) {
       nextDockerPoll = Date.now() + 30000;
       try { await pollDockerFleet(); } catch (error) { console.error("Docker fleet poll failed:", error.message); }
+    }
+    if (Date.now() >= nextProtectPoll) {
+      nextProtectPoll = Date.now() + 60000;
+      try { await pollProtectFleet(); } catch (error) { console.error("Protect fleet poll failed:", error.message); }
     }
   } finally {
     schedulerRunning = false;
@@ -1586,6 +1734,10 @@ app.get("/api/incidents", requireAuth, (req, res) => {
         NULL AS acknowledgedAt, NULL AS acknowledgedBy, docker_incidents.cause AS cause, docker_incidents.container_name AS monitorName, docker_incidents.container_id AS target, 'docker' AS source
       FROM docker_incidents
       UNION ALL
+      SELECT -1500000-protect_incidents.id AS id, protect_incidents.started_at AS startedAt, protect_incidents.resolved_at AS resolvedAt,
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, protect_incidents.cause AS cause, protect_incidents.camera_name AS monitorName, protect_incidents.camera_id AS target, 'protect' AS source
+      FROM protect_incidents
+      UNION ALL
       SELECT -2000000-alert_rule_incidents.id AS id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.resolved_at AS resolvedAt,
         alert_rule_incidents.acknowledged_at AS acknowledgedAt, alert_rule_incidents.acknowledged_by AS acknowledgedBy, alert_rule_incidents.cause AS cause, alert_rules.name AS monitorName, alert_rules.metric_key AS target, 'rule' AS source
       FROM alert_rule_incidents JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
@@ -1841,6 +1993,73 @@ app.get("/api/docker/containers/:id/details", requireAuth, (req, res) => {
   const metrics = db.prepare("SELECT status, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, message, polled_at AS polledAt FROM docker_metrics WHERE container_id = ? ORDER BY polled_at DESC LIMIT 100").all(container.container_id);
   res.json({ container: { ...container, hostName: container.host_name }, metrics });
 });
+app.get("/api/protect/status", requireAuth, (req, res) => {
+  const hosts = db.prepare("SELECT * FROM protect_hosts ORDER BY name").all();
+  const cameras = db.prepare("SELECT * FROM protect_cameras ORDER BY name").all();
+  res.json({
+    available: hosts.some((item) => item.status === "up"),
+    error: protectFleetError,
+    lastPolledAt: protectLastPolledAt,
+    hostCount: hosts.length,
+    onlineHosts: hosts.filter((item) => item.status === "up").length,
+    total: cameras.length,
+    online: cameras.filter((item) => item.status === "up").length,
+    offline: cameras.filter((item) => item.status === "down").length
+  });
+});
+app.get("/api/protect/hosts", requireAuth, (req, res) => {
+  res.json(db.prepare("SELECT id, name, endpoint, tls_verify AS tlsVerify, enabled, status, last_error AS lastError, last_polled_at AS lastPolledAt FROM protect_hosts ORDER BY name").all().map((item) => ({ ...item, tlsVerify: Boolean(item.tlsVerify), enabled: Boolean(item.enabled), configured: true })));
+});
+app.post("/api/protect/hosts/test", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateProtectHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const cameras = await protectRequest({ endpoint: host.endpoint, api_key: host.apiKey, tls_verify: host.tlsVerify ? 1 : 0 }, "/proxy/protect/integration/v1/cameras");
+    res.json({ ok: true, cameras: Array.isArray(cameras) ? cameras.length : cameras?.cameras?.length || cameras?.data?.length || 0 });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/protect/hosts", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateProtectHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM protect_hosts WHERE endpoint = ?").get(host.endpoint)) return res.status(409).json({ error: "That Protect console is already configured." });
+  const result = db.prepare("INSERT INTO protect_hosts (name, endpoint, api_key, tls_verify) VALUES (?, ?, ?, ?)").run(host.name, host.endpoint, host.apiKey, host.tlsVerify ? 1 : 0);
+  const poll = await pollProtectHost(Number(result.lastInsertRowid));
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), status: poll.available ? "up" : "down", error: poll.error });
+});
+app.put("/api/protect/hosts/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM protect_hosts WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Protect host not found." });
+  let host;
+  try { host = validateProtectHost({ ...req.body, apiKey: req.body.apiKey || current.api_key }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM protect_hosts WHERE endpoint = ? AND id != ?").get(host.endpoint, id)) return res.status(409).json({ error: "That Protect console is already configured." });
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE protect_hosts SET name = ?, endpoint = ?, api_key = ?, tls_verify = ?, enabled = ? WHERE id = ?").run(host.name, host.endpoint, host.apiKey, host.tlsVerify ? 1 : 0, enabled, id);
+  if (enabled) await pollProtectHost(id);
+  res.json({ ok: true });
+});
+app.delete("/api/protect/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  db.transaction(() => {
+    db.prepare("DELETE FROM protect_incidents WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM protect_cameras WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM protect_hosts WHERE id = ?").run(id);
+  })();
+  res.json({ ok: true });
+});
+app.get("/api/protect/cameras", requireAuth, (req, res) => {
+  const cameras = db.prepare("SELECT protect_cameras.*, protect_hosts.name AS host_name FROM protect_cameras JOIN protect_hosts ON protect_hosts.id = protect_cameras.host_id ORDER BY protect_hosts.name, protect_cameras.name").all();
+  res.json(cameras.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, name: item.name, model: item.model, mac: item.mac, address: item.address, state: item.state, recordingMode: item.recording_mode, status: item.status, lastSeen: item.last_seen, lastPolledAt: item.last_polled_at })));
+});
+app.post("/api/protect/refresh", requireAuth, async (req, res) => {
+  try {
+    const result = req.body.hostId ? await pollProtectHost(Number(req.body.hostId)) : await pollProtectFleet();
+    if (!result.available) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 app.get("/api/network-map", requireAuth, (req, res) => {
   const nodes = [];
   const edges = [];
@@ -1878,6 +2097,15 @@ app.get("/api/network-map", requireAuth, (req, res) => {
   for (const container of db.prepare("SELECT container_id, host_id, name, image, health FROM docker_containers WHERE state = 'running' ORDER BY name").all()) {
     nodes.push({ id: `docker:${container.container_id}`, type: "docker", name: container.name, status: container.health === "unhealthy" ? "down" : "up", detail: container.image });
     addEdge(`docker-host:${container.host_id}`, `docker:${container.container_id}`, "contains");
+  }
+  for (const host of db.prepare("SELECT id, name, endpoint, status FROM protect_hosts ORDER BY name").all()) {
+    const id = `protect-host:${host.id}`;
+    nodes.push({ id, type: "protect-host", name: host.name, status: host.status, detail: host.endpoint });
+    addSubnet(rememberHost(host.endpoint, id), id);
+  }
+  for (const camera of db.prepare("SELECT id, host_id, name, model, status, address FROM protect_cameras ORDER BY name").all()) {
+    nodes.push({ id: `protect:${camera.id}`, type: "protect", name: camera.name, status: camera.status, detail: camera.model || camera.address || "UniFi Protect camera" });
+    addEdge(`protect-host:${camera.host_id}`, `protect:${camera.id}`, "contains");
   }
   for (const monitor of db.prepare("SELECT id, name, target, status FROM monitors ORDER BY name").all()) {
     const id = `monitor:${monitor.id}`;

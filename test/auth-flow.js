@@ -19,6 +19,16 @@ const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 const dockerContainerListRequests = [];
 const dockerServer = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
+  if (req.url === "/proxy/protect/integration/v1/cameras") {
+    if (req.headers["x-api-key"] !== "protect-test-key") {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "bad key" }));
+    }
+    return res.end(JSON.stringify([
+      { id: "cam1", name: "Front Door", state: "CONNECTED", isConnected: true, marketName: "G5 Bullet", host: "192.168.1.50", lastSeen: Date.now(), recordingSettings: { mode: "always" } },
+      { id: "cam2", name: "Garage", state: "DISCONNECTED", isConnected: false, marketName: "G4 Instant", host: "192.168.1.51", lastSeen: Math.floor(Date.now() / 1000), recordingSettings: { mode: "detections" } }
+    ]));
+  }
   if (req.url === "/_ping") return res.end("OK");
   if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
   if (req.url === "/containers/json") {
@@ -74,7 +84,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.19", channel: "beta" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.0-beta.20", channel: "beta" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -152,7 +162,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.0-beta.19");
+    assert.equal(adminSettings.app.version, "1.0.0-beta.20");
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 30, reason: "Test window" }) })).status, 200);
     assert.equal((await (await request("/api/admin/settings")).json()).maintenance.active, true);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 0 }) })).status, 200);
@@ -174,7 +184,28 @@ async function waitForServer() {
     assert.equal((await request("/api/docker/refresh", { method: "POST", body: "{}" })).status, 200);
     assert.equal((await (await request("/api/docker/containers")).json()).length, 1);
     assert.ok(dockerContainerListRequests.length >= 2);
+    assert.equal((await request("/api/protect/status")).status, 200);
+    assert.deepEqual(await (await request("/api/protect/cameras")).json(), []);
+    assert.equal((await request("/api/protect/refresh", { method: "POST", body: "{}" })).status, 400);
+    assert.equal((await request("/api/protect/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "protect-test-key" }) })).status, 200);
+    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "protect-test-key" }) })).status, 201);
+    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Protect", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "protect-test-key" }) })).status, 409);
+    const protectHosts = await (await request("/api/protect/hosts")).json();
+    assert.equal(protectHosts.length, 1);
+    assert.equal(protectHosts[0].status, "up");
+    const protectStatus = await (await request("/api/protect/status")).json();
+    assert.equal(protectStatus.total, 2);
+    assert.equal(protectStatus.offline, 1);
+    const protectCameras = await (await request("/api/protect/cameras")).json();
+    assert.equal(protectCameras.length, 2);
+    assert.equal(protectCameras.some((camera) => camera.name === "Front Door" && camera.status === "up"), true);
+    assert.equal(protectCameras.some((camera) => camera.name === "Garage" && camera.status === "down"), true);
+    assert.equal((await request("/api/protect/refresh", { method: "POST", body: JSON.stringify({ hostId: protectHosts[0].id }) })).status, 200);
+    const protectMap = await (await request("/api/network-map")).json();
+    assert.equal(protectMap.nodes.some((node) => node.type === "protect-host"), true);
+    assert.equal(protectMap.nodes.some((node) => node.type === "protect"), true);
     assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await request(`/api/protect/hosts/${protectHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();
     assert.ok(profiles.some((profile) => profile.slug === "truenas" && profile.source === "built-in"));

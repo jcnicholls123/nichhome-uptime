@@ -29,6 +29,7 @@
         <p class="nav-label">Infrastructure</p>
         <button class="nav-item" data-page="SNMP Devices"><span class="nav-icon">⌘</span>SNMP Devices</button>
         <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-count" id="dockerNavCount">0</span></button>
+        <button class="nav-item" data-page="Protect"><span class="nav-icon">C</span>UniFi Protect<span class="nav-count" id="protectNavCount">0</span></button>
         <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Connect</p>
@@ -154,6 +155,12 @@
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / DOCKER FLEET</p><h1>Container intelligence</h1><p class="subhead">Hosts, stacks, resource usage, health, restart counts, and recent metrics.</p></div><div class="heading-actions"><button class="soft-button" id="dockerPageAddHost">Add Docker host</button><button class="command-button" id="dockerPageRefresh">Refresh fleet</button></div></section>
         <section class="metric-grid" id="dockerPageMetrics"></section>
         <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">ALL ACTIVE CONTAINERS</span><h2>Docker fleet</h2></div></div><div class="docker-detail-grid" id="dockerPageContainers"></div></section>
+      </div>
+      <div class="content" id="protectPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / UNIFI PROTECT</p><h1>Camera intelligence</h1><p class="subhead">Monitor UniFi Protect consoles and camera connection/recording state through the local Protect API.</p></div><div class="heading-actions"><button class="soft-button" id="protectPageAddHost">Add Protect console</button><button class="command-button" id="protectPageRefresh">Refresh cameras</button></div></section>
+        <section class="metric-grid" id="protectMetrics"></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">PROTECT CONSOLES</span><h2>UniFi Protect hosts</h2></div><button class="soft-button" id="addProtectHost">Add console</button></div><div class="docker-host-list" id="protectHostList"></div></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag accent">CAMERAS</span><h2>Camera fleet</h2></div></div><div class="docker-detail-grid" id="protectCameraList"></div></section>
       </div>
       <div class="content" id="alertRulesPage" hidden>
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / ALERT RULES</p><h1>Variable alerts</h1><p class="subhead">Create Zabbix-style threshold and state rules from SNMP telemetry or Docker metrics.</p></div><div class="heading-actions"><button class="command-button" id="addAlertRule">Create alert rule</button></div></section>
@@ -361,6 +368,12 @@
         <div class="form-columns"><button class="soft-button" type="button" id="testDockerHost">Test connection</button><button class="command-button" type="submit">Save Docker host</button></div>
         <p class="modal-error" id="dockerHostError"></p>
       </form>
+    </section>
+  </div>
+  <div class="modal-backdrop" id="protectHostModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag blue">UNIFI PROTECT</span><h2 id="protectHostTitle">Add Protect console</h2></div><button class="modal-close" data-close="protectHostModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="protectHostForm"><input type="hidden" name="id"><label>Friendly name<input name="name" required minlength="2" maxlength="80" placeholder="UNVR / UDM Pro"></label><label>Console URL<input name="endpoint" required placeholder="https://192.168.1.1"></label><label>Protect API key<input name="apiKey" type="password" autocomplete="off" placeholder="UniFi Protect API key"></label><label class="toggle-label"><input name="tlsVerify" type="checkbox"> Verify TLS certificate</label><label class="toggle-label" id="protectHostEnabledLabel" hidden><input name="enabled" type="checkbox" checked> Host enabled</label><p class="form-help">Use a UniFi Protect API key with camera read access. Self-signed local consoles usually need TLS verification off.</p><div class="form-columns"><button class="soft-button" type="button" id="testProtectHost">Test connection</button><button class="command-button" type="submit">Save Protect console</button></div><p class="modal-error" id="protectHostError"></p></form>
     </section>
   </div>
 

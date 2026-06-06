@@ -476,6 +476,74 @@ function updateDashboardHealth() {
   document.querySelector(".progress-line:not(.warning) span").style.width = services.length ? `${(up.length / services.length) * 100}%` : "0%";
   document.querySelector(".progress-line.warning span").style.width = services.length ? `${(down.length / services.length) * 100}%` : "0%";
   document.querySelectorAll(".metric-card")[2].classList.toggle("alerting", down.length > 0);
+  renderCommandCenter(services);
+}
+
+function commandRow(label, value, detail = "", state = "") {
+  const row = document.createElement("article");
+  row.className = `command-row ${state}`;
+  const copy = document.createElement("div");
+  const name = document.createElement("strong"); name.textContent = label;
+  const small = document.createElement("small"); small.textContent = detail;
+  copy.append(name, small);
+  const metric = document.createElement("span"); metric.textContent = value;
+  row.append(copy, metric);
+  return row;
+}
+
+function renderCommandCenter(services = null) {
+  const topology = document.getElementById("commandTopologySnapshot");
+  const alerts = document.getElementById("commandUrgentAlerts");
+  const health = document.getElementById("commandNetworkHealth");
+  const traffic = document.getElementById("commandTrafficList");
+  if (!topology || !alerts || !health || !traffic) return;
+  services ||= [
+    ...monitors,
+    ...(featureEnabled("snmp") ? snmpDevices : []),
+    ...(featureEnabled("docker") ? [...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("network") ? [...unifiNetworkHosts, ...unifiNetworkDevices.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : [])
+  ];
+  const openAlerts = incidents.filter((incident) => !incident.resolvedAt);
+  const offline = services.filter((item) => item.enabled !== false && item.status === "down");
+  const totalNodes = networkMap.nodes.length;
+  const totalLinks = networkMap.edges.length;
+  topology.replaceChildren(
+    commandRow("Mapped nodes", totalNodes, "devices, services, subnets, sites", totalNodes ? "good" : ""),
+    commandRow("Mapped links", totalLinks, "inferred and manual relationships", totalLinks ? "good" : ""),
+    commandRow("Offline items", offline.length, offline.slice(0, 3).map((item) => item.name).join(", ") || "No offline devices", offline.length ? "warn" : "good"),
+    commandRow("Manual corrections", networkMap.edges.filter((edge) => edge.manual).length, "replace/add links you have curated")
+  );
+  alerts.replaceChildren();
+  if (!openAlerts.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No urgent alerts. The board is quiet.";
+    alerts.append(empty);
+  } else openAlerts.slice(0, 5).forEach((incident) => alerts.append(incidentElement(incident)));
+  const groups = [
+    ["SNMP devices", snmpDevices],
+    ["UniFi devices", unifiNetworkDevices],
+    ["Docker containers", dockerContainers],
+    ["Protect cameras", protectCameras],
+    ["Service monitors", monitors]
+  ];
+  health.replaceChildren();
+  for (const [label, items] of groups) {
+    const down = items.filter((item) => item.status === "down").length;
+    const up = items.filter((item) => item.status === "up").length;
+    health.append(commandRow(label, `${up}/${items.length}`, down ? `${down} down` : "healthy or waiting", down ? "warn" : up ? "good" : ""));
+  }
+  const trafficRows = [];
+  for (const device of snmpDevices) {
+    const summary = device.interfaceSummary || {};
+    const load = Number(summary.errors || 0) + Number(summary.discards || 0);
+    trafficRows.push({ name: device.name, value: load, detail: `${summary.up || 0}/${summary.total || 0} interfaces up, ${summary.errors || 0} errors, ${summary.discards || 0} discards` });
+  }
+  traffic.replaceChildren();
+  const busy = trafficRows.sort((a, b) => b.value - a.value).slice(0, 5);
+  if (!busy.length) {
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "SNMP interface data will appear here after polling.";
+    traffic.append(empty);
+  } else for (const row of busy) traffic.append(commandRow(row.name, row.value ? row.value : "OK", row.detail, row.value ? "warn" : "good"));
 }
 
 async function loadMonitors() {
@@ -1184,7 +1252,7 @@ function openAlertRule(rule = null) {
   document.getElementById("alertRuleEnabledLabel").hidden = !rule; document.getElementById("alertRuleError").textContent = ""; document.getElementById("alertRuleModal").hidden = false;
 }
 
-async function loadNetworkMap() { networkMap = await api("/api/network-map"); renderNetworkMap(); }
+async function loadNetworkMap() { networkMap = await api("/api/network-map"); renderNetworkMap(); renderCommandCenter(); }
 
 function openMapNode(node = null) {
   const form = document.getElementById("mapNodeForm"); form.reset(); form.elements.id.value = node ? (node.manual ? node.id.split(":")[1] : node.id) : "";
@@ -1970,6 +2038,9 @@ document.getElementById("resetNetworkMapLayout").addEventListener("click", async
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) modal.hidden = true; }));
 document.getElementById("viewAllIncidents").addEventListener("click", openIncidents);
+document.getElementById("commandOpenAlerts").addEventListener("click", () => showWorkspace("Notifications"));
+document.getElementById("commandOpenMap").addEventListener("click", () => showWorkspace("Network Map"));
+document.getElementById("commandOpenSnmp").addEventListener("click", () => showWorkspace("SNMP Devices"));
 document.getElementById("incidentButton").addEventListener("click", openIncidents);
 document.getElementById("activeAlertStrip").addEventListener("click", openIncidents);
 

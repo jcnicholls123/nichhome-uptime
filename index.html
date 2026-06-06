@@ -102,6 +102,25 @@
           </article>
         </section>
 
+        <section class="auvik-command-grid">
+          <article class="panel auvik-map-panel">
+            <div class="panel-heading"><div><span class="section-tag accent">NETWORK COMMAND</span><h2>Topology health</h2></div><button class="text-button" id="commandOpenMap">Open map</button></div>
+            <div class="command-topology" id="commandTopologySnapshot"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><span class="section-tag">URGENT ALERTS</span><h2>Needs action</h2></div><button class="text-button" id="commandOpenAlerts">View all</button></div>
+            <div class="activity-list command-alert-list" id="commandUrgentAlerts"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><span class="section-tag blue">NETWORK HEALTH</span><h2>Device roll-up</h2></div></div>
+            <div class="command-list" id="commandNetworkHealth"></div>
+          </article>
+          <article class="panel">
+            <div class="panel-heading"><div><span class="section-tag">TRAFFIC SNAPSHOT</span><h2>Busy links</h2></div><button class="text-button" id="commandOpenSnmp">SNMP graphs</button></div>
+            <div class="command-list" id="commandTrafficList"></div>
+          </article>
+        </section>
+
         <section class="dashboard-grid">
           <article class="panel uptime-panel">
             <div class="panel-heading">

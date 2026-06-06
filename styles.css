@@ -125,6 +125,21 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .mini-line path { fill: none; stroke: var(--coral); stroke-width: 2; vector-effect: non-scaling-stroke; }
 
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .75fr); gap: 11px; }
+.auvik-command-grid { display: grid; grid-template-columns: minmax(360px, 1.35fr) repeat(3, minmax(230px, 1fr)); gap: 11px; margin-bottom: 11px; }
+.auvik-map-panel { border-color: rgba(255,107,82,.24); background: linear-gradient(135deg, rgba(18,22,22,.96), rgba(31,42,39,.92)); color: white; }
+.auvik-map-panel .section-tag, .auvik-map-panel .text-button { color: #ffb1a2; }
+.command-topology, .command-list { display: grid; gap: 8px; }
+.command-alert-list { max-height: 310px; overflow: auto; padding-right: 4px; }
+.command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.36); }
+.auvik-map-panel .command-row { border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.07); }
+.command-row.good { border-color: rgba(121,214,163,.35); }
+.command-row.warn { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.08); }
+.command-row div { display: grid; gap: 3px; min-width: 0; }
+.command-row strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.command-row small { overflow: hidden; color: #7f8984; font-size: 10px; text-overflow: ellipsis; white-space: nowrap; }
+.auvik-map-panel .command-row small { color: #aab8b2; }
+.command-row > span { flex: 0 0 auto; color: var(--coral); font-family: "DM Mono"; font-size: 18px; font-weight: 700; }
+.auvik-map-panel .command-row > span { color: var(--green); }
 .panel { min-width: 0; padding: 19px; border: 1px solid var(--line); border-radius: 12px; background: rgba(251,248,240,.8); }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
 .panel-heading h2 { margin: 0; font-size: 14px; letter-spacing: -.5px; }
@@ -462,6 +477,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 
 @media (max-width: 1120px) {
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
+  .auvik-command-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .profile-copy { display: none; }
   .snmp-content { grid-template-columns: 1fr; }
   .snmp-stats { padding: 15px 0 0; border-left: 0; border-top: 1px solid #2b3432; }
@@ -490,6 +506,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .page-heading { align-items: flex-start; }
   .heading-actions { display: none; }
   .dashboard-grid { grid-template-columns: 1fr; }
+  .auvik-command-grid { grid-template-columns: 1fr; }
   .snmp-panel { grid-column: auto; }
   .nav-item { min-height: 46px; font-size: 14px; }
   .nav-label, .brand-copy small, .sidebar-footer small { font-size: 11px; }

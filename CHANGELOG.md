@@ -12,6 +12,15 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.0-beta.34] - 2026-06-06
+
+### Added
+
+- Overview now includes an Auvik-inspired network command centre with topology
+  health, urgent alerts, device roll-up, and interface traffic snapshots
+- Command-centre quick actions jump directly to Network Map, Notifications,
+  and SNMP graph/detail workflows
+
 ## [1.0.0-beta.33] - 2026-06-05
 
 ### Added

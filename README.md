@@ -19,6 +19,8 @@ Discord alert visibility.
 - Optional authenticator-app TOTP MFA with scannable setup QR codes
 - Protected dashboard and account security controls
 - Optional account nickname/display name for friendlier greetings
+- Auvik-inspired network command centre with topology health, urgent alerts,
+  fleet roll-ups, and traffic snapshots
 - Admin feature visibility toggles for hiding unused SNMP, Docker, UniFi
   Network, UniFi Protect, or Network Map modules without deleting data
 - Mobile navigation and search across monitors, SNMP devices, Docker, and

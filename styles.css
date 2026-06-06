@@ -127,10 +127,15 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.45fr) minmax(280px, .75fr); gap: 11px; }
 .auvik-command-grid { display: grid; grid-template-columns: minmax(360px, 1.35fr) repeat(3, minmax(230px, 1fr)); gap: 11px; margin-bottom: 11px; }
 .auvik-map-panel { border-color: rgba(255,107,82,.24); background: linear-gradient(135deg, rgba(18,22,22,.96), rgba(31,42,39,.92)); color: white; }
+.auvik-command-grid > .panel:not(.auvik-map-panel) { color: var(--ink); background: rgba(251,248,240,.92); }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .panel-heading h2,
+.auvik-command-grid > .panel:not(.auvik-map-panel) .command-row strong { color: #121616; }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .text-button { color: #4f5a55; }
 .auvik-map-panel .section-tag, .auvik-map-panel .text-button { color: #ffb1a2; }
+.auvik-map-panel .panel-heading h2, .auvik-map-panel .command-row strong { color: #f8fbf8; }
 .command-topology, .command-list { display: grid; gap: 8px; }
 .command-alert-list { max-height: 310px; overflow: auto; padding-right: 4px; }
-.command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.36); }
+.command-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 54px; padding: 11px 12px; border: 1px solid var(--line); border-radius: 10px; color: #121616; background: rgba(255,255,255,.68); }
 .auvik-map-panel .command-row { border-color: rgba(255,255,255,.12); background: rgba(255,255,255,.07); }
 .command-row.good { border-color: rgba(121,214,163,.35); }
 .command-row.warn { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.08); }

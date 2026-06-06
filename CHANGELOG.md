@@ -12,6 +12,13 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.1] - 2026-06-06
+
+### Fixed
+
+- Dashboard command-centre panels now set explicit light-card and dark-card
+  text colours so labels do not disappear as white-on-light text
+
 ## [1.0.0-beta.34] - 2026-06-06
 
 ### Added

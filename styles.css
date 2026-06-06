@@ -146,6 +146,13 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .command-row > span { flex: 0 0 auto; color: var(--coral); font-family: "DM Mono"; font-size: 18px; font-weight: 700; }
 .auvik-map-panel .command-row > span { color: var(--green); }
 .panel { min-width: 0; padding: 19px; border: 1px solid var(--line); border-radius: 12px; background: rgba(251,248,240,.8); }
+.auvik-command-grid > .panel.auvik-map-panel { color: #f8fbf8; border-color: rgba(255,107,82,.28); background: linear-gradient(135deg, rgba(18,22,22,.98), rgba(31,42,39,.94)); }
+.auvik-command-grid > .panel.auvik-map-panel .command-row { color: #f8fbf8; border-color: rgba(255,255,255,.18); background: rgba(255,255,255,.09); }
+.auvik-command-grid > .panel.auvik-map-panel .command-row small { color: #c8d2cd; }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .command-row small { color: #56615c; }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .section-tag { color: #587066; }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .section-tag.accent { color: var(--coral); }
+.auvik-command-grid > .panel:not(.auvik-map-panel) .section-tag.blue { color: #336fa8; }
 .panel-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 15px; margin-bottom: 14px; }
 .panel-heading h2 { margin: 0; font-size: 14px; letter-spacing: -.5px; }
 .section-tag { display: block; margin-bottom: 5px; }

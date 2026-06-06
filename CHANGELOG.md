@@ -7,6 +7,13 @@ include breaking changes while the monitoring engine and integrations mature.
 
 ## [Unreleased]
 
+### Planned
+
+- Additional historical reporting ranges
+- Public status pages
+
+## [1.0.2] - 2026-06-06
+
 ### Added
 
 - Zabbix-style trigger functions for alert rules: last, average, minimum,
@@ -19,11 +26,15 @@ include breaking changes while the monitoring engine and integrations mature.
   power, storage, and health strings can be graphed after polling
 - Detailed Discord problem and recovery embeds with target, metric, expression,
   current value, reason, severity, and recommended action
+- Hikvision ISAPI camera/NVR monitoring with host setup, camera/channel
+  discovery, offline incidents, topology nodes, latest data, and alert-rule
+  targets
+- Hikvision camera health alert template
 
-### Planned
+### Fixed
 
-- Additional historical reporting ranges
-- Public status pages
+- Sidebar version channel now follows `/api/version` instead of always showing
+  the Beta channel label
 
 ## [1.0.1] - 2026-06-06
 

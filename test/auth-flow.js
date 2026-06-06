@@ -45,6 +45,18 @@ const dockerServer = http.createServer((req, res) => {
       { id: "cam2", name: "Garage", state: "DISCONNECTED", isConnected: false, marketName: "G4 Instant", host: "192.168.1.51", lastSeen: Math.floor(Date.now() / 1000), recordingSettings: { mode: "detections" } }
     ]));
   }
+  if (req.url === "/ISAPI/System/deviceInfo") {
+    if (req.headers.authorization !== `Basic ${Buffer.from("admin:hik-pass").toString("base64")}`) {
+      res.statusCode = 401;
+      return res.end("<error>bad auth</error>");
+    }
+    res.setHeader("Content-Type", "application/xml");
+    return res.end("<DeviceInfo><deviceName>Test Hikvision</deviceName><model>DS-7608NI</model><serialNumber>HK123</serialNumber></DeviceInfo>");
+  }
+  if (req.url === "/ISAPI/ContentMgmt/InputProxy/channels") {
+    res.setHeader("Content-Type", "application/xml");
+    return res.end("<InputProxyChannelList><InputProxyChannel><id>1</id><name>Driveway</name><ipAddress>192.168.1.70</ipAddress><online>true</online></InputProxyChannel><InputProxyChannel><id>2</id><name>Garden</name><ipAddress>192.168.1.71</ipAddress><online>false</online></InputProxyChannel></InputProxyChannelList>");
+  }
   if (req.url === "/_ping") return res.end("OK");
   if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
   if (req.url === "/containers/json") {
@@ -100,7 +112,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.1", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.2", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -192,20 +204,21 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.1");
-    assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, networkMap: true });
+    assert.equal(adminSettings.app.version, "1.0.2");
+    assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);
     const changedPreferences = await (await request("/api/admin/settings")).json();
     assert.equal(changedPreferences.preferences.browserNotifications, true);
     assert.equal(changedPreferences.preferences.mapShowUnifiClients, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true }) })).status, 200);
-    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, networkMap: false }) })).status, 200);
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: false, protect: false, hikvision: false, networkMap: false }) })).status, 200);
     const disabledFeatures = await (await request("/api/admin/settings")).json();
     assert.equal(disabledFeatures.features.network, false);
     assert.equal(disabledFeatures.features.protect, false);
+    assert.equal(disabledFeatures.features.hikvision, false);
     assert.equal(disabledFeatures.features.networkMap, false);
-    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: true, protect: true, networkMap: true }) })).status, 200);
+    assert.equal((await request("/api/admin/features", { method: "PUT", body: JSON.stringify({ snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true }) })).status, 200);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 30, reason: "Test window" }) })).status, 200);
     assert.equal((await (await request("/api/admin/settings")).json()).maintenance.active, true);
     assert.equal((await request("/api/admin/maintenance", { method: "PUT", body: JSON.stringify({ minutes: 0 }) })).status, 200);
@@ -258,6 +271,27 @@ async function waitForServer() {
     const protectMap = await (await request("/api/network-map")).json();
     assert.equal(protectMap.nodes.some((node) => node.type === "protect-host"), true);
     assert.equal(protectMap.nodes.some((node) => node.type === "protect"), true);
+    assert.equal((await request("/api/hikvision/status")).status, 200);
+    assert.deepEqual(await (await request("/api/hikvision/cameras")).json(), []);
+    assert.equal((await request("/api/hikvision/refresh", { method: "POST", body: "{}" })).status, 400);
+    assert.equal((await request("/api/hikvision/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Hikvision", endpoint: `http://127.0.0.1:${dockerPort}`, username: "admin", password: "hik-pass" }) })).status, 200);
+    assert.equal((await request("/api/hikvision/hosts", { method: "POST", body: JSON.stringify({ name: "Test Hikvision", endpoint: `http://127.0.0.1:${dockerPort}`, username: "admin", password: "hik-pass" }) })).status, 201);
+    assert.equal((await request("/api/hikvision/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Hikvision", endpoint: `http://127.0.0.1:${dockerPort}/`, username: "admin", password: "hik-pass" }) })).status, 409);
+    const hikvisionHosts = await (await request("/api/hikvision/hosts")).json();
+    assert.equal(hikvisionHosts.length, 1);
+    const hikvisionStatus = await (await request("/api/hikvision/status")).json();
+    assert.equal(hikvisionStatus.total, 2);
+    assert.equal(hikvisionStatus.offline, 1);
+    const hikvisionCameras = await (await request("/api/hikvision/cameras")).json();
+    assert.equal(hikvisionCameras.some((camera) => camera.name === "Driveway" && camera.status === "up"), true);
+    assert.equal(hikvisionCameras.some((camera) => camera.name === "Garden" && camera.status === "down"), true);
+    const hikvisionAlertOptions = await (await request("/api/alert-rules/options")).json();
+    const hikvisionTarget = hikvisionAlertOptions.hikvision.find((camera) => camera.name.includes("Driveway"));
+    assert.ok(hikvisionTarget.metrics.some((metric) => metric.key === "status"));
+    assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "hikvision-camera-health", targetType: "hikvision", targetId: hikvisionTarget.id }) })).status, 200);
+    const hikvisionMap = await (await request("/api/network-map")).json();
+    assert.equal(hikvisionMap.nodes.some((node) => node.type === "hikvision-host"), true);
+    assert.equal(hikvisionMap.nodes.some((node) => node.type === "hikvision"), true);
     assert.equal((await request(`/api/alert-rules/${alertRules[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request("/api/unifi-network/status")).status, 200);
     assert.deepEqual(await (await request("/api/unifi-network/devices")).json(), []);
@@ -292,6 +326,7 @@ async function waitForServer() {
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-device"), true);
     assert.equal(unifiMap.nodes.some((node) => node.type === "unifi-client"), false);
     assert.equal((await request(`/api/unifi-network/hosts/${networkHosts[0].id}`, { method: "DELETE" })).status, 200);
+    assert.equal((await request(`/api/hikvision/hosts/${hikvisionHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/protect/hosts/${protectHosts[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/docker/hosts/${dockerHosts[0].id}`, { method: "DELETE" })).status, 200);
     const profiles = await (await request("/api/snmp/profiles")).json();

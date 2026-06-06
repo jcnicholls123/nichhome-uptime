@@ -20,13 +20,16 @@ let unifiNetworkStatus = { available: false };
 let protectHosts = [];
 let protectCameras = [];
 let protectStatus = { available: false };
+let hikvisionHosts = [];
+let hikvisionCameras = [];
+let hikvisionStatus = { available: false };
 let alertRules = [];
-let alertRuleOptions = { snmp: [], docker: [], unifi: [] };
+let alertRuleOptions = { snmp: [], docker: [], unifi: [], hikvision: [] };
 let alertTemplates = [];
 let currentProblems = [];
 let latestData = [];
 let adminSettings = null;
-let featureSettings = { snmp: true, docker: true, network: true, protect: true, networkMap: true };
+let featureSettings = { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true };
 let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
 let networkMap = { nodes: [], edges: [] };
 let notificationDiscordConfig = null;
@@ -35,8 +38,8 @@ let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
-  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
+  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
+  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
@@ -45,6 +48,7 @@ function showWorkspace(name) {
   if (name === "Docker") renderDockerWorkspace();
   if (name === "UniFi Network") renderUnifiNetworkWorkspace();
   if (name === "Protect") renderProtectWorkspace();
+  if (name === "Hikvision") renderHikvisionWorkspace();
   if (name === "Alert Rules") renderAlertRules();
   if (name === "Network Map") renderNetworkMap();
   if (name === "Notifications") loadNotificationsPage();
@@ -55,19 +59,30 @@ function featureEnabled(name) {
   return featureSettings?.[name] !== false;
 }
 
+function ensureAlertSourceOptions() {
+  const select = document.querySelector("#alertRuleForm select[name=targetType]");
+  if (select && ![...select.options].some((option) => option.value === "hikvision")) {
+    const option = document.createElement("option");
+    option.value = "hikvision";
+    option.textContent = "Hikvision camera metric";
+    select.append(option);
+  }
+}
+
 function applyFeatureVisibility() {
   const bindings = [
     ["snmp", ['[data-page="SNMP Devices"]', ".snmp-panel"]],
     ["docker", ['[data-page="Docker"]', ".docker-panel"]],
     ["network", ['[data-page="UniFi Network"]']],
     ["protect", ['[data-page="Protect"]']],
+    ["hikvision", ['[data-page="Hikvision"]']],
     ["networkMap", ['[data-page="Network Map"]']]
   ];
   for (const [feature, selectors] of bindings) {
     for (const selector of selectors) document.querySelectorAll(selector).forEach((item) => { item.hidden = !featureEnabled(feature); });
   }
   const activePage = document.querySelector(".nav-item.active")?.dataset.page;
-  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
+  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Hikvision" && !featureEnabled("hikvision")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -95,7 +110,8 @@ function renderSearchResults() {
     ...(featureEnabled("docker") ? dockerContainers.filter((item) => `${item.name} ${item.image} ${item.state} ${item.health}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker", name: item.name, detail: item.image, open: () => document.querySelector(".docker-panel").scrollIntoView({ behavior: "smooth", block: "center" }) })) : []),
     ...(featureEnabled("network") ? unifiNetworkDevices.filter((item) => `${item.name} ${item.model || ""} ${item.siteName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "UniFi Network", name: item.name, detail: item.model || item.siteName, open: () => showWorkspace("UniFi Network") })) : []),
     ...(featureEnabled("network") ? unifiNetworkClients.filter((item) => `${item.name} ${item.address || ""} ${item.siteName || ""} ${item.type || ""}`.toLowerCase().includes(query)).map((item) => ({ kind: "UniFi Client", name: item.name, detail: item.address || item.siteName, open: () => showWorkspace("UniFi Network") })) : []),
-    ...(featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") })) : [])
+    ...(featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Protect", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Protect") })) : []),
+    ...(featureEnabled("hikvision") ? hikvisionCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Hikvision", name: item.name, detail: item.model || item.hostName, open: () => showWorkspace("Hikvision") })) : [])
   ].slice(0, 8);
   if (!matches.length) {
     const empty = document.createElement("p");
@@ -322,6 +338,8 @@ async function loadAccount() {
 async function loadVersion() {
   const release = await api("/api/version");
   document.getElementById("appVersion").textContent = `v${release.version}`;
+  const channel = document.getElementById("appChannel");
+  if (channel) channel.textContent = `${release.channel} channel`;
 }
 
 function renderMonitors() {
@@ -331,10 +349,11 @@ function renderMonitors() {
   const visibleDockerHosts = featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
   const visibleUnifiNetwork = featureEnabled("network") ? unifiNetworkDevices.filter((item) => `${item.name} ${item.model || ""} ${item.siteName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
   const visibleProtect = featureEnabled("protect") ? protectCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
-  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleUnifiNetwork.length && !visibleProtect.length) {
+  const visibleHikvision = featureEnabled("hikvision") ? hikvisionCameras.filter((item) => `${item.name} ${item.model || ""} ${item.hostName || ""} ${item.status}`.toLowerCase().includes(searchFilter.toLowerCase())) : [];
+  if (!visible.length && !visibleSnmp.length && !visibleDockerHosts.length && !visibleUnifiNetwork.length && !visibleProtect.length && !visibleHikvision.length) {
     const empty = document.createElement("p");
     empty.className = "empty-state";
-    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length || unifiNetworkDevices.length || protectCameras.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, Docker host, UniFi Network console, or Protect console to begin.";
+    empty.textContent = monitors.length || snmpDevices.length || dockerHosts.length || unifiNetworkDevices.length || protectCameras.length || hikvisionCameras.length ? "No monitored services match your search." : "No monitored services yet. Add a monitor, SNMP device, Docker host, UniFi Network console, Protect console, or Hikvision host to begin.";
     monitorList.append(empty);
     return;
   }
@@ -451,6 +470,18 @@ function renderMonitors() {
     const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase();
     row.append(icon, copy, actions, status); monitorList.append(row);
   }
+  for (const camera of visibleHikvision) {
+    const row = document.createElement("div"); row.className = "monitor-row real-monitor";
+    const icon = makeIconBadge({ ...camera, type: "hikvision", detail: camera.model || camera.hostName, icon: "camera" }, "service-icon smart-service");
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name;
+    const detail = document.createElement("small"); detail.textContent = `HIKVISION - ${camera.hostName} - ${camera.model || camera.state || "Camera"}`;
+    copy.append(name, detail);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const open = document.createElement("button"); open.className = "monitor-action"; open.textContent = "i"; open.addEventListener("click", () => showWorkspace("Hikvision"));
+    actions.append(open);
+    const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase();
+    row.append(icon, copy, actions, status); monitorList.append(row);
+  }
 }
 
 function updateDashboardHealth() {
@@ -459,7 +490,8 @@ function updateDashboardHealth() {
     ...(featureEnabled("snmp") ? snmpDevices : []),
     ...(featureEnabled("docker") ? [...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))] : []),
     ...(featureEnabled("network") ? [...unifiNetworkHosts, ...unifiNetworkDevices.map((item) => ({ ...item, enabled: true }))] : []),
-    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : [])
+    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("hikvision") ? [...hikvisionHosts, ...hikvisionCameras.map((item) => ({ ...item, enabled: true }))] : [])
   ];
   const up = services.filter((item) => item.enabled && item.status === "up");
   const down = services.filter((item) => item.enabled && item.status === "down");
@@ -504,7 +536,8 @@ function renderCommandCenter(services = null) {
     ...(featureEnabled("snmp") ? snmpDevices : []),
     ...(featureEnabled("docker") ? [...dockerHosts, ...dockerContainers.map((item) => ({ ...item, enabled: true }))] : []),
     ...(featureEnabled("network") ? [...unifiNetworkHosts, ...unifiNetworkDevices.map((item) => ({ ...item, enabled: true }))] : []),
-    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : [])
+    ...(featureEnabled("protect") ? [...protectHosts, ...protectCameras.map((item) => ({ ...item, enabled: true }))] : []),
+    ...(featureEnabled("hikvision") ? [...hikvisionHosts, ...hikvisionCameras.map((item) => ({ ...item, enabled: true }))] : [])
   ];
   const openAlerts = incidents.filter((incident) => !incident.resolvedAt);
   const offline = services.filter((item) => item.enabled !== false && item.status === "down");
@@ -526,6 +559,7 @@ function renderCommandCenter(services = null) {
     ["UniFi devices", unifiNetworkDevices],
     ["Docker containers", dockerContainers],
     ["Protect cameras", protectCameras],
+    ["Hikvision cameras", hikvisionCameras],
     ["Service monitors", monitors]
   ];
   health.replaceChildren();
@@ -1078,6 +1112,14 @@ async function loadProtectFleet() {
   renderSearchResults();
 }
 
+async function loadHikvisionFleet() {
+  [hikvisionStatus, hikvisionHosts, hikvisionCameras] = await Promise.all([api("/api/hikvision/status"), api("/api/hikvision/hosts"), api("/api/hikvision/cameras")]);
+  renderHikvisionWorkspace();
+  renderMonitors();
+  updateDashboardHealth();
+  renderSearchResults();
+}
+
 function renderProtectWorkspace() {
   const metrics = document.getElementById("protectMetrics"); const hosts = document.getElementById("protectHostList"); const cameras = document.getElementById("protectCameraList"); const nav = document.getElementById("protectNavCount");
   if (!metrics || !hosts || !cameras) return;
@@ -1122,6 +1164,49 @@ function openProtectHostForm(host = null) {
   document.getElementById("protectHostTitle").textContent = host ? `Edit ${host.name}` : "Add Protect console";
   document.getElementById("protectHostError").textContent = "";
   document.getElementById("protectHostModal").hidden = false;
+}
+
+function renderHikvisionWorkspace() {
+  const metrics = document.getElementById("hikvisionMetrics"); const hosts = document.getElementById("hikvisionHostList"); const cameras = document.getElementById("hikvisionCameraList"); const nav = document.getElementById("hikvisionNavCount");
+  if (!metrics || !hosts || !cameras) return;
+  nav.textContent = hikvisionCameras.length;
+  metrics.replaceChildren(metricCard("Hikvision hosts", hikvisionStatus.hostCount || 0, `${hikvisionStatus.onlineHosts || 0} online`), metricCard("Channels", hikvisionStatus.total || 0, "discovered"), metricCard("Online", hikvisionStatus.online || 0, "responding"), metricCard("Offline", hikvisionStatus.offline || 0, "needs attention", (hikvisionStatus.offline || 0) > 0));
+  hosts.replaceChildren(); cameras.replaceChildren();
+  if (!hikvisionHosts.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Add a Hikvision camera or NVR with ISAPI credentials to monitor channels."; hosts.append(empty); }
+  for (const host of hikvisionHosts) {
+    const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const detail = document.createElement("small"); detail.textContent = `${host.endpoint} - ${host.lastError || host.status}`; copy.append(name, detail);
+    const hostIdentity = document.createElement("div"); hostIdentity.className = "identity-row"; hostIdentity.append(makeIconBadge({ ...host, type: "hikvision-host", icon: "camera" }, "node-glyph"), copy);
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openHikvisionHostForm(host));
+    const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "refresh"; poll.addEventListener("click", async () => { await api("/api/hikvision/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await loadHikvisionFleet(); });
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete Hikvision host ${host.name}?`)) { await api(`/api/hikvision/hosts/${host.id}`, { method: "DELETE" }); await loadHikvisionFleet(); } });
+    actions.append(edit, poll, remove);
+    const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+    row.append(hostIdentity, actions, status); hosts.append(row);
+  }
+  if (!hikvisionCameras.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = hikvisionHosts.length ? "Hikvision host connected, but no channels were returned yet." : "No Hikvision cameras configured."; cameras.append(empty); }
+  for (const camera of hikvisionCameras) {
+    const card = document.createElement("article"); card.className = `docker-detail-card ${camera.status === "down" ? "down" : ""}`;
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = camera.name; const status = document.createElement("span"); status.className = `status-label ${camera.status === "up" ? "up" : "warn"}`; status.textContent = camera.status.toUpperCase(); const cameraIdentity = document.createElement("div"); cameraIdentity.className = "identity-row"; cameraIdentity.append(makeIconBadge({ ...camera, type: "hikvision", icon: "camera" }, "node-glyph"), name); header.append(cameraIdentity, status);
+    const detail = document.createElement("small"); detail.textContent = `${camera.hostName} - ${camera.model || "Hikvision camera"} - ${camera.address || "no address"}`;
+    const values = document.createElement("div"); values.className = "container-metrics"; values.textContent = `Channel ${camera.channelId || "--"} - State ${camera.state || "--"} - Last poll ${formatDate(camera.lastPolledAt)}`;
+    card.append(header, detail, values); cameras.append(card);
+  }
+}
+
+function openHikvisionHostForm(host = null) {
+  const form = document.getElementById("hikvisionHostForm"); form.reset(); form.elements.id.value = host?.id || "";
+  form.elements.name.value = host?.name || "";
+  form.elements.endpoint.value = host?.endpoint || "";
+  form.elements.username.value = host?.username || "";
+  form.elements.password.placeholder = host ? "Leave blank to keep existing password" : "Hikvision password";
+  form.elements.tlsVerify.checked = Boolean(host?.tlsVerify);
+  form.elements.enabled.checked = host?.enabled ?? true;
+  document.getElementById("hikvisionHostEnabledLabel").hidden = !host;
+  document.getElementById("hikvisionHostTitle").textContent = host ? `Edit ${host.name}` : "Add Hikvision host";
+  document.getElementById("hikvisionHostError").textContent = "";
+  document.getElementById("hikvisionHostModal").hidden = false;
 }
 
 function metricCard(label, value, note, alerting = false) {
@@ -1745,7 +1830,7 @@ async function loadAdminSettings() {
     metricCard("Discord", adminSettings.discord.enabled ? "ON" : "OFF", adminSettings.discord.webhookUrl || "not configured")
   );
   const featureForm = document.getElementById("featureSettingsForm");
-  if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
+  if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "hikvision", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   const preferenceForm = document.getElementById("preferenceSettingsForm");
   if (preferenceForm) for (const key of ["browserNotifications", "mapShowInferredLinks", "mapShowUnifiClients", "mapReplaceInferredByDefault"]) preferenceForm.elements[key].checked = Boolean(preferenceSettings[key]);
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
@@ -2060,6 +2145,31 @@ document.getElementById("protectHostForm").addEventListener("submit", async (eve
     document.getElementById("protectHostModal").hidden = true; form.reset(); await Promise.all([loadProtectFleet(), loadIncidents(), loadNetworkMap()]); showToast("Protect console saved", values.name);
   } catch (err) { error.textContent = err.message; }
 });
+document.getElementById("hikvisionPageAddHost").addEventListener("click", () => openHikvisionHostForm());
+document.getElementById("addHikvisionHost").addEventListener("click", () => openHikvisionHostForm());
+document.getElementById("hikvisionPageRefresh").addEventListener("click", async () => {
+  try {
+    await api("/api/hikvision/refresh", { method: "POST", body: "{}" });
+    await Promise.all([loadHikvisionFleet(), loadIncidents(), loadNetworkMap(), loadAlertRules()]);
+    showToast("Hikvision refreshed", "Camera/channel state has been updated");
+  } catch (err) {
+    showToast("Hikvision refresh unavailable", err.message);
+  }
+});
+document.getElementById("testHikvisionHost").addEventListener("click", async () => {
+  const form = document.getElementById("hikvisionHostForm"); const error = document.getElementById("hikvisionHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked;
+  try { const result = await api("/api/hikvision/hosts/test", { method: "POST", body: JSON.stringify(values) }); showToast("Hikvision connected", result.model || "ISAPI device returned device info"); } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("hikvisionHostForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("hikvisionHostError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form)); values.tlsVerify = form.elements.tlsVerify.checked; values.enabled = form.elements.enabled.checked;
+  try {
+    await api(values.id ? `/api/hikvision/hosts/${values.id}` : "/api/hikvision/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+    document.getElementById("hikvisionHostModal").hidden = true; form.reset(); await Promise.all([loadHikvisionFleet(), loadIncidents(), loadNetworkMap(), loadAlertRules()]); showToast("Hikvision host saved", values.name);
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("refreshNetworkMap").addEventListener("click", loadNetworkMap);
 document.getElementById("refreshAdminSettings").addEventListener("click", loadAdminSettings);
 document.getElementById("maintenanceForm").addEventListener("submit", async (event) => {
@@ -2071,7 +2181,7 @@ document.getElementById("featureSettingsForm").addEventListener("submit", async 
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("featureSettingsError"); error.textContent = "";
   try {
-    const body = { snmp: form.elements.snmp.checked, docker: form.elements.docker.checked, network: form.elements.network.checked, protect: form.elements.protect.checked, networkMap: form.elements.networkMap.checked };
+    const body = { snmp: form.elements.snmp.checked, docker: form.elements.docker.checked, network: form.elements.network.checked, protect: form.elements.protect.checked, hikvision: form.elements.hikvision.checked, networkMap: form.elements.networkMap.checked };
     const result = await api("/api/admin/features", { method: "PUT", body: JSON.stringify(body) });
     featureSettings = result.features;
     applyFeatureVisibility();
@@ -2179,6 +2289,7 @@ document.getElementById("confirmDisable").addEventListener("click", async () => 
 });
 
 loadAccount();
+ensureAlertSourceOptions();
 loadVersion();
 loadMonitors();
 loadIncidents();
@@ -2189,6 +2300,7 @@ loadSnmpProfiles();
 loadDockerFleet();
 loadUnifiNetworkFleet();
 loadProtectFleet();
+loadHikvisionFleet();
 loadAlertRules();
 loadAlertTemplates();
 loadNetworkMap();
@@ -2197,5 +2309,5 @@ document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
 const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
 if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadUnifiNetworkFleet(), loadProtectFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadUnifiNetworkFleet(), loadProtectFleet(), loadHikvisionFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

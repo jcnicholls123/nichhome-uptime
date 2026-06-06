@@ -263,6 +263,40 @@ db.exec(`
     resolved_at TEXT,
     cause TEXT
   );
+  CREATE TABLE IF NOT EXISTS hikvision_hosts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL,
+    endpoint TEXT NOT NULL,
+    username TEXT NOT NULL,
+    password TEXT NOT NULL,
+    tls_verify INTEGER NOT NULL DEFAULT 0,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_error TEXT,
+    last_polled_at TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS hikvision_cameras (
+    id TEXT PRIMARY KEY,
+    host_id INTEGER NOT NULL REFERENCES hikvision_hosts(id) ON DELETE CASCADE,
+    channel_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    model TEXT,
+    serial TEXT,
+    address TEXT,
+    state TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    last_polled_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS hikvision_incidents (
+    id INTEGER PRIMARY KEY,
+    camera_id TEXT NOT NULL,
+    host_id INTEGER REFERENCES hikvision_hosts(id) ON DELETE CASCADE,
+    camera_name TEXT NOT NULL,
+    started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    resolved_at TEXT,
+    cause TEXT
+  );
   CREATE TABLE IF NOT EXISTS unifi_network_hosts (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -322,7 +356,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS alert_rules (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
-    target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi')),
+    target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi', 'hikvision')),
     target_id TEXT NOT NULL,
     metric_key TEXT NOT NULL,
     operator TEXT NOT NULL,
@@ -422,7 +456,7 @@ ensureColumn("map_links", "link_mode", "TEXT NOT NULL DEFAULT 'manual'");
 
 function migrateAlertRuleTargets() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
-  if (!table?.sql || table.sql.includes("'unifi'")) return;
+  if (!table?.sql || table.sql.includes("'hikvision'")) return;
   db.exec("PRAGMA foreign_keys = OFF");
   db.transaction(() => {
     db.exec(`
@@ -431,7 +465,7 @@ function migrateAlertRuleTargets() {
       CREATE TABLE alert_rules (
         id INTEGER PRIMARY KEY,
         name TEXT NOT NULL,
-        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi')),
+        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi', 'hikvision')),
         target_id TEXT NOT NULL,
         metric_key TEXT NOT NULL,
         operator TEXT NOT NULL,
@@ -742,6 +776,7 @@ function featureSettings() {
     docker: getSetting("feature_docker_enabled", "true") === "true",
     network: getSetting("feature_unifi_network_enabled", "true") === "true",
     protect: getSetting("feature_protect_enabled", "true") === "true",
+    hikvision: getSetting("feature_hikvision_enabled", "true") === "true",
     networkMap: getSetting("feature_network_map_enabled", "true") === "true"
   };
 }
@@ -819,6 +854,14 @@ function unifiAlertMetrics(device) {
   ];
 }
 
+function hikvisionAlertMetrics(camera) {
+  return [
+    { key: "status", label: "Camera status", value: camera.status, unit: "" },
+    { key: "state", label: "Camera state", value: camera.state || "", unit: "" },
+    { key: "model", label: "Device model", value: camera.model || "", unit: "" }
+  ];
+}
+
 function alertRuleValue(rule) {
   if (rule.target_type === "snmp") {
     const separator = rule.metric_key.indexOf("|");
@@ -842,6 +885,11 @@ function alertRuleValue(rule) {
     if (rule.metric_key === "client_count") return unifiDeviceClientCount(device);
     return device[rule.metric_key] ?? null;
   }
+  if (rule.target_type === "hikvision") {
+    const camera = db.prepare("SELECT * FROM hikvision_cameras WHERE id = ?").get(rule.target_id);
+    if (!camera) return null;
+    return camera[rule.metric_key] ?? null;
+  }
   const container = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(rule.target_id);
   if (!container) return null;
   if (rule.metric_key === "memory_percent") return container.memory_limit_bytes > 0 ? (container.memory_bytes / container.memory_limit_bytes) * 100 : null;
@@ -857,6 +905,10 @@ function alertRuleMetricLabel(rule) {
     const device = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(rule.target_id);
     return device ? unifiAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
   }
+  if (rule.target_type === "hikvision") {
+    const camera = db.prepare("SELECT * FROM hikvision_cameras WHERE id = ?").get(rule.target_id);
+    return camera ? hikvisionAlertMetrics(camera).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
   const labels = { cpu_percent: "CPU usage", memory_percent: "Memory usage", restart_count: "Restart count", health: "Container health" };
   return labels[rule.metric_key] || rule.metric_key;
 }
@@ -864,6 +916,7 @@ function alertRuleMetricLabel(rule) {
 function alertRuleTargetName(rule) {
   if (rule.target_type === "snmp") return db.prepare("SELECT name FROM snmp_devices WHERE id = ?").get(Number(rule.target_id))?.name || `SNMP ${rule.target_id}`;
   if (rule.target_type === "unifi") return db.prepare("SELECT name FROM unifi_network_devices WHERE id = ?").get(rule.target_id)?.name || `UniFi ${rule.target_id}`;
+  if (rule.target_type === "hikvision") return db.prepare("SELECT name FROM hikvision_cameras WHERE id = ?").get(rule.target_id)?.name || `Hikvision ${rule.target_id}`;
   return db.prepare("SELECT name FROM docker_containers WHERE container_id = ?").get(rule.target_id)?.name || `Docker ${rule.target_id}`;
 }
 
@@ -1421,6 +1474,8 @@ let dockerFleetError = null;
 let dockerLastPolledAt = null;
 let protectFleetError = null;
 let protectLastPolledAt = null;
+let hikvisionFleetError = null;
+let hikvisionLastPolledAt = null;
 let unifiNetworkFleetError = null;
 let unifiNetworkLastPolledAt = null;
 
@@ -1679,6 +1734,158 @@ async function pollProtectFleet() {
   return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
 }
 
+function validateHikvisionHost(input) {
+  const name = String(input.name || "").trim();
+  let endpoint = String(input.endpoint || "").trim();
+  const username = String(input.username || "").trim();
+  const password = String(input.password || "").trim();
+  const tlsVerify = input.tlsVerify === true;
+  if (name.length < 2 || name.length > 80) throw new Error("Hikvision host name must be between 2 and 80 characters.");
+  const url = new URL(endpoint);
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the Hikvision/NVR base URL, for example http://192.168.1.50.");
+  endpoint = url.origin;
+  if (username.length < 1 || username.length > 80) throw new Error("Enter the Hikvision username.");
+  if (password.length < 1 || password.length > 500) throw new Error("Enter the Hikvision password.");
+  return { name, endpoint, username, password, tlsVerify };
+}
+
+function hikvisionRequest(host, requestPath) {
+  return new Promise((resolve, reject) => {
+    const url = new URL(requestPath, `${host.endpoint.replace(/\/+$/, "")}/`);
+    const client = url.protocol === "https:" ? https : http;
+    const request = client.request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: `${url.pathname}${url.search}`,
+      method: "GET",
+      rejectUnauthorized: Boolean(host.tls_verify),
+      headers: {
+        Accept: "application/xml,application/json,text/xml,*/*",
+        Authorization: `Basic ${Buffer.from(`${host.username}:${host.password}`).toString("base64")}`
+      }
+    }, (response) => {
+      let body = "";
+      response.setEncoding("utf8");
+      response.on("data", (chunk) => { body += chunk; });
+      response.on("end", () => {
+        if (response.statusCode === 401) return reject(new Error("Hikvision authentication failed. Basic auth is supported in this build; enable Basic auth or use an account that permits ISAPI access."));
+        if (response.statusCode < 200 || response.statusCode >= 300) return reject(new Error(`Hikvision ISAPI returned HTTP ${response.statusCode}`));
+        try {
+          if (/^\s*[{[]/.test(body)) return resolve(JSON.parse(body));
+          return resolve(new XMLParser({ ignoreAttributes: false, parseTagValue: false, trimValues: true }).parse(body));
+        } catch {
+          resolve(body);
+        }
+      });
+    });
+    request.setTimeout(12000, () => request.destroy(new Error("Hikvision request timed out")));
+    request.on("error", reject);
+    request.end();
+  });
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  return value == null ? [] : [value];
+}
+
+function hikvisionDeviceInfo(payload) {
+  const info = payload?.DeviceInfo || payload?.deviceInfo || payload?.data || payload || {};
+  return {
+    model: String(info.model || info.deviceName || info.deviceType || "").slice(0, 120),
+    serial: String(info.serialNumber || info.serialNo || info.deviceID || "").slice(0, 120),
+    name: String(info.deviceName || info.hostName || "").slice(0, 120)
+  };
+}
+
+function hikvisionChannels(payload, fallbackName) {
+  const root = payload?.InputProxyChannelList || payload?.StreamingChannelList || payload?.VideoInputChannelList || payload?.channels || payload?.data || payload || {};
+  const channels = [
+    ...asArray(root.InputProxyChannel),
+    ...asArray(root.StreamingChannel),
+    ...asArray(root.VideoInputChannel),
+    ...asArray(root.channel),
+    ...asArray(root.Channel)
+  ];
+  return channels.map((channel, index) => {
+    const id = String(channel.id || channel.ID || channel.channelID || channel.proxyChannelID || index + 1);
+    const onlineText = String(channel.online || channel.enabled || channel.videoInputEnabled || channel.status || channel.connectStatus || "").toLowerCase();
+    const status = ["false", "offline", "disconnect", "disconnected", "0"].includes(onlineText) ? "down" : "up";
+    return {
+      channelId: id,
+      name: String(channel.name || channel.channelName || channel.videoInputChannelName || channel.ipAddress || `${fallbackName} channel ${id}`).slice(0, 120),
+      address: String(channel.ipAddress || channel.ip || channel.host || "").slice(0, 120),
+      state: onlineText || "online",
+      status
+    };
+  }).filter((channel) => channel.channelId);
+}
+
+async function pollHikvisionHost(hostOrId) {
+  const host = typeof hostOrId === "object" ? hostOrId : db.prepare("SELECT * FROM hikvision_hosts WHERE id = ?").get(Number(hostOrId));
+  if (!host || !host.enabled) return { available: false, error: "Hikvision host not found or disabled." };
+  let info = {};
+  let channels = [];
+  try {
+    info = hikvisionDeviceInfo(await hikvisionRequest(host, "/ISAPI/System/deviceInfo"));
+    for (const path of ["/ISAPI/ContentMgmt/InputProxy/channels", "/ISAPI/Streaming/channels", "/ISAPI/System/Video/inputs/channels"]) {
+      try {
+        channels = hikvisionChannels(await hikvisionRequest(host, path), host.name);
+        if (channels.length) break;
+      } catch {}
+    }
+    if (!channels.length) channels = [{ channelId: "device", name: info.name || host.name, address: new URL(host.endpoint).hostname, state: "online", status: "up" }];
+  } catch (error) {
+    db.prepare("UPDATE hikvision_hosts SET status = 'down', last_error = ?, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(error.message, host.id);
+    if (host.status !== "down") await sendDiscordOperational(`Hikvision ${host.name}`, false, error.message, [{ name: "Endpoint", value: host.endpoint }]);
+    return { available: false, error: error.message };
+  }
+  const seen = new Set();
+  for (const camera of channels) {
+    const id = `${host.id}:${camera.channelId}`;
+    seen.add(id);
+    const previous = db.prepare("SELECT * FROM hikvision_cameras WHERE id = ?").get(id);
+    const openIncident = db.prepare("SELECT 1 FROM hikvision_incidents WHERE camera_id = ? AND resolved_at IS NULL").get(id);
+    db.transaction(() => {
+      db.prepare(`
+        INSERT INTO hikvision_cameras (id, host_id, channel_id, name, model, serial, address, state, status, last_polled_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(id) DO UPDATE SET name=excluded.name, model=excluded.model, serial=excluded.serial, address=excluded.address,
+          state=excluded.state, status=excluded.status, last_polled_at=CURRENT_TIMESTAMP
+      `).run(id, host.id, camera.channelId, camera.name, info.model || "", info.serial || "", camera.address || new URL(host.endpoint).hostname, camera.state, camera.status);
+      if (camera.status === "down" && !openIncident) db.prepare("INSERT INTO hikvision_incidents (camera_id, host_id, camera_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, camera.name, camera.state || "Camera offline");
+      if (camera.status === "up" && openIncident) db.prepare("UPDATE hikvision_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE camera_id = ? AND resolved_at IS NULL").run(id);
+    })();
+    if (camera.status === "down" && !openIncident) await sendDiscordOperational(`Hikvision camera ${camera.name}`, false, camera.state || "Camera offline", [{ name: "Host", value: host.name }, { name: "Model", value: info.model || "--" }]);
+    if (camera.status === "up" && previous && previous.status === "down") await sendDiscordOperational(`Hikvision camera ${camera.name}`, true, "Camera is online again.", [{ name: "Host", value: host.name }]);
+    await evaluateAlertRules("hikvision", id);
+  }
+  db.transaction(() => {
+    for (const { id, name } of db.prepare("SELECT id, name FROM hikvision_cameras WHERE host_id = ?").all(host.id).filter((item) => !seen.has(item.id))) {
+      db.prepare("INSERT INTO hikvision_incidents (camera_id, host_id, camera_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, "Camera no longer appears in Hikvision ISAPI");
+      db.prepare("DELETE FROM alert_rules WHERE target_type = 'hikvision' AND target_id = ?").run(id);
+      db.prepare("DELETE FROM hikvision_cameras WHERE id = ?").run(id);
+    }
+    db.prepare("UPDATE hikvision_hosts SET status = 'up', last_error = NULL, last_polled_at = CURRENT_TIMESTAMP WHERE id = ?").run(host.id);
+  })();
+  if (host.status === "down") await sendDiscordOperational(`Hikvision ${host.name}`, true, "Hikvision ISAPI is reachable again.", [{ name: "Endpoint", value: host.endpoint }]);
+  hikvisionLastPolledAt = new Date().toISOString();
+  return { available: true, count: seen.size, hostId: host.id };
+}
+
+async function pollHikvisionFleet() {
+  const hosts = db.prepare("SELECT * FROM hikvision_hosts WHERE enabled = 1 ORDER BY id").all();
+  if (!hosts.length) {
+    hikvisionFleetError = "Add a Hikvision host to begin camera monitoring.";
+    return { available: false, error: hikvisionFleetError };
+  }
+  const results = [];
+  for (const host of hosts) results.push(await pollHikvisionHost(host));
+  hikvisionFleetError = results.every((item) => !item.available) ? results.map((item) => item.error).filter(Boolean).join("; ") : null;
+  return { available: results.some((item) => item.available), count: results.reduce((sum, item) => sum + (item.count || 0), 0), results };
+}
+
 function validateUnifiNetworkHost(input) {
   const name = String(input.name || "").trim();
   let endpoint = String(input.endpoint || "").trim();
@@ -1927,6 +2134,7 @@ async function runMonitor(id) {
 let schedulerRunning = false;
 let nextDockerPoll = 0;
 let nextProtectPoll = 0;
+let nextHikvisionPoll = 0;
 let nextUnifiNetworkPoll = 0;
 async function schedulerTick() {
   if (schedulerRunning) return;
@@ -1943,6 +2151,10 @@ async function schedulerTick() {
     if (Date.now() >= nextProtectPoll) {
       nextProtectPoll = Date.now() + 60000;
       try { await pollProtectFleet(); } catch (error) { console.error("Protect fleet poll failed:", error.message); }
+    }
+    if (Date.now() >= nextHikvisionPoll) {
+      nextHikvisionPoll = Date.now() + 60000;
+      try { await pollHikvisionFleet(); } catch (error) { console.error("Hikvision fleet poll failed:", error.message); }
     }
     if (Date.now() >= nextUnifiNetworkPoll) {
       nextUnifiNetworkPoll = Date.now() + 60000;
@@ -2156,13 +2368,19 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
     name: `${target.name} (${target.site_name || target.site_id})`,
     metrics: unifiAlertMetrics(target)
   }));
-  res.json({ snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets });
+  const hikvisionTargets = db.prepare("SELECT hikvision_cameras.*, hikvision_hosts.name AS host_name FROM hikvision_cameras JOIN hikvision_hosts ON hikvision_hosts.id = hikvision_cameras.host_id ORDER BY hikvision_hosts.name, hikvision_cameras.name").all().map((target) => ({
+    id: target.id,
+    name: `${target.name} (${target.host_name})`,
+    metrics: hikvisionAlertMetrics(target)
+  }));
+  res.json({ snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
 });
 app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
   res.json([
     { id: "snmp-storage", targetType: "snmp", name: "SNMP storage safety", description: "Creates high-usage rules for percentage storage/pool/dataset metrics.", severity: "high" },
     { id: "snmp-health", targetType: "snmp", name: "SNMP health/state checks", description: "Creates text-state rules for status and health metrics when present.", severity: "warning" },
     { id: "unifi-updates", targetType: "unifi", name: "UniFi update available", description: "Alerts when a UniFi Network device reports firmware or software updates available.", severity: "information" },
+    { id: "hikvision-camera-health", targetType: "hikvision", name: "Hikvision camera health", description: "Alerts when a Hikvision camera or NVR channel is not online.", severity: "high" },
     { id: "docker-baseline", targetType: "docker", name: "Docker baseline", description: "Creates CPU, memory, restart, and health rules for one running container.", severity: "warning" }
   ]);
 });
@@ -2194,6 +2412,10 @@ app.post("/api/alert-rules/templates/apply", requireAuth, async (req, res) => {
     const device = db.prepare("SELECT id, name FROM unifi_network_devices WHERE id = ?").get(targetId);
     if (!device) return res.status(400).json({ error: "Choose a UniFi Network device." });
     addRule({ name: `${device.name} update available`, targetType, targetId, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi Network reports an update is available for this device.", actionText: "Review release notes in UniFi Network and schedule the update.", triggerCount: 1, recoveryCount: 1 });
+  } else if (template === "hikvision-camera-health" && targetType === "hikvision") {
+    const camera = db.prepare("SELECT id, name FROM hikvision_cameras WHERE id = ?").get(targetId);
+    if (!camera) return res.status(400).json({ error: "Choose a Hikvision camera." });
+    addRule({ name: `${camera.name} online`, targetType, targetId, metricKey: "status", operator: "!=", threshold: "up", severity: "high", description: "Hikvision ISAPI reports the camera/channel is not online.", actionText: "Check camera power, cabling, PoE switch, NVR channel state, and Hikvision logs.", triggerCount: 1, recoveryCount: 1 });
   } else if (template.startsWith("snmp-") && targetType === "snmp") {
     const device = db.prepare("SELECT id, name FROM snmp_devices WHERE id = ?").get(Number(targetId));
     if (!device) return res.status(400).json({ error: "Choose an SNMP device." });
@@ -2236,8 +2458,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker", "unifi"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
-  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!["snmp", "docker", "unifi", "hikvision"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
@@ -2319,6 +2541,9 @@ app.get("/api/latest-data", requireAuth, (req, res) => {
   for (const device of db.prepare("SELECT * FROM unifi_network_devices ORDER BY name").all()) {
     for (const metric of unifiAlertMetrics(device)) rows.push({ targetType: "unifi", targetId: device.id, targetName: device.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: device.last_polled_at, graphable: false });
   }
+  for (const camera of db.prepare("SELECT * FROM hikvision_cameras ORDER BY name").all()) {
+    for (const metric of hikvisionAlertMetrics(camera)) rows.push({ targetType: "hikvision", targetId: camera.id, targetName: camera.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: camera.last_polled_at, graphable: false });
+  }
   res.json(rows.slice(0, 5000));
 });
 app.get("/api/metric-history", requireAuth, (req, res) => {
@@ -2361,6 +2586,10 @@ app.get("/api/incidents", requireAuth, (req, res) => {
       SELECT -1500000-protect_incidents.id AS id, protect_incidents.started_at AS startedAt, protect_incidents.resolved_at AS resolvedAt,
         NULL AS acknowledgedAt, NULL AS acknowledgedBy, protect_incidents.cause AS cause, protect_incidents.camera_name AS monitorName, protect_incidents.camera_id AS target, 'protect' AS source
       FROM protect_incidents
+      UNION ALL
+      SELECT -1650000-hikvision_incidents.id AS id, hikvision_incidents.started_at AS startedAt, hikvision_incidents.resolved_at AS resolvedAt,
+        NULL AS acknowledgedAt, NULL AS acknowledgedBy, hikvision_incidents.cause AS cause, hikvision_incidents.camera_name AS monitorName, hikvision_incidents.camera_id AS target, 'hikvision' AS source
+      FROM hikvision_incidents
       UNION ALL
       SELECT -1750000-unifi_network_incidents.id AS id, unifi_network_incidents.started_at AS startedAt, unifi_network_incidents.resolved_at AS resolvedAt,
         NULL AS acknowledgedAt, NULL AS acknowledgedBy, unifi_network_incidents.cause AS cause, unifi_network_incidents.device_name AS monitorName, unifi_network_incidents.device_id AS target, 'unifi-network' AS source
@@ -2719,6 +2948,74 @@ app.post("/api/protect/refresh", requireAuth, async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 });
+app.get("/api/hikvision/status", requireAuth, (req, res) => {
+  const hosts = db.prepare("SELECT * FROM hikvision_hosts ORDER BY name").all();
+  const cameras = db.prepare("SELECT * FROM hikvision_cameras ORDER BY name").all();
+  res.json({
+    available: hosts.some((item) => item.status === "up"),
+    error: hikvisionFleetError,
+    lastPolledAt: hikvisionLastPolledAt,
+    hostCount: hosts.length,
+    onlineHosts: hosts.filter((item) => item.status === "up").length,
+    total: cameras.length,
+    online: cameras.filter((item) => item.status === "up").length,
+    offline: cameras.filter((item) => item.status === "down").length
+  });
+});
+app.get("/api/hikvision/hosts", requireAuth, (req, res) => {
+  res.json(db.prepare("SELECT id, name, endpoint, username, tls_verify AS tlsVerify, enabled, status, last_error AS lastError, last_polled_at AS lastPolledAt FROM hikvision_hosts ORDER BY name").all().map((item) => ({ ...item, tlsVerify: Boolean(item.tlsVerify), enabled: Boolean(item.enabled), configured: true })));
+});
+app.post("/api/hikvision/hosts/test", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateHikvisionHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const info = hikvisionDeviceInfo(await hikvisionRequest({ endpoint: host.endpoint, username: host.username, password: host.password, tls_verify: host.tlsVerify ? 1 : 0 }, "/ISAPI/System/deviceInfo"));
+    res.json({ ok: true, model: info.model || "Hikvision device", serial: info.serial || "" });
+  } catch (error) { res.status(400).json({ error: error.message }); }
+});
+app.post("/api/hikvision/hosts", requireAuth, async (req, res) => {
+  let host;
+  try { host = validateHikvisionHost(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM hikvision_hosts WHERE endpoint = ?").get(host.endpoint)) return res.status(409).json({ error: "That Hikvision host is already configured." });
+  const result = db.prepare("INSERT INTO hikvision_hosts (name, endpoint, username, password, tls_verify) VALUES (?, ?, ?, ?, ?)").run(host.name, host.endpoint, host.username, host.password, host.tlsVerify ? 1 : 0);
+  const poll = await pollHikvisionHost(Number(result.lastInsertRowid));
+  res.status(201).json({ ok: true, id: Number(result.lastInsertRowid), status: poll.available ? "up" : "down", error: poll.error });
+});
+app.put("/api/hikvision/hosts/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM hikvision_hosts WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Hikvision host not found." });
+  let host;
+  try { host = validateHikvisionHost({ ...req.body, username: req.body.username || current.username, password: req.body.password || current.password }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  if (db.prepare("SELECT 1 FROM hikvision_hosts WHERE endpoint = ? AND id != ?").get(host.endpoint, id)) return res.status(409).json({ error: "That Hikvision host is already configured." });
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE hikvision_hosts SET name = ?, endpoint = ?, username = ?, password = ?, tls_verify = ?, enabled = ? WHERE id = ?").run(host.name, host.endpoint, host.username, host.password, host.tlsVerify ? 1 : 0, enabled, id);
+  if (enabled) await pollHikvisionHost(id);
+  res.json({ ok: true });
+});
+app.delete("/api/hikvision/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  db.transaction(() => {
+    db.prepare("DELETE FROM hikvision_incidents WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM alert_rules WHERE target_type = 'hikvision' AND target_id IN (SELECT id FROM hikvision_cameras WHERE host_id = ?)").run(id);
+    db.prepare("DELETE FROM hikvision_cameras WHERE host_id = ?").run(id);
+    db.prepare("DELETE FROM hikvision_hosts WHERE id = ?").run(id);
+  })();
+  res.json({ ok: true });
+});
+app.get("/api/hikvision/cameras", requireAuth, (req, res) => {
+  const cameras = db.prepare("SELECT hikvision_cameras.*, hikvision_hosts.name AS host_name FROM hikvision_cameras JOIN hikvision_hosts ON hikvision_hosts.id = hikvision_cameras.host_id ORDER BY hikvision_hosts.name, hikvision_cameras.name").all();
+  res.json(cameras.map((item) => ({ id: item.id, hostId: item.host_id, hostName: item.host_name, channelId: item.channel_id, name: item.name, model: item.model, serial: item.serial, address: item.address, state: item.state, status: item.status, lastPolledAt: item.last_polled_at })));
+});
+app.post("/api/hikvision/refresh", requireAuth, async (req, res) => {
+  try {
+    const result = req.body.hostId ? await pollHikvisionHost(Number(req.body.hostId)) : await pollHikvisionFleet();
+    if (!result.available) return res.status(400).json({ error: result.error });
+    res.json(result);
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 app.get("/api/unifi-network/status", requireAuth, (req, res) => {
   const hosts = db.prepare("SELECT * FROM unifi_network_hosts ORDER BY name").all();
   const sites = db.prepare("SELECT * FROM unifi_network_sites ORDER BY name").all();
@@ -2851,6 +3148,15 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     nodes.push({ id: `protect:${camera.id}`, type: "protect", name: camera.name, status: camera.status, detail: camera.model || camera.address || "UniFi Protect camera" });
     addEdge(`protect-host:${camera.host_id}`, `protect:${camera.id}`, "contains");
   }
+  for (const host of db.prepare("SELECT id, name, endpoint, status FROM hikvision_hosts ORDER BY name").all()) {
+    const id = `hikvision-host:${host.id}`;
+    nodes.push({ id, type: "hikvision-host", name: host.name, status: host.status, detail: host.endpoint, icon: "camera" });
+    addSubnet(rememberHost(host.endpoint, id), id);
+  }
+  for (const camera of db.prepare("SELECT id, host_id, name, model, status, address FROM hikvision_cameras ORDER BY name").all()) {
+    nodes.push({ id: `hikvision:${camera.id}`, type: "hikvision", name: camera.name, status: camera.status, detail: camera.model || camera.address || "Hikvision camera", icon: "camera" });
+    addEdge(`hikvision-host:${camera.host_id}`, `hikvision:${camera.id}`, "contains");
+  }
   for (const host of db.prepare("SELECT id, name, endpoint, status FROM unifi_network_hosts ORDER BY name").all()) {
     const id = `unifi-network-host:${host.id}`;
     nodes.push({ id, type: "unifi-network-host", name: host.name, status: host.status, detail: host.endpoint, icon: "unifi" });
@@ -2904,7 +3210,7 @@ app.post("/api/network-map/nodes", requireAuth, (req, res) => {
   const nodeType = String(req.body.nodeType || "manual").trim();
   const detail = String(req.body.detail || "").trim().slice(0, 300);
   const status = String(req.body.status || "up");
-  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service", "subnet", "snmp", "docker-host", "docker", "monitor", "protect-host", "protect", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
+  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service", "subnet", "snmp", "docker-host", "docker", "monitor", "protect-host", "protect", "hikvision-host", "hikvision", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
   const result = db.prepare("INSERT INTO map_nodes (name, node_type, detail, status, x, y) VALUES (?, ?, ?, ?, ?, ?)").run(name, nodeType, detail, status, Math.max(0, Math.min(100, Number(req.body.x || 50))), Math.max(0, Math.min(100, Number(req.body.y || 50))));
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -2927,7 +3233,7 @@ app.put("/api/network-map/overrides", requireAuth, (req, res) => {
   const icon = String(req.body.icon || "auto").trim().slice(0, 30);
   const x = Math.max(0, Math.min(100, Number(req.body.x ?? 50)));
   const y = Math.max(0, Math.min(100, Number(req.body.y ?? 50)));
-  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect|unifi-network-host|unifi-site|unifi-device|unifi-client):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
+  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect|hikvision-host|hikvision|unifi-network-host|unifi-site|unifi-device|unifi-client):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
   db.prepare(`
     INSERT INTO map_node_overrides (node_id, name, detail, icon, x, y, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
@@ -2972,12 +3278,14 @@ app.put("/api/admin/features", requireAuth, (req, res) => {
     docker: req.body.docker !== false,
     network: req.body.network !== false,
     protect: req.body.protect !== false,
+    hikvision: req.body.hikvision !== false,
     networkMap: req.body.networkMap !== false
   };
   setSetting("feature_snmp_enabled", String(features.snmp));
   setSetting("feature_docker_enabled", String(features.docker));
   setSetting("feature_unifi_network_enabled", String(features.network));
   setSetting("feature_protect_enabled", String(features.protect));
+  setSetting("feature_hikvision_enabled", String(features.hikvision));
   setSetting("feature_network_map_enabled", String(features.networkMap));
   res.json({ ok: true, features });
 });

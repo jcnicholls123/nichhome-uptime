@@ -31,6 +31,7 @@
         <button class="nav-item" data-page="UniFi Network"><span class="nav-icon">U</span>UniFi Network<span class="nav-count" id="unifiNetworkNavCount">0</span></button>
         <button class="nav-item" data-page="Docker"><span class="nav-icon">▣</span>Docker<span class="nav-count" id="dockerNavCount">0</span></button>
         <button class="nav-item" data-page="Protect"><span class="nav-icon">U</span>UniFi Protect<span class="nav-count" id="protectNavCount">0</span></button>
+        <button class="nav-item" data-page="Hikvision"><span class="nav-icon">H</span>Hikvision<span class="nav-count" id="hikvisionNavCount">0</span></button>
         <button class="nav-item" data-page="Network Map"><span class="nav-icon">⌯</span>Network Map<span class="nav-pill">SOON</span></button>
 
         <p class="nav-label">Connect</p>
@@ -42,7 +43,7 @@
 
       <div class="sidebar-footer">
         <div class="pulse-orb"><span></span></div>
-        <div><strong id="systemHealthText">All systems nominal</strong><small><span id="appVersion">Loading version</span> · Beta channel</small></div>
+        <div><strong id="systemHealthText">All systems nominal</strong><small><span id="appVersion">Loading version</span> · <span id="appChannel">stable channel</span></small></div>
       </div>
     </aside>
     <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Close navigation" hidden></button>
@@ -189,6 +190,12 @@
         <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">PROTECT CONSOLES</span><h2>UniFi Protect hosts</h2></div><button class="soft-button" id="addProtectHost">Add console</button></div><div class="docker-host-list" id="protectHostList"></div></section>
         <section class="panel"><div class="panel-heading"><div><span class="section-tag accent">CAMERAS</span><h2>Camera fleet</h2></div></div><div class="docker-detail-grid" id="protectCameraList"></div></section>
       </div>
+      <div class="content" id="hikvisionPage" hidden>
+        <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / HIKVISION</p><h1>Hikvision camera intelligence</h1><p class="subhead">Monitor Hikvision cameras and NVR channels through ISAPI, with alert-rule support for camera state and availability.</p></div><div class="heading-actions"><button class="soft-button" id="hikvisionPageAddHost">Add Hikvision host</button><button class="command-button" id="hikvisionPageRefresh">Refresh Hikvision</button></div></section>
+        <section class="metric-grid" id="hikvisionMetrics"></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">HIKVISION HOSTS</span><h2>NVRs and cameras</h2></div><button class="soft-button" id="addHikvisionHost">Add host</button></div><div class="docker-host-list" id="hikvisionHostList"></div></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag accent">CAMERAS</span><h2>ISAPI channels</h2></div></div><div class="docker-detail-grid" id="hikvisionCameraList"></div></section>
+      </div>
       <div class="content" id="alertRulesPage" hidden>
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / ALERT RULES</p><h1>Variable alerts</h1><p class="subhead">Create Zabbix-style threshold and state rules from SNMP telemetry or Docker metrics.</p></div><div class="heading-actions"><button class="command-button" id="addAlertRule">Create alert rule</button></div></section>
         <section class="metric-grid" id="alertRuleMetrics"></section>
@@ -214,7 +221,7 @@
         <section class="metric-grid" id="adminSettingsMetrics"></section>
         <section class="dashboard-grid">
           <article class="panel"><div class="panel-heading"><div><span class="section-tag accent">MAINTENANCE</span><h2>Quiet alert rules</h2></div></div><form class="monitor-form" id="maintenanceForm"><div class="form-columns"><label>Duration<select name="minutes"><option value="0">Turn off</option><option value="30">30 minutes</option><option value="60">1 hour</option><option value="240">4 hours</option><option value="1440">1 day</option></select></label><label>Reason<input name="reason" maxlength="160" placeholder="Switch upgrade, patching, planned work"></label></div><button class="command-button" type="submit">Save maintenance mode</button><p class="form-help" id="maintenanceStatus">Loading maintenance state...</p><p class="modal-error" id="maintenanceError"></p></form></article>
-          <article class="panel"><div class="panel-heading"><div><span class="section-tag blue">FEATURES</span><h2>Dashboard modules</h2></div></div><form class="monitor-form" id="featureSettingsForm"><label class="toggle-label"><input name="snmp" type="checkbox" checked> Show SNMP monitoring</label><label class="toggle-label"><input name="docker" type="checkbox" checked> Show Docker fleet</label><label class="toggle-label"><input name="network" type="checkbox" checked> Show UniFi Network</label><label class="toggle-label"><input name="protect" type="checkbox" checked> Show UniFi Protect cameras</label><label class="toggle-label"><input name="networkMap" type="checkbox" checked> Show Network Map</label><button class="command-button" type="submit">Save feature visibility</button><p class="form-help">Hides unused workspaces, dashboard panels, and service rows without deleting any saved data.</p><p class="modal-error" id="featureSettingsError"></p></form></article>
+          <article class="panel"><div class="panel-heading"><div><span class="section-tag blue">FEATURES</span><h2>Dashboard modules</h2></div></div><form class="monitor-form" id="featureSettingsForm"><label class="toggle-label"><input name="snmp" type="checkbox" checked> Show SNMP monitoring</label><label class="toggle-label"><input name="docker" type="checkbox" checked> Show Docker fleet</label><label class="toggle-label"><input name="network" type="checkbox" checked> Show UniFi Network</label><label class="toggle-label"><input name="protect" type="checkbox" checked> Show UniFi Protect cameras</label><label class="toggle-label"><input name="hikvision" type="checkbox" checked> Show Hikvision cameras</label><label class="toggle-label"><input name="networkMap" type="checkbox" checked> Show Network Map</label><button class="command-button" type="submit">Save feature visibility</button><p class="form-help">Hides unused workspaces, dashboard panels, and service rows without deleting any saved data.</p><p class="modal-error" id="featureSettingsError"></p></form></article>
           <article class="panel"><div class="panel-heading"><div><span class="section-tag">PREFERENCES</span><h2>Interface behaviour</h2></div></div><form class="monitor-form" id="preferenceSettingsForm"><label class="toggle-label"><input name="browserNotifications" type="checkbox"> Enable browser notifications for new incidents</label><label class="toggle-label"><input name="mapShowInferredLinks" type="checkbox" checked> Show inferred topology links</label><label class="toggle-label"><input name="mapReplaceInferredByDefault" type="checkbox" checked> New map links replace inferred parent by default</label><label class="toggle-label"><input name="mapShowUnifiClients" type="checkbox"> Show UniFi clients on topology map</label><button class="command-button" type="submit">Save preferences</button><p class="form-help">Browser notifications may ask for permission. Topology changes do not delete devices or monitors.</p><p class="modal-error" id="preferenceSettingsError"></p></form></article>
           <article class="panel"><div class="panel-heading"><div><span class="section-tag blue">SYSTEM</span><h2>Local runtime</h2></div></div><div class="profile-list" id="adminSystemList"></div></article>
         </section>
@@ -429,6 +436,12 @@
     </section>
   </div>
   <div class="toast" id="toast"><span>✓</span><div><strong>Monitor created</strong><small>Initial heartbeat scheduled</small></div></div>
+  <div class="modal-backdrop" id="hikvisionHostModal" hidden>
+    <section class="account-modal" role="dialog" aria-modal="true">
+      <div class="modal-heading"><div><span class="section-tag blue">HIKVISION</span><h2 id="hikvisionHostTitle">Add Hikvision host</h2></div><button class="modal-close" data-close="hikvisionHostModal" aria-label="Close">x</button></div>
+      <form class="monitor-form" id="hikvisionHostForm"><input type="hidden" name="id"><label>Friendly name<input name="name" required minlength="2" maxlength="80" placeholder="Driveway NVR / Front Door"></label><label>Host URL<input name="endpoint" required placeholder="http://192.168.1.50"></label><div class="form-columns"><label>Username<input name="username" autocomplete="username" placeholder="admin"></label><label>Password<input name="password" type="password" autocomplete="current-password" placeholder="Hikvision password"></label></div><label class="toggle-label"><input name="tlsVerify" type="checkbox"> Verify TLS certificate</label><label class="toggle-label" id="hikvisionHostEnabledLabel" hidden><input name="enabled" type="checkbox" checked> Host enabled</label><p class="form-help">Uses Hikvision ISAPI with Basic authentication. If your device only permits Digest auth, enable Basic auth or create an ISAPI user that allows Basic authentication.</p><div class="form-columns"><button class="soft-button" type="button" id="testHikvisionHost">Test connection</button><button class="command-button" type="submit">Save Hikvision host</button></div><p class="modal-error" id="hikvisionHostError"></p></form>
+    </section>
+  </div>
   <div class="modal-backdrop" id="alertRuleModal" hidden>
     <section class="account-modal" role="dialog" aria-modal="true">
       <div class="modal-heading"><div><span class="section-tag accent">VARIABLE ALERT</span><h2>Create alert rule</h2></div><button class="modal-close" data-close="alertRuleModal" aria-label="Close">x</button></div>

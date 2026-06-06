@@ -23,6 +23,8 @@ let protectStatus = { available: false };
 let alertRules = [];
 let alertRuleOptions = { snmp: [], docker: [], unifi: [] };
 let alertTemplates = [];
+let currentProblems = [];
+let latestData = [];
 let adminSettings = null;
 let featureSettings = { snmp: true, docker: true, network: true, protect: true, networkMap: true };
 let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
@@ -1168,7 +1170,7 @@ function renderDockerWorkspace() {
 }
 
 async function loadAlertRules() {
-  [alertRules, alertRuleOptions] = await Promise.all([api("/api/alert-rules"), api("/api/alert-rules/options")]);
+  [alertRules, alertRuleOptions, currentProblems, latestData] = await Promise.all([api("/api/alert-rules"), api("/api/alert-rules/options"), api("/api/problems"), api("/api/latest-data")]);
   renderAlertRules();
   renderAlertRuleDependencies();
   renderAlertTemplates();
@@ -1207,7 +1209,7 @@ function renderAlertRuleDependencies(selected = "") {
   select.value = selected || "";
 }
 
-function renderAlertRules() {
+function legacyRenderAlertRules() {
   const metrics = document.getElementById("alertRuleMetrics"); const list = document.getElementById("alertRuleList");
   if (!metrics || !list) return;
   const active = alertRules.filter((rule) => rule.active).length;
@@ -1227,6 +1229,81 @@ function renderAlertRules() {
   if (!alertRules.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No variable alert rules yet."; list.append(empty); }
 }
 
+function renderAlertRules() {
+  const metrics = document.getElementById("alertRuleMetrics"); const list = document.getElementById("alertRuleList");
+  if (!metrics || !list) return;
+  metrics.replaceChildren(metricCard("Configured triggers", alertRules.length, "Zabbix-style expressions"), metricCard("Current problems", currentProblems.length, "open problem state", currentProblems.length > 0), metricCard("Latest metrics", latestData.length, "live values"), metricCard("SNMP rules", alertRules.filter((rule) => rule.targetType === "snmp").length, "device telemetry"), metricCard("Docker/UniFi", alertRules.filter((rule) => rule.targetType !== "snmp").length, "fleet triggers"));
+  renderCurrentProblems();
+  renderLatestData();
+  list.replaceChildren();
+  for (const rule of alertRules) {
+    const row = document.createElement("article"); row.className = `rule-row ${rule.active ? "active" : ""}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = rule.name;
+    const fn = String(rule.functionName || "last").toUpperCase();
+    const windowText = rule.windowSeconds ? `, ${Math.round(rule.windowSeconds / 60)}m` : "";
+    const detail = document.createElement("small"); detail.textContent = `${rule.targetType.toUpperCase()} - ${rule.targetName || rule.targetId} - ${fn}(${rule.metricLabel || rule.metricKey}${windowText}) ${rule.operator} ${rule.threshold} - Current ${rule.currentValue ?? "--"}`; copy.append(name, detail);
+    const meta = document.createElement("small"); meta.textContent = `${rule.severity.toUpperCase()} | Trigger ${rule.triggerCount} / recover ${rule.recoveryCount} checks${rule.dependencyName ? ` | Depends on ${rule.dependencyName}` : ""}${rule.acknowledged ? " | ACK" : ""}`; copy.append(meta);
+    const state = document.createElement("span"); state.className = `status-label ${rule.active ? "warn" : "up"}`; state.textContent = rule.active ? "PROBLEM" : "OK";
+    const ack = document.createElement("button"); ack.className = "monitor-action"; ack.textContent = "ack"; ack.disabled = !rule.active || rule.acknowledged; ack.addEventListener("click", async () => { await api(`/api/alert-rules/${rule.id}/acknowledge`, { method: "POST", body: "{}" }); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Problem acknowledged", rule.name); });
+    const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openAlertRule(rule));
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete alert rule ${rule.name}?`)) { await api(`/api/alert-rules/${rule.id}`, { method: "DELETE" }); await Promise.all([loadAlertRules(), loadIncidents()]); } });
+    const actions = document.createElement("div"); actions.className = "monitor-actions"; actions.append(ack, edit, remove);
+    row.append(copy, state, actions); list.append(row);
+  }
+  if (!alertRules.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No trigger rules yet."; list.append(empty); }
+}
+
+function severityRank(severity) { return { disaster: 5, high: 4, average: 3, warning: 2, information: 1 }[severity] || 0; }
+
+function renderCurrentProblems() {
+  const list = document.getElementById("currentProblemList");
+  if (!list) return;
+  list.replaceChildren();
+  const problems = [...currentProblems].sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || String(b.startedAt).localeCompare(String(a.startedAt)));
+  if (!problems.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No current problems. Trigger board is clear."; list.append(empty); return; }
+  for (const problem of problems) {
+    const row = document.createElement("article"); row.className = `rule-row active severity-${problem.severity}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = problem.name;
+    const detail = document.createElement("small"); detail.textContent = `${problem.targetName} - ${problem.metricLabel} - ${problem.functionName.toUpperCase()} ${problem.operator} ${problem.threshold}`;
+    const cause = document.createElement("small"); cause.textContent = `${problem.cause || "Problem expression is true"} - Started ${formatDate(problem.startedAt)}${problem.acknowledged ? ` - ACK by ${problem.acknowledgedBy || "admin"}` : ""}`;
+    copy.append(name, detail, cause);
+    const state = document.createElement("span"); state.className = "status-label warn"; state.textContent = problem.severity.toUpperCase();
+    const ack = document.createElement("button"); ack.className = "monitor-action"; ack.textContent = "ack"; ack.disabled = problem.acknowledged; ack.addEventListener("click", async () => { await api(`/api/alert-rules/${problem.ruleId}/acknowledge`, { method: "POST", body: "{}" }); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Problem acknowledged", problem.name); });
+    row.append(copy, state, ack); list.append(row);
+  }
+}
+
+function renderLatestData() {
+  const list = document.getElementById("latestDataList");
+  if (!list) return;
+  const query = (document.getElementById("latestDataSearch")?.value || "").toLowerCase();
+  list.replaceChildren();
+  const rows = latestData.filter((row) => `${row.targetName} ${row.metricLabel} ${row.metricKey} ${row.value}`.toLowerCase().includes(query)).slice(0, 160);
+  if (!rows.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No latest data matches your search yet."; list.append(empty); return; }
+  for (const item of rows) {
+    const row = document.createElement("article"); row.className = "latest-data-row";
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = `${item.targetName} - ${item.metricLabel}`;
+    const detail = document.createElement("small"); detail.textContent = `${item.targetType.toUpperCase()} - ${item.metricKey} - updated ${formatDate(item.updatedAt)}`; copy.append(name, detail);
+    const value = document.createElement("span"); value.className = "latest-data-value"; value.textContent = `${item.value ?? "--"}${item.unit ? ` ${item.unit}` : ""}`;
+    const graph = document.createElement("button"); graph.className = "monitor-action"; graph.textContent = "graph"; graph.disabled = !item.graphable; graph.addEventListener("click", () => renderLatestMetricGraph(item));
+    row.append(copy, value, graph); list.append(row);
+  }
+}
+
+async function renderLatestMetricGraph(item) {
+  const chart = document.getElementById("latestMetricChart");
+  chart.replaceChildren();
+  const range = document.getElementById("latestDataRange").value;
+  const points = await api(`/api/metric-history?targetType=${encodeURIComponent(item.targetType)}&targetId=${encodeURIComponent(item.targetId)}&metricKey=${encodeURIComponent(item.metricKey)}&range=${encodeURIComponent(range)}`);
+  const numeric = points.map((point) => ({ ...point, value: Number(point.value) })).filter((point) => Number.isFinite(point.value));
+  if (numeric.length < 2) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Not enough numeric history for this graph yet."; chart.append(empty); return; }
+  const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 860 280"); const left = 62; const top = 20; const width = 746; const height = 220;
+  const max = Math.max(...numeric.map((point) => point.value), 1); const min = Math.min(...numeric.map((point) => point.value), 0);
+  for (let index = 0; index <= 4; index += 1) { const y = top + (height / 4) * index; const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "chart-grid"); svg.append(line); chartText(svg, left - 8, y + 3, `${(max - ((max - min) / 4) * index).toFixed(1)}${item.unit ? ` ${item.unit}` : ""}`, "end"); }
+  chartText(svg, left, 262, `${item.targetName} - ${item.metricLabel}`, "start");
+  const path = document.createElementNS(ns, "path"); path.setAttribute("class", "response-path"); path.setAttribute("d", makePath(numeric.map((point) => point.value), width, height, min, max, left, top)); svg.append(path); chart.append(svg);
+}
+
 function updateAlertRuleTargets() {
   const form = document.getElementById("alertRuleForm"); const type = form.elements.targetType.value; const select = form.elements.targetId; select.replaceChildren();
   for (const target of alertRuleOptions[type] || []) { const option = document.createElement("option"); option.value = target.id; option.textContent = target.name; select.append(option); }
@@ -1234,9 +1311,15 @@ function updateAlertRuleTargets() {
   updateAlertRuleMetrics();
 }
 
-function updateAlertRuleMetrics() {
+function legacyUpdateAlertRuleMetrics() {
   const form = document.getElementById("alertRuleForm"); const target = (alertRuleOptions[form.elements.targetType.value] || []).find((item) => String(item.id) === form.elements.targetId.value); const select = form.elements.metricKey; select.replaceChildren();
   for (const metric of target?.metrics || []) { const option = document.createElement("option"); option.value = metric.key; option.textContent = `${metric.label} · ${metric.value ?? "--"}${metric.unit ? ` ${metric.unit}` : ""}`; select.append(option); }
+  if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No metrics collected yet"; select.append(option); }
+}
+
+function updateAlertRuleMetrics() {
+  const form = document.getElementById("alertRuleForm"); const target = (alertRuleOptions[form.elements.targetType.value] || []).find((item) => String(item.id) === form.elements.targetId.value); const select = form.elements.metricKey; select.replaceChildren();
+  for (const metric of target?.metrics || []) { const option = document.createElement("option"); option.value = metric.key; option.textContent = `${metric.label} - ${metric.value ?? "--"}${metric.unit ? ` ${metric.unit}` : ""}`; select.append(option); }
   if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No metrics collected yet"; select.append(option); }
 }
 
@@ -1246,7 +1329,7 @@ function openAlertRule(rule = null) {
   updateAlertRuleTargets();
   renderAlertRuleDependencies(rule?.dependencyRuleId || "");
   if (rule) {
-    form.elements.targetType.value = rule.targetType; updateAlertRuleTargets(); form.elements.targetId.value = rule.targetId; updateAlertRuleMetrics(); form.elements.metricKey.value = rule.metricKey; form.elements.operator.value = rule.operator; form.elements.threshold.value = rule.threshold; form.elements.name.value = rule.name; form.elements.severity.value = rule.severity; form.elements.description.value = rule.description || ""; form.elements.actionText.value = rule.actionText || ""; form.elements.triggerCount.value = rule.triggerCount; form.elements.recoveryCount.value = rule.recoveryCount; form.elements.dependencyRuleId.value = rule.dependencyRuleId || ""; form.elements.enabled.checked = rule.enabled;
+    form.elements.targetType.value = rule.targetType; updateAlertRuleTargets(); form.elements.targetId.value = rule.targetId; updateAlertRuleMetrics(); form.elements.metricKey.value = rule.metricKey; form.elements.operator.value = rule.operator; form.elements.threshold.value = rule.threshold; form.elements.functionName.value = rule.functionName || "last"; form.elements.windowSeconds.value = String(rule.windowSeconds || 0); form.elements.name.value = rule.name; form.elements.severity.value = rule.severity; form.elements.description.value = rule.description || ""; form.elements.actionText.value = rule.actionText || ""; form.elements.triggerCount.value = rule.triggerCount; form.elements.recoveryCount.value = rule.recoveryCount; form.elements.dependencyRuleId.value = rule.dependencyRuleId || ""; form.elements.enabled.checked = rule.enabled;
   }
   for (const name of ["targetType", "targetId", "metricKey", "operator", "threshold"]) form.elements[name].disabled = Boolean(rule);
   document.getElementById("alertRuleEnabledLabel").hidden = !rule; document.getElementById("alertRuleError").textContent = ""; document.getElementById("alertRuleModal").hidden = false;
@@ -1903,6 +1986,9 @@ document.getElementById("accountSnmpAdmin").addEventListener("click", () => { ac
 document.getElementById("addAlertRule").addEventListener("click", () => openAlertRule());
 document.getElementById("addAlertRuleInline").addEventListener("click", () => openAlertRule());
 document.getElementById("alertTemplateSelect").addEventListener("change", renderAlertTemplates);
+document.getElementById("refreshProblems").addEventListener("click", async () => { await loadAlertRules(); showToast("Problems refreshed", `${currentProblems.length} current problem${currentProblems.length === 1 ? "" : "s"}`); });
+document.getElementById("latestDataSearch").addEventListener("input", renderLatestData);
+document.getElementById("latestDataRange").addEventListener("change", () => { document.getElementById("latestMetricChart").replaceChildren(); });
 document.getElementById("alertTemplateForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("alertTemplateError"); error.textContent = "";

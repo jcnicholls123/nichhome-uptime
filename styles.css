@@ -413,6 +413,17 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .snmp-card-actions { display: flex; gap: 6px; }
 .snmp-footnote { margin: 14px 0 0; color: #77827e; font-size: 11px; }
 .view-all-snmp { margin-top: 12px; }
+.problems-panel, .latest-data-panel { grid-column: 1 / -1; }
+.problem-list { display: grid; gap: 8px; }
+.rule-row.severity-disaster { border-color: rgba(177,45,58,.65); box-shadow: 0 0 0 3px rgba(177,45,58,.08); }
+.rule-row.severity-high { border-color: rgba(255,107,82,.65); }
+.rule-row.severity-average { border-color: rgba(255,159,67,.62); }
+.latest-data-table { display: grid; gap: 8px; max-height: 420px; overflow: auto; padding-right: 4px; }
+.latest-data-row { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: 12px; padding: 12px 14px; border: 1px solid var(--line); border-radius: 10px; background: rgba(255,255,255,.62); }
+.latest-data-row strong { display: block; color: var(--ink); font-size: 13px; }
+.latest-data-row small { color: #6f7a75; font-size: 11px; }
+.latest-data-value { min-width: 96px; color: var(--ink); font-family: "DM Mono"; font-size: 12px; text-align: right; }
+.latest-metric-chart { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.55); }
 .snmp-workspace { min-height: calc(100vh - 76px); }
 .snmp-alert-panel, .snmp-profile-panel { min-height: 310px; }
 .snmp-fleet-panel { grid-column: 1 / -1; }

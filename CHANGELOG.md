@@ -7,6 +7,19 @@ include breaking changes while the monitoring engine and integrations mature.
 
 ## [Unreleased]
 
+### Added
+
+- Zabbix-style trigger functions for alert rules: last, average, minimum,
+  maximum, change, and count over optional time windows
+- Current problems dashboard for active trigger incidents with severity ordering
+  and acknowledgement actions
+- Latest data view with searchable SNMP, Docker, and UniFi metrics plus quick
+  graphs for metrics with history
+- SNMP profile metric history so imported template values such as temperature,
+  power, storage, and health strings can be graphed after polling
+- Detailed Discord problem and recovery embeds with target, metric, expression,
+  current value, reason, severity, and recommended action
+
 ### Planned
 
 - Additional historical reporting ranges

@@ -146,6 +146,17 @@ db.exec(`
     updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(device_id, category, metric_key)
   );
+  CREATE TABLE IF NOT EXISTS snmp_profile_metric_history (
+    id INTEGER PRIMARY KEY,
+    device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
+    category TEXT NOT NULL,
+    metric_key TEXT NOT NULL,
+    label TEXT NOT NULL,
+    value TEXT,
+    unit TEXT,
+    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS snmp_profile_metric_history_lookup ON snmp_profile_metric_history(device_id, category, metric_key, recorded_at DESC);
   CREATE TABLE IF NOT EXISTS snmp_interface_metrics (
     id INTEGER PRIMARY KEY,
     device_id INTEGER NOT NULL REFERENCES snmp_devices(id) ON DELETE CASCADE,
@@ -316,6 +327,8 @@ db.exec(`
     metric_key TEXT NOT NULL,
     operator TEXT NOT NULL,
     threshold TEXT NOT NULL,
+    function_name TEXT NOT NULL DEFAULT 'last',
+    window_seconds INTEGER NOT NULL DEFAULT 0,
     enabled INTEGER NOT NULL DEFAULT 1,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -398,6 +411,8 @@ ensureColumn("alert_rules", "failure_streak", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("alert_rules", "recovery_streak", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("alert_rules", "last_evaluated_at", "TEXT");
 ensureColumn("alert_rules", "dependency_rule_id", "INTEGER");
+ensureColumn("alert_rules", "function_name", "TEXT NOT NULL DEFAULT 'last'");
+ensureColumn("alert_rules", "window_seconds", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("alert_rule_incidents", "acknowledged_at", "TEXT");
 ensureColumn("alert_rule_incidents", "acknowledged_by", "TEXT");
 ensureColumn("unifi_network_devices", "firmware_version", "TEXT");
@@ -421,6 +436,8 @@ function migrateAlertRuleTargets() {
         metric_key TEXT NOT NULL,
         operator TEXT NOT NULL,
         threshold TEXT NOT NULL,
+        function_name TEXT NOT NULL DEFAULT 'last',
+        window_seconds INTEGER NOT NULL DEFAULT 0,
         enabled INTEGER NOT NULL DEFAULT 1,
         created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         severity TEXT NOT NULL DEFAULT 'warning',
@@ -443,8 +460,8 @@ function migrateAlertRuleTargets() {
         started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
         resolved_at TEXT
       );
-      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
-      SELECT id, name, target_type, target_id, metric_key, operator, threshold, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
+      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
+      SELECT id, name, target_type, target_id, metric_key, operator, threshold, COALESCE(function_name, 'last'), COALESCE(window_seconds, 0), enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
       INSERT INTO alert_rule_incidents (id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at)
       SELECT id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at FROM alert_rule_incidents_old WHERE rule_id IN (SELECT id FROM alert_rules);
       DROP TABLE alert_rule_incidents_old;
@@ -749,6 +766,19 @@ function recordReportingPoint(sourceKey, status, responseMs = null) {
   db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', '-90 days')").run();
 }
 
+function recordSnmpProfileMetric(deviceId, category, metricKey, label, value, unit = "") {
+  db.prepare(`
+    INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+    ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP
+  `).run(deviceId, category, metricKey, label, value == null ? "" : String(value), unit || "");
+  db.prepare(`
+    INSERT INTO snmp_profile_metric_history (device_id, category, metric_key, label, value, unit)
+    VALUES (?, ?, ?, ?, ?, ?)
+  `).run(deviceId, category, metricKey, label, value == null ? "" : String(value), unit || "");
+  db.prepare("DELETE FROM snmp_profile_metric_history WHERE id IN (SELECT id FROM snmp_profile_metric_history WHERE device_id = ? ORDER BY recorded_at DESC LIMIT -1 OFFSET 20000)").run(deviceId);
+}
+
 function snmpAlertMetrics(target) {
   const latest = db.prepare("SELECT response_ms AS responseMs FROM snmp_metrics WHERE device_id = ? ORDER BY polled_at DESC LIMIT 1").get(target.id);
   const summary = db.prepare(`
@@ -818,6 +848,83 @@ function alertRuleValue(rule) {
   return container[rule.metric_key] ?? null;
 }
 
+function alertRuleMetricLabel(rule) {
+  if (rule.target_type === "snmp") {
+    const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(rule.target_id));
+    return device ? snmpAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
+  if (rule.target_type === "unifi") {
+    const device = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(rule.target_id);
+    return device ? unifiAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
+  const labels = { cpu_percent: "CPU usage", memory_percent: "Memory usage", restart_count: "Restart count", health: "Container health" };
+  return labels[rule.metric_key] || rule.metric_key;
+}
+
+function alertRuleTargetName(rule) {
+  if (rule.target_type === "snmp") return db.prepare("SELECT name FROM snmp_devices WHERE id = ?").get(Number(rule.target_id))?.name || `SNMP ${rule.target_id}`;
+  if (rule.target_type === "unifi") return db.prepare("SELECT name FROM unifi_network_devices WHERE id = ?").get(rule.target_id)?.name || `UniFi ${rule.target_id}`;
+  return db.prepare("SELECT name FROM docker_containers WHERE container_id = ?").get(rule.target_id)?.name || `Docker ${rule.target_id}`;
+}
+
+function alertWindowSeconds(rule) {
+  const seconds = Number(rule.window_seconds || 0);
+  if (Number.isFinite(seconds) && seconds > 0) return Math.max(60, Math.min(2592000, seconds));
+  return 3600;
+}
+
+function alertMetricSamples(rule) {
+  const window = `-${alertWindowSeconds(rule)} seconds`;
+  if (rule.target_type === "snmp") {
+    const separator = rule.metric_key.indexOf("|");
+    const category = separator > 0 ? rule.metric_key.slice(0, separator) : "";
+    const key = separator > 0 ? rule.metric_key.slice(separator + 1) : "";
+    if (category === "device" && key === "response_ms") {
+      return db.prepare("SELECT response_ms AS value, polled_at AS recordedAt FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500")
+        .all(Number(rule.target_id), window);
+    }
+    if (category === "device" && key === "status") {
+      return db.prepare("SELECT status AS value, polled_at AS recordedAt FROM snmp_metrics WHERE device_id = ? AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500")
+        .all(Number(rule.target_id), window);
+    }
+    return db.prepare("SELECT value, recorded_at AS recordedAt FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500")
+      .all(Number(rule.target_id), category, key, window);
+  }
+  if (rule.target_type === "docker") {
+    if (rule.metric_key === "cpu_percent") return db.prepare("SELECT cpu_percent AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND cpu_percent IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500").all(rule.target_id, window);
+    if (rule.metric_key === "memory_percent") {
+      const container = db.prepare("SELECT memory_limit_bytes AS memoryLimitBytes FROM docker_containers WHERE container_id = ?").get(rule.target_id);
+      const limit = Number(container?.memoryLimitBytes || 0);
+      if (limit <= 0) return [];
+      return db.prepare("SELECT (memory_bytes * 100.0 / ?) AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND memory_bytes IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500").all(limit, rule.target_id, window);
+    }
+    if (rule.metric_key === "health") return [];
+  }
+  const current = alertRuleValue(rule);
+  return current == null ? [] : [{ value: current, recordedAt: new Date().toISOString() }];
+}
+
+function alertRuleComputedValue(rule) {
+  const fn = String(rule.function_name || "last").toLowerCase();
+  const samples = alertMetricSamples(rule).filter((sample) => sample.value != null);
+  if (!samples.length) return { value: alertRuleValue(rule), sampleCount: 0, functionName: fn };
+  if (fn === "count") return { value: samples.filter((sample) => alertRuleTriggered(sample.value, rule.operator, rule.threshold)).length, sampleCount: samples.length, functionName: fn };
+  if (fn === "change") {
+    const [latest, previous] = samples;
+    const latestNumber = Number(latest?.value);
+    const previousNumber = Number(previous?.value);
+    const value = Number.isFinite(latestNumber) && Number.isFinite(previousNumber) ? latestNumber - previousNumber : String(latest?.value) === String(previous?.value) ? 0 : 1;
+    return { value, sampleCount: samples.length, functionName: fn };
+  }
+  if (fn === "avg" || fn === "min" || fn === "max") {
+    const numbers = samples.map((sample) => Number(sample.value)).filter(Number.isFinite);
+    if (!numbers.length) return { value: null, sampleCount: samples.length, functionName: fn };
+    const value = fn === "avg" ? numbers.reduce((sum, item) => sum + item, 0) / numbers.length : fn === "min" ? Math.min(...numbers) : Math.max(...numbers);
+    return { value: Number(value.toFixed(3)), sampleCount: numbers.length, functionName: fn };
+  }
+  return { value: samples[0].value, sampleCount: samples.length, functionName: "last" };
+}
+
 function normalizeAlertTargetId(targetType, targetId) {
   const value = String(targetId || "");
   return value.startsWith(`${targetType}:`) ? value.slice(targetType.length + 1) : value;
@@ -859,11 +966,14 @@ function alertRuleSuppressed(rule) {
 async function evaluateAlertRules(targetType, targetId) {
   const rules = db.prepare("SELECT * FROM alert_rules WHERE enabled = 1 AND target_type = ? AND target_id = ?").all(targetType, String(targetId));
   for (const rule of rules) {
-    const value = alertRuleValue(rule);
+    const computed = alertRuleComputedValue(rule);
+    const value = computed.value;
     if (value == null) continue;
     const triggered = alertRuleTriggered(value, rule.operator, rule.threshold);
     const open = db.prepare("SELECT id FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id);
-    const cause = `${rule.metric_key} is ${value}; expected ${rule.operator} ${rule.threshold}`;
+    const metricLabel = alertRuleMetricLabel(rule);
+    const fn = String(rule.function_name || "last").toLowerCase();
+    const cause = `${metricLabel} ${fn} is ${value}; trigger ${rule.operator} ${rule.threshold}${computed.sampleCount ? ` from ${computed.sampleCount} sample${computed.sampleCount === 1 ? "" : "s"}` : ""}`;
     const failureStreak = triggered ? rule.failure_streak + 1 : 0;
     const recoveryStreak = triggered ? 0 : rule.recovery_streak + 1;
     db.prepare("UPDATE alert_rules SET failure_streak = ?, recovery_streak = ?, last_evaluated_at = CURRENT_TIMESTAMP WHERE id = ?").run(failureStreak, recoveryStreak, rule.id);
@@ -1015,7 +1125,6 @@ async function pollAssignedProfile(device) {
   const profile = db.prepare("SELECT id, source FROM snmp_profiles WHERE id = ?").get(device.profile_id);
   if (!profile || profile.source === "built-in") return;
   const oids = db.prepare("SELECT oid, name, unit, value_type AS valueType, regex FROM snmp_profile_oids WHERE profile_id = ? ORDER BY oid LIMIT 500").all(profile.id);
-  const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
   const directOids = oids.filter((item) => !/\{#[A-Z0-9_]+\}/i.test(item.oid));
   const tableOids = directOids.filter((item) => String(item.valueType || "").toUpperCase() === "TABLE");
   const scalarOids = directOids.filter((item) => !tableOids.includes(item));
@@ -1023,7 +1132,7 @@ async function pollAssignedProfile(device) {
     try {
       const values = await snmpSubtree(device, item.oid);
       db.transaction(() => {
-        for (const varbind of values.slice(0, 250)) upsert.run(device.id, `template:${profile.id}`, varbind.oid, `${item.name} ${varbind.oid.slice(item.oid.length + 1)}`.slice(0, 160), applyValueExtraction(valueText(varbind.value), item.regex), item.unit || "");
+        for (const varbind of values.slice(0, 250)) recordSnmpProfileMetric(device.id, `template:${profile.id}`, varbind.oid, `${item.name} ${varbind.oid.slice(item.oid.length + 1)}`.slice(0, 160), applyValueExtraction(valueText(varbind.value), item.regex), item.unit || "");
       })();
     } catch {}
   }
@@ -1032,13 +1141,13 @@ async function pollAssignedProfile(device) {
       const batch = scalarOids.slice(index, index + 20);
       const result = await snmpGet(device, batch.map((item) => item.oid));
       db.transaction(() => {
-        for (const item of batch) upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
+        for (const item of batch) recordSnmpProfileMetric(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
       })();
     } catch {
       for (const item of scalarOids.slice(index, index + 20)) {
         try {
           const result = await snmpGet(device, [item.oid]);
-          upsert.run(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
+          recordSnmpProfileMetric(device.id, `template:${profile.id}`, item.oid, item.name, applyValueExtraction(String(result.values[item.oid] ?? ""), item.regex), item.unit || "");
         } catch {}
       }
     }
@@ -1138,8 +1247,7 @@ async function discoverUniFiMetrics(device) {
     walk("unifi-radios", "UniFi radio telemetry", "1.3.6.1.4.1.41112.1.6.1.1"),
     walk("unifi-system", "UniFi system telemetry", "1.3.6.1.4.1.41112.1.6.3")
   ]);
-  const upsert = db.prepare("INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP) ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP");
-  db.transaction(() => rows.slice(0, 3000).forEach((row) => upsert.run(device.id, row.category, row.key, row.label, row.value, row.unit)))();
+  db.transaction(() => rows.slice(0, 3000).forEach((row) => recordSnmpProfileMetric(device.id, row.category, row.key, row.label, row.value, row.unit)))();
 }
 
 async function discoverTrueNasMetrics(device) {
@@ -1174,13 +1282,8 @@ async function discoverTrueNasMetrics(device) {
     const used = Number(values["storage-used"]);
     if (Number.isFinite(size) && size > 0 && Number.isFinite(used)) rows.push({ category: "storage-usage", key: index, label: `${values["storage-description"] || `Storage ${index}`} usage`, value: ((used / size) * 100).toFixed(2), unit: "%" });
   }
-  const upsert = db.prepare(`
-    INSERT INTO snmp_profile_metrics (device_id, category, metric_key, label, value, unit, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-    ON CONFLICT(device_id, category, metric_key) DO UPDATE SET label=excluded.label, value=excluded.value, unit=excluded.unit, updated_at=CURRENT_TIMESTAMP
-  `);
   db.transaction(() => {
-    for (const row of rows.slice(0, 3000)) upsert.run(device.id, row.category, row.key, row.label, row.value, row.unit);
+    for (const row of rows.slice(0, 3000)) recordSnmpProfileMetric(device.id, row.category, row.key, row.label, row.value, row.unit);
   })();
 }
 
@@ -1257,7 +1360,7 @@ async function sendDiscord(content, embeds = undefined) {
 
 const severityColours = { information: 3447003, warning: 16776960, average: 16753920, high: 15158332, disaster: 10038562 };
 
-async function sendDiscordAlert(rule, value, cause, recovered) {
+async function legacySendDiscordAlert(rule, value, cause, recovered) {
   const title = recovered ? `${rule.name} recovered` : rule.name;
   const fields = [
     { name: "Severity", value: recovered ? "Recovered" : rule.severity.toUpperCase(), inline: true },
@@ -1273,6 +1376,32 @@ async function sendDiscordAlert(rule, value, cause, recovered) {
     color: recovered ? 5763719 : severityColours[rule.severity] || severityColours.warning,
     fields,
     footer: { text: `NichHome Uptime · ${new Date().toISOString()}` },
+    timestamp: new Date().toISOString()
+  }]);
+}
+
+async function sendDiscordAlert(rule, value, cause, recovered) {
+  const metricLabel = alertRuleMetricLabel(rule);
+  const targetName = alertRuleTargetName(rule);
+  const functionName = String(rule.function_name || "last").toUpperCase();
+  const title = recovered ? `Resolved: ${rule.name}` : `${rule.severity.toUpperCase()}: ${rule.name}`;
+  const fields = [
+    { name: "Severity", value: recovered ? "Recovered" : rule.severity.toUpperCase(), inline: true },
+    { name: "Target", value: targetName.slice(0, 1024), inline: true },
+    { name: "Source", value: rule.target_type.toUpperCase(), inline: true },
+    { name: "Metric", value: metricLabel.slice(0, 1024), inline: true },
+    { name: "Function", value: functionName, inline: true },
+    { name: "Current value", value: String(value).slice(0, 1024), inline: true },
+    { name: "Expression", value: `${functionName}(${rule.metric_key}${rule.window_seconds ? `, ${Math.round(rule.window_seconds / 60)}m` : ""}) ${rule.operator} ${rule.threshold}`.slice(0, 1024), inline: false },
+    { name: "Reason", value: cause.slice(0, 1024), inline: false }
+  ];
+  if (rule.action_text) fields.push({ name: "Action", value: rule.action_text.slice(0, 1024), inline: false });
+  await sendDiscord("", [{
+    title,
+    description: rule.description || (recovered ? "The trigger expression has returned to normal." : "A NichHome trigger expression is now in problem state."),
+    color: recovered ? 5763719 : severityColours[rule.severity] || severityColours.warning,
+    fields,
+    footer: { text: `NichHome Uptime - ${recovered ? "Problem resolved" : "Current problem"}` },
     timestamp: new Date().toISOString()
   }]);
 }
@@ -1996,11 +2125,13 @@ app.delete("/api/monitors/:id", requireAuth, (req, res) => {
   res.json({ ok: true });
 });
 app.get("/api/alert-rules", requireAuth, (req, res) => {
-  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, severity, description, action_text AS actionText, trigger_count AS triggerCount, recovery_count AS recoveryCount, failure_streak AS failureStreak, recovery_streak AS recoveryStreak, dependency_rule_id AS dependencyRuleId, last_evaluated_at AS lastEvaluatedAt, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
+  const rules = db.prepare("SELECT id, name, target_type AS targetType, target_id AS targetId, metric_key AS metricKey, operator, threshold, function_name AS functionName, window_seconds AS windowSeconds, severity, description, action_text AS actionText, trigger_count AS triggerCount, recovery_count AS recoveryCount, failure_streak AS failureStreak, recovery_streak AS recoveryStreak, dependency_rule_id AS dependencyRuleId, last_evaluated_at AS lastEvaluatedAt, enabled, created_at AS createdAt FROM alert_rules ORDER BY created_at DESC").all();
   res.json(rules.map((rule) => ({
     ...rule,
     enabled: Boolean(rule.enabled),
-    currentValue: alertRuleValue({ target_type: rule.targetType, target_id: rule.targetId, metric_key: rule.metricKey }),
+    currentValue: alertRuleComputedValue({ target_type: rule.targetType, target_id: rule.targetId, metric_key: rule.metricKey, operator: rule.operator, threshold: rule.threshold, function_name: rule.functionName, window_seconds: rule.windowSeconds }).value,
+    metricLabel: alertRuleMetricLabel({ target_type: rule.targetType, target_id: rule.targetId, metric_key: rule.metricKey }),
+    targetName: alertRuleTargetName({ target_type: rule.targetType, target_id: rule.targetId }),
     active: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL").get(rule.id)),
     acknowledged: Boolean(db.prepare("SELECT 1 FROM alert_rule_incidents WHERE rule_id = ? AND resolved_at IS NULL AND acknowledged_at IS NOT NULL").get(rule.id)),
     dependencyName: rule.dependencyRuleId ? db.prepare("SELECT name FROM alert_rules WHERE id = ?").get(rule.dependencyRuleId)?.name || null : null
@@ -2096,6 +2227,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const metricKey = String(req.body.metricKey || "").trim();
   const operator = String(req.body.operator || "");
   const threshold = String(req.body.threshold ?? "").trim();
+  const functionName = String(req.body.functionName || "last").toLowerCase();
+  const windowSeconds = Math.max(0, Math.min(2592000, Number(req.body.windowSeconds || 0)));
   const severity = String(req.body.severity || "warning");
   const description = String(req.body.description || "").trim().slice(0, 500);
   const actionText = String(req.body.actionText || "").trim().slice(0, 500);
@@ -2103,12 +2236,12 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker", "unifi"].includes(targetType) || !targetId || !metricKey || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, severity, operator, and threshold." });
+  if (!["snmp", "docker", "unifi"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
   const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
-  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, severity, description, action_text, trigger_count, recovery_count, dependency_rule_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId);
+  const result = db.prepare("INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, severity, description, action_text, trigger_count, recovery_count, dependency_rule_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(name, targetType, targetId, metricKey, operator, threshold, functionName, windowSeconds, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId);
   await evaluateAlertRules(targetType, targetId);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -2118,15 +2251,17 @@ app.put("/api/alert-rules/:id", requireAuth, async (req, res) => {
   if (!rule) return res.status(404).json({ error: "Alert rule not found." });
   const name = String(req.body.name || rule.name).trim();
   const severity = String(req.body.severity || rule.severity);
+  const functionName = String(req.body.functionName || rule.function_name || "last").toLowerCase();
+  const windowSeconds = Math.max(0, Math.min(2592000, Number(req.body.windowSeconds ?? rule.window_seconds ?? 0)));
   const description = String(req.body.description ?? rule.description ?? "").trim().slice(0, 500);
   const actionText = String(req.body.actionText ?? rule.action_text ?? "").trim().slice(0, 500);
   const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || rule.trigger_count)));
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || rule.recovery_count)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   const enabled = req.body.enabled === false ? 0 : 1;
-  if (name.length < 2 || name.length > 100 || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name and severity." });
+  if (name.length < 2 || name.length > 100 || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name, function, and severity." });
   if (dependencyRuleId && (dependencyRuleId === id || !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId))) return res.status(400).json({ error: "Choose a valid dependency rule." });
-  db.prepare("UPDATE alert_rules SET name = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, dependency_rule_id = ?, enabled = ? WHERE id = ?").run(name, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId, enabled, id);
+  db.prepare("UPDATE alert_rules SET name = ?, function_name = ?, window_seconds = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, dependency_rule_id = ?, enabled = ? WHERE id = ?").run(name, functionName, windowSeconds, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId, enabled, id);
   if (!enabled) db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE rule_id = ? AND resolved_at IS NULL").run(id);
   if (enabled) await evaluateAlertRules(rule.target_type, rule.target_id);
   res.json({ ok: true });
@@ -2142,6 +2277,71 @@ app.post("/api/alert-rules/:id/acknowledge", requireAuth, (req, res) => {
   const result = db.prepare("UPDATE alert_rule_incidents SET acknowledged_at = CURRENT_TIMESTAMP, acknowledged_by = ? WHERE rule_id = ? AND resolved_at IS NULL").run(user?.username || "admin", id);
   if (!result.changes) return res.status(404).json({ error: "No active alert is open for this rule." });
   res.json({ ok: true });
+});
+app.get("/api/problems", requireAuth, (req, res) => {
+  const problems = db.prepare(`
+    SELECT alert_rule_incidents.id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.acknowledged_at AS acknowledgedAt,
+      alert_rule_incidents.acknowledged_by AS acknowledgedBy, alert_rule_incidents.current_value AS currentValue,
+      alert_rule_incidents.cause, alert_rules.id AS ruleId, alert_rules.name, alert_rules.target_type AS targetType,
+      alert_rules.target_id AS targetId, alert_rules.metric_key AS metricKey, alert_rules.operator, alert_rules.threshold,
+      alert_rules.function_name AS functionName, alert_rules.window_seconds AS windowSeconds, alert_rules.severity,
+      alert_rules.description, alert_rules.action_text AS actionText
+    FROM alert_rule_incidents
+    JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
+    WHERE alert_rule_incidents.resolved_at IS NULL
+    ORDER BY CASE alert_rules.severity WHEN 'disaster' THEN 5 WHEN 'high' THEN 4 WHEN 'average' THEN 3 WHEN 'warning' THEN 2 ELSE 1 END DESC,
+      alert_rule_incidents.started_at DESC
+    LIMIT 200
+  `).all();
+  res.json(problems.map((problem) => ({
+    ...problem,
+    targetName: alertRuleTargetName({ target_type: problem.targetType, target_id: problem.targetId }),
+    metricLabel: alertRuleMetricLabel({ target_type: problem.targetType, target_id: problem.targetId, metric_key: problem.metricKey }),
+    acknowledged: Boolean(problem.acknowledgedAt)
+  })));
+});
+app.get("/api/latest-data", requireAuth, (req, res) => {
+  const rows = [];
+  for (const device of db.prepare("SELECT * FROM snmp_devices ORDER BY name").all()) {
+    for (const metric of snmpAlertMetrics(device)) rows.push({
+      targetType: "snmp", targetId: String(device.id), targetName: device.name,
+      metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "",
+      updatedAt: metric.key.startsWith("device|") ? device.last_polled_at : db.prepare("SELECT updated_at FROM snmp_profile_metrics WHERE device_id = ? AND category || '|' || metric_key = ?").get(device.id, metric.key)?.updated_at || device.last_polled_at,
+      graphable: metric.key === "device|response_ms" || Boolean(db.prepare("SELECT 1 FROM snmp_profile_metric_history WHERE device_id = ? AND category || '|' || metric_key = ? LIMIT 1").get(device.id, metric.key))
+    });
+  }
+  for (const container of db.prepare("SELECT container_id AS id, name, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, memory_limit_bytes AS memoryLimitBytes, restart_count AS restartCount, health, last_seen_at AS updatedAt FROM docker_containers ORDER BY name").all()) {
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "cpu_percent", metricLabel: "CPU usage", value: container.cpuPercent, unit: "%", updatedAt: container.updatedAt, graphable: true });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "memory_percent", metricLabel: "Memory usage", value: container.memoryLimitBytes > 0 ? ((container.memoryBytes / container.memoryLimitBytes) * 100).toFixed(2) : null, unit: "%", updatedAt: container.updatedAt, graphable: true });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "restart_count", metricLabel: "Restart count", value: container.restartCount, unit: "", updatedAt: container.updatedAt, graphable: false });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "health", metricLabel: "Container health", value: container.health, unit: "", updatedAt: container.updatedAt, graphable: false });
+  }
+  for (const device of db.prepare("SELECT * FROM unifi_network_devices ORDER BY name").all()) {
+    for (const metric of unifiAlertMetrics(device)) rows.push({ targetType: "unifi", targetId: device.id, targetName: device.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: device.last_polled_at, graphable: false });
+  }
+  res.json(rows.slice(0, 5000));
+});
+app.get("/api/metric-history", requireAuth, (req, res) => {
+  const targetType = String(req.query.targetType || "");
+  const targetId = normalizeAlertTargetId(targetType, req.query.targetId);
+  const metricKey = String(req.query.metricKey || "");
+  const windows = { "1h": "-1 hour", "24h": "-24 hours", "7d": "-7 days", "30d": "-30 days" };
+  const window = windows[String(req.query.range)] || windows["24h"];
+  let rows = [];
+  if (targetType === "snmp") {
+    const separator = metricKey.indexOf("|");
+    const category = metricKey.slice(0, separator);
+    const key = metricKey.slice(separator + 1);
+    if (category === "device" && key === "response_ms") rows = db.prepare("SELECT response_ms AS value, polled_at AS recordedAt FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(Number(targetId), window);
+    else rows = db.prepare("SELECT value, recorded_at AS recordedAt FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at LIMIT 2000").all(Number(targetId), category, key, window);
+  } else if (targetType === "docker") {
+    if (metricKey === "cpu_percent") rows = db.prepare("SELECT cpu_percent AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND cpu_percent IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(targetId, window);
+    if (metricKey === "memory_percent") {
+      const limit = Number(db.prepare("SELECT memory_limit_bytes AS value FROM docker_containers WHERE container_id = ?").get(targetId)?.value || 0);
+      if (limit > 0) rows = db.prepare("SELECT (memory_bytes * 100.0 / ?) AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND memory_bytes IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(limit, targetId, window);
+    }
+  }
+  res.json(rows.map((row) => ({ ...row, value: Number.isFinite(Number(row.value)) ? Number(row.value) : row.value })));
 });
 app.get("/api/incidents", requireAuth, (req, res) => {
   const incidents = db.prepare(`

@@ -179,6 +179,12 @@ async function waitForServer() {
     const alertRules = await (await request("/api/alert-rules")).json();
     assert.equal(alertRules[0].active, true);
     assert.equal(alertRules[0].severity, "high");
+    assert.equal(alertRules[0].functionName, "last");
+    assert.ok(alertRules[0].metricLabel);
+    assert.ok((await (await request("/api/problems")).json()).some((problem) => problem.ruleId === alertRules[0].id));
+    const latestData = await (await request("/api/latest-data")).json();
+    assert.equal(latestData.some((metric) => metric.targetType === "docker" && metric.metricKey === "cpu_percent"), true);
+    assert.equal((await request(`/api/metric-history?targetType=docker&targetId=${encodeURIComponent(containers[0].id)}&metricKey=cpu_percent&range=24h`)).status, 200);
     assert.equal((await request(`/api/alert-rules/${alertRules[0].id}/acknowledge`, { method: "POST", body: "{}" })).status, 200);
     assert.equal((await (await request("/api/alert-rules")).json()).find((rule) => rule.id === alertRules[0].id).acknowledged, true);
     assert.equal((await request("/api/alert-rules/templates")).status, 200);

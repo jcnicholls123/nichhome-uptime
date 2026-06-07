@@ -2251,6 +2251,7 @@ function fillAdminNotificationForms() {
     discordForm.elements.webhookUrl.placeholder = adminSettings.discord.configured || adminSettings.discord.webhookUrl
       ? "Configured - leave blank to keep current webhook"
       : "https://discord.com/api/webhooks/...";
+    if (discordForm.elements.threadId) discordForm.elements.threadId.value = adminSettings.discord.threadId || "";
     discordForm.elements.enabled.checked = Boolean(adminSettings.discord.enabled);
   }
   const telegramForm = document.getElementById("adminTelegramForm");
@@ -2302,11 +2303,13 @@ async function loadAdminSettings() {
   if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "hikvision", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   const preferenceForm = document.getElementById("preferenceSettingsForm");
   if (preferenceForm) for (const key of ["browserNotifications", "mapShowInferredLinks", "mapShowUnifiClients", "mapReplaceInferredByDefault"]) preferenceForm.elements[key].checked = Boolean(preferenceSettings[key]);
+  const storageForm = document.getElementById("storageSettingsForm");
+  if (storageForm) storageForm.elements.retentionDays.value = adminSettings.storage.retentionDays || 30;
   fillAdminNotificationForms();
   fillAdminUiForm();
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
-  for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
+  for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath], ["Retention", `${adminSettings.storage.retentionDays || 30} days`]]) {
     const row = document.createElement("article"); row.className = "profile-row"; const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = label; const detail = document.createElement("small"); detail.textContent = value; copy.append(name, detail); row.append(copy); list.append(row);
   }
 }
@@ -2314,7 +2317,7 @@ document.getElementById("discordForm").addEventListener("submit", async (event) 
   event.preventDefault();
   const form = event.currentTarget;
   try {
-    await api("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ webhookUrl: form.elements.webhookUrl.value, enabled: form.elements.enabled.checked }) });
+    await api("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ webhookUrl: form.elements.webhookUrl.value, threadId: form.elements.threadId?.value || "", enabled: form.elements.enabled.checked }) });
     document.getElementById("discordModal").hidden = true;
     await loadNotificationsPage();
     showToast("Discord saved", form.elements.enabled.checked ? "Alerts are enabled" : "Alerts are disabled");
@@ -2352,6 +2355,16 @@ document.getElementById("adminTestDiscord").addEventListener("click", async () =
   try {
     await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
     showToast("Discord test sent", "Check your Discord channel");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("storageSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("storageSettingsError"); error.textContent = "";
+  try {
+    await api("/api/admin/storage", { method: "PUT", body: JSON.stringify({ retentionDays: Number(form.elements.retentionDays.value || 30) }) });
+    adminSettings = await api("/api/admin/settings");
+    await loadAdminSettings();
+    showToast("Retention saved", `${adminSettings.storage.retentionDays} days`);
   } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("adminTelegramForm").addEventListener("submit", async (event) => {

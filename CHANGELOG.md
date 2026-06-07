@@ -12,6 +12,21 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.2.0] - 2026-06-07
+
+### Added
+
+- Zabbix JSON migration API for importing hosts, host macros, tags, custom
+  metric items, SNMP/HTTP/dependent item metadata, preprocessing, web
+  scenarios, and supported trigger expressions without duplicating hosts
+- Per-host custom metric storage with latest-data, graph history, manual value
+  updates, host attachment support, and alert-rule targeting
+- Zabbix-style `nodata()` alert function alongside last/min/max/avg/count/change
+  rules for custom imported metrics
+- Retention setting API with 30-day default cleanup across heartbeat, SNMP,
+  Docker, custom metric, and reporting history
+- Discord webhook thread ID support for problem/resolved notification embeds
+
 ## [1.1.2] - 2026-06-07
 
 ### Fixed

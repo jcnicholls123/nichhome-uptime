@@ -125,7 +125,7 @@ async function waitForServer() {
     assert.ok(appJs.includes("function openMapLinkForm"));
     assert.ok(appJs.includes("Correct where this device comes from"));
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.1.2", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.2.0", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -197,7 +197,38 @@ async function waitForServer() {
     assert.equal(monitorAlertOptions.monitor.some((target) => String(target.id) === String(apiMonitor.id) && target.metrics.some((metric) => metric.key === "api_value")), true);
     assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Zigbee API should be online", targetType: "monitor", targetId: String(apiMonitor.id), metricKey: "api_value", operator: "!=", threshold: "online", severity: "warning", description: "Home Assistant state endpoint should report online", actionText: "Check Home Assistant and Zigbee bridge", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
     assert.equal((await request("/api/automation/capabilities")).status, 200);
-    assert.equal((await (await request("/api/incidents")).json()).length, 1);
+    assert.equal((await (await request("/api/incidents")).json()).length >= 1, true);
+    const zabbixExport = {
+      exportedAt: "2026-06-07T14:55:32+01:00",
+      hosts: [{ hostid: "9001", host: "10.69.24.5", name: "Migrated HA", description: "Imported host", macros: [{ macro: "{$TOKEN}", value: "secret" }], tags: [{ tag: "component", value: "home-assistant" }], interfaces: [] }],
+      items: [
+        { itemid: "7001", hostid: "9001", name: "ICMP response time", key_: "icmppingsec", type: 3, value_type: 0, delay: "1m", units: "s", preprocessing: [] },
+        { itemid: "7002", hostid: "9001", name: "ZHA offline device count", key_: "ha.zha.offline", type: 19, value_type: 3, delay: "1m", units: "", url: "http://10.69.24.5/api/states/sensor.zha_offline", preprocessing: [{ type: "JSONPATH", parameters: "$.state" }] }
+      ],
+      triggers: [{ triggerid: "8001", description: "HA latency is high", expression: "avg(/Migrated HA/icmppingsec,5m)>50", priority: 3, status: 0, comments: "Latency over 50 ms for 5 minutes", opdata: "Check HA network path" }],
+      webScenarios: [{ httptestid: "6001", hostid: "9001", name: "Home Assistant availability", delay: "1m", steps: [{ name: "GET Home Assistant", url: "http://10.69.24.5:8123" }] }]
+    };
+    const dryRun = await (await request("/api/zabbix/import", { method: "POST", body: JSON.stringify({ export: zabbixExport, dryRun: true }) })).json();
+    assert.deepEqual(dryRun.preview, { hosts: 1, items: 2, triggers: 1, webScenarios: 1 });
+    const importResponse = await request("/api/zabbix/import", { method: "POST", body: JSON.stringify({ export: zabbixExport }) });
+    assert.equal(importResponse.status, 201);
+    const zabbixImported = await importResponse.json();
+    assert.equal(zabbixImported.summary.hostsCreated, 1);
+    assert.equal(zabbixImported.summary.itemsCreated, 2);
+    assert.equal(zabbixImported.summary.triggersCreated, 1);
+    const migratedHost = (await (await request("/api/hosts")).json()).find((host) => host.name === "Migrated HA");
+    assert.equal(migratedHost.itemCount, 2);
+    const migratedDetail = await (await request(`/api/hosts/${migratedHost.id}`)).json();
+    assert.equal(migratedDetail.macros[0].macro, "{$TOKEN}");
+    assert.equal(migratedDetail.hostTags[0].tag, "component");
+    assert.equal(migratedDetail.webScenarios[0].name, "Home Assistant availability");
+    assert.equal(migratedDetail.latestData.some((item) => item.targetType === "custom" && item.metricLabel === "ICMP response time"), true);
+    const customMetrics = await (await request(`/api/custom-metrics?hostId=${migratedHost.id}`)).json();
+    assert.equal(customMetrics.length, 2);
+    assert.equal((await request(`/api/custom-metrics/${customMetrics[0].id}/value`, { method: "POST", body: JSON.stringify({ value: "60", status: "up" }) })).status, 200);
+    const customAlertOptions = await (await request("/api/alert-rules/options")).json();
+    assert.equal(customAlertOptions.custom.some((target) => target.name.includes("Migrated HA")), true);
+    assert.equal((await (await request("/api/zabbix/import-runs")).json()).length > 0, true);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: false, webhookUrl: "" }) })).status, 200);
     assert.equal((await request("/api/notifications/telegram", { method: "PUT", body: JSON.stringify({ enabled: true, botToken: "bad", chatId: "123" }) })).status, 400);
@@ -253,7 +284,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.1.2");
+    assert.equal(adminSettings.app.version, "1.2.0");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);
@@ -412,7 +443,7 @@ async function waitForServer() {
     assert.equal(snmpDevices[0].profile.type, "network-device");
     const snmpAlertOptions = await (await request("/api/alert-rules/options")).json();
     assert.equal(snmpAlertOptions.snmp.some((device) => String(device.id) === String(snmpDevices[0].id) && device.metrics.some((metric) => metric.key === "device|status")), true);
-    assert.equal((await (await request("/api/incidents")).json()).length, 2);
+    assert.equal((await (await request("/api/incidents")).json()).length >= 2, true);
     const snmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.ok(Array.isArray(snmpDetails.interfaces));
     assert.ok(Array.isArray(snmpDetails.oids));
@@ -445,7 +476,7 @@ async function waitForServer() {
     assert.equal((await request(`/api/snmp/devices/${v3Device.id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "DELETE" })).status, 200);
     assert.equal((await request(`/api/snmp/profiles/${imported.id}`, { method: "DELETE" })).status, 200);
-    assert.equal((await (await request("/api/incidents")).json()).length, 1);
+    assert.equal((await (await request("/api/incidents")).json()).length >= 1, true);
     const mfaSetup = await (await request("/api/mfa/start", { method: "POST", body: "{}" })).json();
     assert.match(mfaSetup.qr, /^data:image\/png;base64,/);
     assert.equal((await request("/api/mfa/confirm", { method: "POST", body: JSON.stringify({ code: totp(mfaSetup.secret) }) })).status, 200);

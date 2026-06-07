@@ -395,6 +395,74 @@ db.exec(`
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(host_id, item_type, item_id)
   );
+  CREATE TABLE IF NOT EXISTS host_macros (
+    host_id INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    macro TEXT NOT NULL,
+    value TEXT,
+    description TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(host_id, macro)
+  );
+  CREATE TABLE IF NOT EXISTS host_tags (
+    host_id INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    tag TEXT NOT NULL,
+    value TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(host_id, tag, value)
+  );
+  CREATE TABLE IF NOT EXISTS custom_metric_items (
+    id INTEGER PRIMARY KEY,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    source TEXT NOT NULL DEFAULT 'manual',
+    external_id TEXT,
+    name TEXT NOT NULL,
+    key_name TEXT NOT NULL,
+    item_type TEXT NOT NULL DEFAULT 'custom',
+    value_type TEXT,
+    units TEXT,
+    params_json TEXT,
+    preprocessing_json TEXT,
+    tags_json TEXT,
+    delay_seconds INTEGER NOT NULL DEFAULT 60,
+    enabled INTEGER NOT NULL DEFAULT 1,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    last_value TEXT,
+    last_error TEXT,
+    last_polled_at TEXT,
+    next_poll_at INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(host_id, source, external_id),
+    UNIQUE(host_id, key_name)
+  );
+  CREATE INDEX IF NOT EXISTS custom_metric_items_host ON custom_metric_items(host_id, name);
+  CREATE TABLE IF NOT EXISTS custom_metric_history (
+    id INTEGER PRIMARY KEY,
+    item_id INTEGER NOT NULL REFERENCES custom_metric_items(id) ON DELETE CASCADE,
+    value TEXT,
+    status TEXT NOT NULL DEFAULT 'up',
+    message TEXT,
+    recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE INDEX IF NOT EXISTS custom_metric_history_item_recorded ON custom_metric_history(item_id, recorded_at DESC);
+  CREATE TABLE IF NOT EXISTS zabbix_web_scenarios (
+    id INTEGER PRIMARY KEY,
+    host_id INTEGER REFERENCES hosts(id) ON DELETE CASCADE,
+    external_id TEXT UNIQUE,
+    name TEXT NOT NULL,
+    delay_seconds INTEGER NOT NULL DEFAULT 60,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    params_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS zabbix_migration_runs (
+    id INTEGER PRIMARY KEY,
+    source_path TEXT,
+    exported_at TEXT,
+    summary_json TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
   CREATE TABLE IF NOT EXISTS map_nodes (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -477,6 +545,9 @@ ensureColumn("hosts", "description", "TEXT");
 ensureColumn("hosts", "tags", "TEXT");
 ensureColumn("hosts", "status", "TEXT NOT NULL DEFAULT 'unknown'");
 ensureColumn("hosts", "updated_at", "TEXT");
+ensureColumn("custom_metric_items", "params_json", "TEXT");
+ensureColumn("custom_metric_items", "preprocessing_json", "TEXT");
+ensureColumn("custom_metric_items", "tags_json", "TEXT");
 
 function migrateAlertRuleTargets() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
@@ -583,6 +654,59 @@ function migrateAlertRuleMonitorTargets() {
 }
 
 migrateAlertRuleMonitorTargets();
+
+function migrateAlertRuleCustomTargets() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
+  if (!table?.sql || table.sql.includes("'custom'")) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE alert_rule_incidents RENAME TO alert_rule_incidents_old;
+      ALTER TABLE alert_rules RENAME TO alert_rules_old;
+      CREATE TABLE alert_rules (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi', 'hikvision', 'monitor', 'custom')),
+        target_id TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        threshold TEXT NOT NULL,
+        function_name TEXT NOT NULL DEFAULT 'last',
+        window_seconds INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        severity TEXT NOT NULL DEFAULT 'warning',
+        description TEXT,
+        action_text TEXT,
+        trigger_count INTEGER NOT NULL DEFAULT 1,
+        recovery_count INTEGER NOT NULL DEFAULT 1,
+        failure_streak INTEGER NOT NULL DEFAULT 0,
+        recovery_streak INTEGER NOT NULL DEFAULT 0,
+        last_evaluated_at TEXT,
+        dependency_rule_id INTEGER
+      );
+      CREATE TABLE alert_rule_incidents (
+        id INTEGER PRIMARY KEY,
+        rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+        current_value TEXT,
+        cause TEXT,
+        acknowledged_at TEXT,
+        acknowledged_by TEXT,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT
+      );
+      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
+      SELECT id, name, target_type, target_id, metric_key, operator, threshold, COALESCE(function_name, 'last'), COALESCE(window_seconds, 0), enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
+      INSERT INTO alert_rule_incidents (id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at)
+      SELECT id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at FROM alert_rule_incidents_old WHERE rule_id IN (SELECT id FROM alert_rules);
+      DROP TABLE alert_rule_incidents_old;
+      DROP TABLE alert_rules_old;
+    `);
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+migrateAlertRuleCustomTargets();
 
 function migrateMonitorTypes() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'monitors'").get();
@@ -692,7 +816,7 @@ const attempts = new Map();
 const base32Alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
 
 app.disable("x-powered-by");
-app.use(express.json({ limit: "1100kb" }));
+app.use(express.json({ limit: "50mb" }));
 app.use((req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -978,6 +1102,26 @@ function validEmailConfig(config) {
   return Boolean(config.host && Number.isInteger(config.port) && config.port > 0 && config.port <= 65535 && config.from.includes("@") && config.to.includes("@"));
 }
 
+function retentionDays() {
+  const days = Number(getSetting("retention_days", "30"));
+  return Number.isFinite(days) ? Math.max(1, Math.min(3650, Math.floor(days))) : 30;
+}
+
+function retentionWindow() {
+  return `-${retentionDays()} days`;
+}
+
+function cleanupRetention() {
+  const window = retentionWindow();
+  db.prepare("DELETE FROM heartbeats WHERE checked_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM snmp_metrics WHERE polled_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM snmp_profile_metric_history WHERE recorded_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM snmp_interface_metrics WHERE recorded_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM docker_metrics WHERE polled_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM custom_metric_history WHERE recorded_at < datetime('now', ?)").run(window);
+  db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', ?)").run(window);
+}
+
 function recordReportingPoint(sourceKey, status, responseMs = null) {
   const bucket = new Date().toISOString().slice(0, 13) + ":00:00";
   db.prepare(`
@@ -986,7 +1130,7 @@ function recordReportingPoint(sourceKey, status, responseMs = null) {
     ON CONFLICT(source_key, bucket) DO UPDATE SET up_count = up_count + excluded.up_count, total_count = total_count + 1,
       response_sum = response_sum + excluded.response_sum, response_count = response_count + excluded.response_count
   `).run(sourceKey, bucket, status === "up" ? 1 : 0, responseMs == null ? 0 : Number(responseMs), responseMs == null ? 0 : 1);
-  db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', '-90 days')").run();
+  db.prepare("DELETE FROM reporting_hourly WHERE bucket < datetime('now', ?)").run(retentionWindow());
 }
 
 function recordSnmpProfileMetric(deviceId, category, metricKey, label, value, unit = "") {
@@ -1059,9 +1203,25 @@ function monitorAlertMetrics(monitor) {
   ];
 }
 
+function secondsSince(value) {
+  const time = Date.parse(value || "");
+  if (!Number.isFinite(time)) return null;
+  return Math.max(0, Math.floor((Date.now() - time) / 1000));
+}
+
+function customMetricAlertMetrics(item) {
+  return [
+    { key: "value", label: item?.name || "Custom metric value", value: item?.last_value ?? "", unit: item?.units || "" },
+    { key: "status", label: "Item status", value: item?.status || "unknown", unit: "" },
+    { key: "nodata_seconds", label: "Seconds since last data", value: secondsSince(item?.last_polled_at), unit: "s" },
+    { key: "last_error", label: "Last error", value: item?.last_error || "", unit: "" }
+  ];
+}
+
 const hostItemTypeLabels = {
   monitor: "Monitor/API/Ping",
   snmp: "SNMP device",
+  custom: "Custom/Zabbix metric",
   docker: "Docker container",
   "docker-host": "Docker host",
   unifi: "UniFi Network device",
@@ -1077,6 +1237,7 @@ function hostItemRecord(itemType, itemId) {
   const id = String(itemId || "");
   if (itemType === "monitor") return db.prepare("SELECT id, name, type, target, status, last_checked_at AS updatedAt FROM monitors WHERE id = ?").get(Number(id));
   if (itemType === "snmp") return db.prepare("SELECT id, name, host AS target, status, last_polled_at AS updatedAt FROM snmp_devices WHERE id = ?").get(Number(id));
+  if (itemType === "custom") return db.prepare("SELECT id, name, key_name AS target, status, last_polled_at AS updatedAt FROM custom_metric_items WHERE id = ?").get(Number(id));
   if (itemType === "docker") return db.prepare("SELECT container_id AS id, name, image AS target, CASE WHEN health = 'unhealthy' THEN 'down' ELSE 'up' END AS status, last_seen_at AS updatedAt FROM docker_containers WHERE container_id = ?").get(id);
   if (itemType === "docker-host") return db.prepare("SELECT id, name, endpoint AS target, status, last_polled_at AS updatedAt FROM docker_hosts WHERE id = ?").get(Number(id));
   if (itemType === "unifi") return db.prepare("SELECT id, name, COALESCE(address, model, device_type) AS target, status, last_polled_at AS updatedAt FROM unifi_network_devices WHERE id = ?").get(id);
@@ -1087,7 +1248,7 @@ function hostItemRecord(itemType, itemId) {
 
 function hostItemStatus(record) {
   const status = String(record?.status || "unknown").toLowerCase();
-  if (["down", "unhealthy", "offline", "error", "failed"].includes(status)) return "down";
+  if (["down", "unhealthy", "offline", "error", "failed", "unsupported"].includes(status)) return "down";
   if (["up", "healthy", "online", "ok", "running"].includes(status)) return "up";
   return "unknown";
 }
@@ -1156,6 +1317,7 @@ function latestMetricTrend(row) {
     if (category === "device" && key === "response_ms") values = numeric(db.prepare("SELECT response_ms AS value FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL ORDER BY polled_at DESC LIMIT 2").all(Number(row.targetId)));
     else values = numeric(db.prepare("SELECT value FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? ORDER BY recorded_at DESC LIMIT 2").all(Number(row.targetId), category, key));
   }
+  if (row.targetType === "custom" && row.metricKey === "value") values = numeric(db.prepare("SELECT value FROM custom_metric_history WHERE item_id = ? ORDER BY recorded_at DESC LIMIT 2").all(Number(row.targetId)));
   if (values.length < 2) return { change: null, trend: "flat" };
   const change = Number((values[0] - values[1]).toFixed(3));
   return { change, trend: change > 0 ? "up" : change < 0 ? "down" : "flat" };
@@ -1176,6 +1338,12 @@ function latestDataRows() {
       updatedAt: metric.key.startsWith("device|") ? device.last_polled_at : db.prepare("SELECT updated_at FROM snmp_profile_metrics WHERE device_id = ? AND category || '|' || metric_key = ?").get(device.id, metric.key)?.updated_at || device.last_polled_at,
       graphable: metric.key === "device|response_ms" || Boolean(db.prepare("SELECT 1 FROM snmp_profile_metric_history WHERE device_id = ? AND category || '|' || metric_key = ? LIMIT 1").get(device.id, metric.key))
     });
+  }
+  for (const item of db.prepare("SELECT custom_metric_items.*, hosts.name AS hostName FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name").all()) {
+    const graphable = Number.isFinite(Number(item.last_value)) || Boolean(db.prepare("SELECT 1 FROM custom_metric_history WHERE item_id = ? AND value GLOB '*[0-9]*' LIMIT 1").get(item.id));
+    rows.push({ targetType: "custom", targetId: String(item.id), targetName: item.hostName || item.name, metricKey: "value", metricLabel: item.name, value: item.last_value, unit: item.units || "", updatedAt: item.last_polled_at, graphable });
+    rows.push({ targetType: "custom", targetId: String(item.id), targetName: item.hostName || item.name, metricKey: "status", metricLabel: "Item status", value: item.status, unit: "", updatedAt: item.last_polled_at, graphable: false });
+    if (item.last_error) rows.push({ targetType: "custom", targetId: String(item.id), targetName: item.hostName || item.name, metricKey: "last_error", metricLabel: "Last error", value: item.last_error, unit: "", updatedAt: item.last_polled_at, graphable: false });
   }
   for (const container of db.prepare("SELECT container_id AS id, name, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, memory_limit_bytes AS memoryLimitBytes, restart_count AS restartCount, health, last_seen_at AS updatedAt FROM docker_containers ORDER BY name").all()) {
     rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "cpu_percent", metricLabel: "CPU usage", value: container.cpuPercent, unit: "%", updatedAt: container.updatedAt, graphable: true });
@@ -1229,6 +1397,15 @@ function alertRuleValue(rule) {
     if (rule.metric_key === "last_error") return monitor.last_error ?? "";
     return monitor[rule.metric_key] ?? null;
   }
+  if (rule.target_type === "custom") {
+    const item = db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(Number(rule.target_id));
+    if (!item) return null;
+    if (rule.metric_key === "value") return item.last_value ?? null;
+    if (rule.metric_key === "status") return item.status || "unknown";
+    if (rule.metric_key === "nodata_seconds") return secondsSince(item.last_polled_at);
+    if (rule.metric_key === "last_error") return item.last_error || "";
+    return item[rule.metric_key] ?? null;
+  }
   const container = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(rule.target_id);
   if (!container) return null;
   if (rule.metric_key === "memory_percent") return container.memory_limit_bytes > 0 ? (container.memory_bytes / container.memory_limit_bytes) * 100 : null;
@@ -1252,6 +1429,10 @@ function alertRuleMetricLabel(rule) {
     const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(Number(rule.target_id));
     return monitor ? monitorAlertMetrics(monitor).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
   }
+  if (rule.target_type === "custom") {
+    const item = db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(Number(rule.target_id));
+    return item ? customMetricAlertMetrics(item).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
   const labels = { cpu_percent: "CPU usage", memory_percent: "Memory usage", restart_count: "Restart count", health: "Container health" };
   return labels[rule.metric_key] || rule.metric_key;
 }
@@ -1261,6 +1442,10 @@ function alertRuleTargetName(rule) {
   if (rule.target_type === "unifi") return db.prepare("SELECT name FROM unifi_network_devices WHERE id = ?").get(rule.target_id)?.name || `UniFi ${rule.target_id}`;
   if (rule.target_type === "hikvision") return db.prepare("SELECT name FROM hikvision_cameras WHERE id = ?").get(rule.target_id)?.name || `Hikvision ${rule.target_id}`;
   if (rule.target_type === "monitor") return db.prepare("SELECT name FROM monitors WHERE id = ?").get(Number(rule.target_id))?.name || `Monitor ${rule.target_id}`;
+  if (rule.target_type === "custom") {
+    const item = db.prepare("SELECT custom_metric_items.name, hosts.name AS hostName FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id WHERE custom_metric_items.id = ?").get(Number(rule.target_id));
+    return item ? `${item.hostName || "Custom"}: ${item.name}` : `Custom metric ${rule.target_id}`;
+  }
   return db.prepare("SELECT name FROM docker_containers WHERE container_id = ?").get(rule.target_id)?.name || `Docker ${rule.target_id}`;
 }
 
@@ -1302,12 +1487,17 @@ function alertMetricSamples(rule) {
     if (rule.metric_key === "status") return db.prepare("SELECT status AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
     if (rule.metric_key === "api_value") return db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
   }
+  if (rule.target_type === "custom") {
+    if (rule.metric_key === "value") return db.prepare("SELECT value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "status") return db.prepare("SELECT status AS value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500").all(Number(rule.target_id), window);
+  }
   const current = alertRuleValue(rule);
   return current == null ? [] : [{ value: current, recordedAt: new Date().toISOString() }];
 }
 
 function alertRuleComputedValue(rule) {
   const fn = String(rule.function_name || "last").toLowerCase();
+  if (fn === "nodata") return { value: secondsSince(alertMetricSamples(rule)[0]?.recordedAt || (rule.target_type === "custom" ? db.prepare("SELECT last_polled_at FROM custom_metric_items WHERE id = ?").get(Number(rule.target_id))?.last_polled_at : null)), sampleCount: 0, functionName: fn };
   const samples = alertMetricSamples(rule).filter((sample) => sample.value != null);
   if (!samples.length) return { value: alertRuleValue(rule), sampleCount: 0, functionName: fn };
   if (fn === "count") return { value: samples.filter((sample) => alertRuleTriggered(sample.value, rule.operator, rule.threshold)).length, sampleCount: samples.length, functionName: fn };
@@ -1344,6 +1534,208 @@ function alertRuleTriggered(value, operator, threshold) {
   if (operator === "not_contains") return !String(value).toLowerCase().includes(String(threshold).toLowerCase());
   if (operator === "!=") return numeric ? leftNumber !== rightNumber : String(value).toLowerCase() !== String(threshold).toLowerCase();
   return numeric ? leftNumber === rightNumber : String(value).toLowerCase() === String(threshold).toLowerCase();
+}
+
+function asArray(value) {
+  return Array.isArray(value) ? value : value ? [value] : [];
+}
+
+function zabbixSeconds(value, fallback = 60) {
+  const text = String(value || "").trim();
+  if (!text || text === "0") return fallback;
+  const match = text.match(/^(\d+)([smhdw])?$/i);
+  if (!match) return fallback;
+  const number = Number(match[1]);
+  const multipliers = { s: 1, m: 60, h: 3600, d: 86400, w: 604800 };
+  return Math.max(1, Math.min(31536000, number * (multipliers[String(match[2] || "s").toLowerCase()] || 1)));
+}
+
+function zabbixSeverity(priority) {
+  return ["information", "information", "warning", "average", "high", "disaster"][Number(priority)] || "warning";
+}
+
+function zabbixItemType(type) {
+  const map = {
+    0: "zabbix_agent", 2: "zabbix_trapper", 3: "simple_check", 5: "internal", 7: "zabbix_agent_active",
+    9: "web_item", 10: "external_check", 11: "database_monitor", 12: "ipmi_agent", 13: "ssh_agent",
+    14: "telnet_agent", 15: "calculated", 16: "jmx_agent", 17: "snmp_trap", 18: "dependent",
+    19: "http_agent", 20: "snmp_agent", 21: "script", 22: "browser"
+  };
+  return map[Number(type)] || String(type || "custom").toLowerCase();
+}
+
+function zabbixValueType(type) {
+  return { 0: "float", 1: "char", 2: "log", 3: "unsigned", 4: "text", 5: "binary" }[Number(type)] || String(type || "");
+}
+
+function stringifyZabbixTags(tags) {
+  return asArray(tags).map((tag) => `${String(tag.tag || tag.name || "").trim()}:${String(tag.value || "").trim()}`.replace(/:$/, "")).filter(Boolean).join(", ");
+}
+
+function upsertHostMacro(hostId, macro) {
+  const name = String(macro.macro || macro.name || "").trim();
+  if (!name) return false;
+  db.prepare("INSERT INTO host_macros (host_id, macro, value, description) VALUES (?, ?, ?, ?) ON CONFLICT(host_id, macro) DO UPDATE SET value=excluded.value, description=excluded.description")
+    .run(hostId, name, String(macro.value ?? ""), String(macro.description || ""));
+  return true;
+}
+
+function upsertHostTag(hostId, tag) {
+  const name = String(tag.tag || tag.name || "").trim();
+  if (!name) return false;
+  db.prepare("INSERT OR IGNORE INTO host_tags (host_id, tag, value) VALUES (?, ?, ?)").run(hostId, name, String(tag.value || ""));
+  return true;
+}
+
+function zabbixItemParams(item, hostByZabbixId) {
+  const host = hostByZabbixId.get(String(item.hostid || ""));
+  const mainInterface = asArray(host?.interfaces).find((iface) => String(iface.main || "0") === "1") || asArray(host?.interfaces)[0] || {};
+  return {
+    zabbixItemId: String(item.itemid || ""),
+    zabbixHostId: String(item.hostid || ""),
+    hostAddress: mainInterface.ip || mainInterface.dns || host?.host || "",
+    interface: mainInterface,
+    snmpOid: String(item.snmp_oid || ""),
+    url: String(item.url || ""),
+    requestMethod: String(item.request_method ?? ""),
+    timeout: String(item.timeout || ""),
+    posts: String(item.posts || ""),
+    queryFields: asArray(item.query_fields),
+    parameters: asArray(item.parameters),
+    masterItemId: String(item.master_itemid || item.master_item_id || ""),
+    history: String(item.history || ""),
+    trends: String(item.trends || "")
+  };
+}
+
+function upsertCustomMetricItem(hostId, item, hostByZabbixId) {
+  const externalId = String(item.itemid || item.uuid || `${hostId}:${item.key_ || item.key || item.name}`);
+  const keyName = String(item.key_ || item.key || item.name || externalId).trim().slice(0, 240);
+  const name = String(item.name || keyName).trim().slice(0, 240);
+  const itemType = zabbixItemType(item.type);
+  const paramsJson = JSON.stringify(zabbixItemParams(item, hostByZabbixId));
+  const preprocessingJson = JSON.stringify(asArray(item.preprocessing));
+  const tagsJson = JSON.stringify(asArray(item.tags));
+  const delaySeconds = zabbixSeconds(item.delay, 60);
+  const enabled = String(item.status || "0") === "0" ? 1 : 0;
+  const existing = db.prepare("SELECT id FROM custom_metric_items WHERE host_id = ? AND source = 'zabbix' AND external_id = ?").get(hostId, externalId)
+    || db.prepare("SELECT id FROM custom_metric_items WHERE host_id = ? AND key_name = ?").get(hostId, keyName);
+  if (existing) {
+    db.prepare(`UPDATE custom_metric_items SET name = ?, key_name = ?, item_type = ?, value_type = ?, units = ?, params_json = ?, preprocessing_json = ?, tags_json = ?, delay_seconds = ?, enabled = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`)
+      .run(name, keyName, itemType, zabbixValueType(item.value_type), String(item.units || ""), paramsJson, preprocessingJson, tagsJson, delaySeconds, enabled, existing.id);
+    return { id: existing.id, created: false };
+  }
+  const result = db.prepare(`INSERT INTO custom_metric_items (host_id, source, external_id, name, key_name, item_type, value_type, units, params_json, preprocessing_json, tags_json, delay_seconds, enabled)
+    VALUES (?, 'zabbix', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(hostId, externalId, name, keyName, itemType, zabbixValueType(item.value_type), String(item.units || ""), paramsJson, preprocessingJson, tagsJson, delaySeconds, enabled);
+  db.prepare("INSERT OR IGNORE INTO host_links (host_id, item_type, item_id, label) VALUES (?, 'custom', ?, ?)").run(hostId, String(result.lastInsertRowid), name);
+  return { id: Number(result.lastInsertRowid), created: true };
+}
+
+function parseZabbixThreshold(value) {
+  const text = String(value || "").trim().replace(/^"|"$/g, "");
+  const match = text.match(/^(-?\d+(?:\.\d+)?)([KMGT])?$/i);
+  if (!match) return text;
+  const multiplier = { K: 1024, M: 1048576, G: 1073741824, T: 1099511627776 }[String(match[2] || "").toUpperCase()] || 1;
+  return String(Number(match[1]) * multiplier);
+}
+
+function parseZabbixTriggerExpression(expression) {
+  const text = String(expression || "").trim();
+  const match = text.match(/^(last|min|max|avg|count|nodata|change)\(\/([^/]+)\/(.+?)(?:,([^)]+))?\)\s*(<>|!=|>=|<=|=|>|<)\s*(.+)$/i);
+  if (!match) return null;
+  const [, fnRaw, host, keyRaw, windowRaw, opRaw, thresholdRaw] = match;
+  const fn = fnRaw.toLowerCase();
+  let key = keyRaw.trim();
+  let windowSeconds = 0;
+  if (fn === "last" && windowRaw && /^#\d+$/i.test(windowRaw.trim())) key = `${key},${windowRaw.trim()}`;
+  else if (windowRaw) windowSeconds = zabbixSeconds(windowRaw.trim(), 0);
+  return {
+    host: host.trim(),
+    key,
+    functionName: fn,
+    windowSeconds,
+    operator: opRaw === "=" ? "==" : opRaw === "<>" ? "!=" : opRaw,
+    threshold: parseZabbixThreshold(thresholdRaw)
+  };
+}
+
+function zabbixExportRoot(input) {
+  return input?.zabbix_export || input?.export || input || {};
+}
+
+function importZabbixExport(input, sourcePath = "") {
+  const root = zabbixExportRoot(input);
+  const hosts = asArray(root.hosts);
+  const items = asArray(root.items);
+  const triggers = asArray(root.triggers);
+  const webScenarios = asArray(root.webScenarios || root.httptests);
+  const hostByZabbixId = new Map(hosts.map((host) => [String(host.hostid || host.id || host.host || host.name), host]));
+  const hostIdByZabbixId = new Map();
+  const itemIdByHostKey = new Map();
+  const summary = { hostsCreated: 0, hostsUpdated: 0, itemsCreated: 0, itemsUpdated: 0, triggersCreated: 0, triggersSkipped: 0, webScenariosCreated: 0, webScenariosUpdated: 0, macrosImported: 0, tagsImported: 0 };
+  db.transaction(() => {
+    for (const host of hosts) {
+      const name = String(host.name || host.host || `Zabbix host ${host.hostid}`).trim().slice(0, 100);
+      const existing = db.prepare("SELECT id FROM hosts WHERE name = ? COLLATE NOCASE").get(name);
+      const hostType = asArray(host.interfaces).some((iface) => String(iface.type) === "2") ? "snmp" : "zabbix";
+      const tags = stringifyZabbixTags(host.tags);
+      const description = String(host.description || "").slice(0, 500);
+      let hostId;
+      if (existing) {
+        hostId = existing.id;
+        db.prepare("UPDATE hosts SET host_type = ?, description = ?, tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hostType, description, tags, hostId);
+        summary.hostsUpdated += 1;
+      } else {
+        const result = db.prepare("INSERT INTO hosts (name, host_type, description, tags, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)").run(name, hostType, description, tags);
+        hostId = Number(result.lastInsertRowid);
+        summary.hostsCreated += 1;
+      }
+      hostIdByZabbixId.set(String(host.hostid || host.id || host.host || host.name), hostId);
+      for (const macro of asArray(host.macros)) if (upsertHostMacro(hostId, macro)) summary.macrosImported += 1;
+      for (const tag of asArray(host.tags)) if (upsertHostTag(hostId, tag)) summary.tagsImported += 1;
+    }
+    for (const item of items) {
+      const hostId = hostIdByZabbixId.get(String(item.hostid || ""));
+      if (!hostId) continue;
+      const result = upsertCustomMetricItem(hostId, item, hostByZabbixId);
+      if (result.created) summary.itemsCreated += 1; else summary.itemsUpdated += 1;
+      itemIdByHostKey.set(`${hostId}:${String(item.key_ || item.key || item.name || "").trim()}`, result.id);
+      itemIdByHostKey.set(`${hostId}:${String(item.key_ || item.key || item.name || "").trim()},#1`, result.id);
+    }
+    for (const scenario of webScenarios) {
+      const hostId = hostIdByZabbixId.get(String(scenario.hostid || ""));
+      if (!hostId) continue;
+      const externalId = String(scenario.httptestid || scenario.uuid || `${hostId}:${scenario.name}`);
+      const existing = db.prepare("SELECT id FROM zabbix_web_scenarios WHERE external_id = ?").get(externalId);
+      const payload = JSON.stringify({ ...scenario, steps: asArray(scenario.steps) });
+      if (existing) {
+        db.prepare("UPDATE zabbix_web_scenarios SET host_id = ?, name = ?, delay_seconds = ?, params_json = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+          .run(hostId, String(scenario.name || "Web scenario").slice(0, 160), zabbixSeconds(scenario.delay, 60), payload, existing.id);
+        summary.webScenariosUpdated += 1;
+      } else {
+        db.prepare("INSERT INTO zabbix_web_scenarios (host_id, external_id, name, delay_seconds, params_json) VALUES (?, ?, ?, ?, ?)")
+          .run(hostId, externalId, String(scenario.name || "Web scenario").slice(0, 160), zabbixSeconds(scenario.delay, 60), payload);
+        summary.webScenariosCreated += 1;
+      }
+    }
+    for (const trigger of triggers) {
+      const parsed = parseZabbixTriggerExpression(trigger.expression);
+      if (!parsed) { summary.triggersSkipped += 1; continue; }
+      const host = hosts.find((candidate) => String(candidate.name || candidate.host) === parsed.host || String(candidate.host || candidate.name) === parsed.host);
+      const hostId = host ? hostIdByZabbixId.get(String(host.hostid || host.id || host.host || host.name)) : null;
+      const itemId = hostId ? itemIdByHostKey.get(`${hostId}:${parsed.key}`) || itemIdByHostKey.get(`${hostId}:${parsed.key.replace(/,#\d+$/, "")}`) : null;
+      if (!itemId) { summary.triggersSkipped += 1; continue; }
+      const externalName = String(trigger.description || `Zabbix trigger ${trigger.triggerid}`).slice(0, 100);
+      if (db.prepare("SELECT 1 FROM alert_rules WHERE target_type = 'custom' AND target_id = ? AND name = ?").get(String(itemId), externalName)) { summary.triggersSkipped += 1; continue; }
+      db.prepare(`INSERT INTO alert_rules (name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, severity, description, action_text, trigger_count, recovery_count, enabled)
+        VALUES (?, 'custom', ?, 'value', ?, ?, ?, ?, ?, ?, ?, 1, 1, ?)`)
+        .run(externalName, String(itemId), parsed.operator, parsed.threshold, parsed.functionName, parsed.windowSeconds, zabbixSeverity(trigger.priority), String(trigger.comments || "").slice(0, 500), String(trigger.opdata || "").slice(0, 500), String(trigger.status || "0") === "0" ? 1 : 0);
+      summary.triggersCreated += 1;
+    }
+    db.prepare("INSERT INTO zabbix_migration_runs (source_path, exported_at, summary_json) VALUES (?, ?, ?)").run(sourcePath, String(root.exportedAt || input.exportedAt || ""), JSON.stringify(summary));
+  })();
+  return summary;
 }
 
 function maintenanceSettings() {
@@ -1399,7 +1791,8 @@ async function evaluateAlertRules(targetType, targetId) {
 function discordConfig() {
   return {
     enabled: getSetting("discord_enabled", "false") === "true",
-    webhookUrl: getSetting("discord_webhook_url", "")
+    webhookUrl: getSetting("discord_webhook_url", ""),
+    threadId: getSetting("discord_thread_id", "")
   };
 }
 
@@ -1761,7 +2154,8 @@ async function sendDiscord(content, embeds = undefined) {
   const config = discordConfig();
   if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return;
   try {
-    await fetch(config.webhookUrl, {
+    const webhookUrl = config.threadId ? `${config.webhookUrl}${config.webhookUrl.includes("?") ? "&" : "?"}thread_id=${encodeURIComponent(config.threadId)}` : config.webhookUrl;
+    await fetch(webhookUrl, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ content, embeds, username: "NichHome Uptime" }),
@@ -2818,6 +3212,11 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
       { key: "health", label: "Container health", unit: "", value: alertRuleValue({ target_type: "docker", target_id: target.id, metric_key: "health" }) }
     ]
   }));
+  const customTargets = db.prepare("SELECT custom_metric_items.*, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name LIMIT 2000").all().map((target) => ({
+    id: String(target.id),
+    name: `${target.host_name || "Custom"} - ${target.name}`,
+    metrics: customMetricAlertMetrics(target)
+  }));
   const unifiTargets = db.prepare("SELECT unifi_network_devices.*, unifi_network_hosts.name AS host_name, unifi_network_sites.name AS site_name FROM unifi_network_devices JOIN unifi_network_hosts ON unifi_network_hosts.id = unifi_network_devices.host_id LEFT JOIN unifi_network_sites ON unifi_network_sites.host_id = unifi_network_devices.host_id AND unifi_network_sites.site_id = unifi_network_devices.site_id ORDER BY unifi_network_hosts.name, unifi_network_sites.name, unifi_network_devices.name").all().map((target) => ({
     id: target.id,
     name: `${target.name} (${target.site_name || target.site_id})`,
@@ -2828,7 +3227,7 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
     name: `${target.name} (${target.host_name})`,
     metrics: hikvisionAlertMetrics(target)
   }));
-  res.json({ monitor: monitorTargets, snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
+  res.json({ monitor: monitorTargets, snmp: snmpTargets, custom: customTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
 });
 app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
   res.json([
@@ -2913,8 +3312,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker", "unifi", "hikvision", "monitor"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
-  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : targetType === "monitor" ? db.prepare("SELECT 1 FROM monitors WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!["snmp", "docker", "unifi", "hikvision", "monitor", "custom"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count", "nodata"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : targetType === "monitor" ? db.prepare("SELECT 1 FROM monitors WHERE id = ?").get(Number(targetId)) : targetType === "custom" ? db.prepare("SELECT 1 FROM custom_metric_items WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
@@ -2936,7 +3335,7 @@ app.put("/api/alert-rules/:id", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || rule.recovery_count)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   const enabled = req.body.enabled === false ? 0 : 1;
-  if (name.length < 2 || name.length > 100 || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name, function, and severity." });
+  if (name.length < 2 || name.length > 100 || !["last", "avg", "min", "max", "change", "count", "nodata"].includes(functionName) || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Enter a valid name, function, and severity." });
   if (dependencyRuleId && (dependencyRuleId === id || !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId))) return res.status(400).json({ error: "Choose a valid dependency rule." });
   db.prepare("UPDATE alert_rules SET name = ?, function_name = ?, window_seconds = ?, severity = ?, description = ?, action_text = ?, trigger_count = ?, recovery_count = ?, dependency_rule_id = ?, enabled = ? WHERE id = ?").run(name, functionName, windowSeconds, severity, description, actionText, triggerCount, recoveryCount, dependencyRuleId, enabled, id);
   if (!enabled) db.prepare("UPDATE alert_rule_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE rule_id = ? AND resolved_at IS NULL").run(id);
@@ -2990,6 +3389,7 @@ app.get("/api/hosts/attachable-items", requireAuth, (req, res) => {
   res.json({
     monitor: db.prepare("SELECT id, name, type, target, status FROM monitors ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: `${item.type.toUpperCase()} - ${item.target}`, status: item.status })),
     snmp: db.prepare("SELECT id, name, host, status FROM snmp_devices ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: item.host, status: item.status })),
+    custom: db.prepare("SELECT custom_metric_items.id, custom_metric_items.name, custom_metric_items.key_name, custom_metric_items.status, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name LIMIT 2000").all().map((item) => ({ id: String(item.id), name: item.name, detail: `${item.host_name || "Custom"} - ${item.key_name}`, status: item.status })),
     docker: db.prepare("SELECT container_id AS id, name, image, health FROM docker_containers ORDER BY name").all().map((item) => ({ id: item.id, name: item.name, detail: item.image || "Docker container", status: item.health === "unhealthy" ? "down" : "up" })),
     "docker-host": db.prepare("SELECT id, name, endpoint, status FROM docker_hosts ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: item.endpoint, status: item.status })),
     unifi: db.prepare("SELECT id, name, COALESCE(address, model, device_type) AS detail, status FROM unifi_network_devices ORDER BY name").all(),
@@ -3016,7 +3416,10 @@ app.get("/api/hosts/:id", requireAuth, (req, res) => {
   `).all(id).map((problem) => ({ ...problem, targetName: alertRuleTargetName({ target_type: problem.targetType, target_id: problem.targetId }), metricLabel: alertRuleMetricLabel({ target_type: problem.targetType, target_id: problem.targetId, metric_key: problem.metricKey }) }));
   const status = summarizeHostStatus(items);
   if (status !== host.status) db.prepare("UPDATE hosts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
-  res.json({ ...host, status, itemCount: items.length, problemCount: problems.length, items, latestData, problems });
+  const macros = db.prepare("SELECT macro, value, description FROM host_macros WHERE host_id = ? ORDER BY macro").all(id);
+  const hostTags = db.prepare("SELECT tag, value FROM host_tags WHERE host_id = ? ORDER BY tag, value").all(id);
+  const webScenarios = db.prepare("SELECT id, external_id AS externalId, name, delay_seconds AS delaySeconds, status, updated_at AS updatedAt FROM zabbix_web_scenarios WHERE host_id = ? ORDER BY name").all(id);
+  res.json({ ...host, status, itemCount: items.length, problemCount: problems.length, items, latestData, problems, macros, hostTags, webScenarios });
 });
 app.post("/api/hosts", requireAuth, (req, res) => {
   const name = String(req.body.name || "").trim();
@@ -3073,6 +3476,7 @@ app.post("/api/hosts/:id/items/:itemType/:itemId/refresh", requireAuth, async (r
   try {
     if (itemType === "monitor") await runMonitor(Number(itemId));
     else if (itemType === "snmp") await pollSnmpDevice(Number(itemId));
+    else if (itemType === "custom") await evaluateAlertRules("custom", itemId);
     else if (itemType === "docker-host") await pollDockerHost(Number(itemId));
     else if (itemType === "docker") {
       const container = db.prepare("SELECT host_id FROM docker_containers WHERE container_id = ?").get(itemId);
@@ -3114,9 +3518,62 @@ app.get("/api/automation/capabilities", requireAuth, (req, res) => {
       items: ["GET /api/hosts/attachable-items", "GET /api/latest-data", "GET /api/metric-history"],
       monitors: ["GET /api/monitors", "POST /api/monitors", "PUT /api/monitors/:id", "POST /api/monitors/:id/check"],
       triggers: ["GET /api/alert-rules", "GET /api/alert-rules/options", "POST /api/alert-rules", "PUT /api/alert-rules/:id"],
+      zabbixMigration: ["POST /api/zabbix/import", "GET /api/zabbix/import-runs"],
+      customMetrics: ["GET /api/custom-metrics", "POST /api/custom-metrics/:id/value"],
       topology: ["GET /api/network-map", "POST /api/network-map/links", "PUT /api/network-map/overrides"]
     }
   });
+});
+app.get("/api/custom-metrics", requireAuth, (req, res) => {
+  const hostId = req.query.hostId ? Number(req.query.hostId) : null;
+  const rows = hostId
+    ? db.prepare("SELECT custom_metric_items.*, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id WHERE custom_metric_items.host_id = ? ORDER BY custom_metric_items.name LIMIT 5000").all(hostId)
+    : db.prepare("SELECT custom_metric_items.*, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name LIMIT 5000").all();
+  res.json(rows.map((item) => ({
+    id: item.id, hostId: item.host_id, hostName: item.host_name, source: item.source, externalId: item.external_id,
+    name: item.name, key: item.key_name, itemType: item.item_type, valueType: item.value_type, units: item.units,
+    delaySeconds: item.delay_seconds, enabled: Boolean(item.enabled), status: item.status,
+    lastValue: item.last_value, lastError: item.last_error, lastPolledAt: item.last_polled_at,
+    params: item.params_json ? JSON.parse(item.params_json) : {}, preprocessing: item.preprocessing_json ? JSON.parse(item.preprocessing_json) : [], tags: item.tags_json ? JSON.parse(item.tags_json) : []
+  })));
+});
+app.post("/api/custom-metrics/:id/value", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const item = db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(id);
+  if (!item) return res.status(404).json({ error: "Custom metric item not found." });
+  const value = String(req.body.value ?? "").slice(0, 2000);
+  const status = ["up", "down", "unknown"].includes(String(req.body.status || "up")) ? String(req.body.status || "up") : "up";
+  const message = String(req.body.message || "").slice(0, 300);
+  db.transaction(() => {
+    db.prepare("UPDATE custom_metric_items SET last_value = ?, status = ?, last_error = ?, last_polled_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(value, status, status === "up" ? null : message, id);
+    db.prepare("INSERT INTO custom_metric_history (item_id, value, status, message) VALUES (?, ?, ?, ?)").run(id, value, status, message);
+    db.prepare("DELETE FROM custom_metric_history WHERE id IN (SELECT id FROM custom_metric_history WHERE item_id = ? ORDER BY recorded_at DESC LIMIT -1 OFFSET 5000)").run(id);
+  })();
+  await evaluateAlertRules("custom", id);
+  res.json({ ok: true });
+});
+app.get("/api/zabbix/import-runs", requireAuth, (req, res) => {
+  const runs = db.prepare("SELECT id, source_path AS sourcePath, exported_at AS exportedAt, summary_json AS summaryJson, created_at AS createdAt FROM zabbix_migration_runs ORDER BY created_at DESC LIMIT 20").all();
+  res.json(runs.map((run) => ({ ...run, summary: run.summaryJson ? JSON.parse(run.summaryJson) : {} })));
+});
+app.post("/api/zabbix/import", requireAuth, (req, res) => {
+  const sourcePath = String(req.body.path || "").trim();
+  let payload = req.body.export || req.body.zabbixExport || null;
+  try {
+    if (!payload) {
+      if (!sourcePath) return res.status(400).json({ error: "Provide a Zabbix export JSON object or a server-local path." });
+      const stat = fs.statSync(sourcePath);
+      if (!stat.isFile() || stat.size > 100 * 1024 * 1024) return res.status(400).json({ error: "Choose a Zabbix export JSON file under 100 MB." });
+      payload = JSON.parse(fs.readFileSync(sourcePath, "utf8").replace(/^\uFEFF/, ""));
+    }
+    const root = zabbixExportRoot(payload);
+    const preview = { hosts: asArray(root.hosts).length, items: asArray(root.items).length, triggers: asArray(root.triggers).length, webScenarios: asArray(root.webScenarios || root.httptests).length };
+    if (req.body.dryRun) return res.json({ ok: true, dryRun: true, preview });
+    const summary = importZabbixExport(payload, sourcePath);
+    res.status(201).json({ ok: true, preview, summary });
+  } catch (error) {
+    res.status(400).json({ error: `Zabbix import failed: ${error.message}` });
+  }
 });
 app.get("/api/latest-data", requireAuth, (req, res) => {
   res.json(latestDataRows().slice(0, 5000));
@@ -3143,6 +3600,9 @@ app.get("/api/metric-history", requireAuth, (req, res) => {
   } else if (targetType === "monitor") {
     if (metricKey === "response_ms") rows = db.prepare("SELECT response_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
     if (metricKey === "api_value") rows = db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+  } else if (targetType === "custom") {
+    if (metricKey === "value") rows = db.prepare("SELECT value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "status") rows = db.prepare("SELECT status AS value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at LIMIT 2000").all(Number(targetId), window);
   }
   res.json(rows.map((row) => ({ ...row, value: Number.isFinite(Number(row.value)) ? Number(row.value) : row.value })));
 });
@@ -3869,8 +4329,15 @@ app.get("/api/admin/settings", requireAuth, (req, res) => {
     ui: uiSettings(),
     features: featureSettings(),
     preferences: preferenceSettings(),
-    storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
+    storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite"), retentionDays: retentionDays() }
   });
+});
+app.put("/api/admin/storage", requireAuth, (req, res) => {
+  const days = Number(req.body.retentionDays);
+  if (!Number.isFinite(days) || days < 1 || days > 3650) return res.status(400).json({ error: "Retention must be between 1 and 3650 days." });
+  setSetting("retention_days", String(Math.floor(days)));
+  cleanupRetention();
+  res.json({ ok: true, storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite"), retentionDays: retentionDays() } });
 });
 app.put("/api/admin/ui", requireAuth, (req, res) => {
   const brandName = String(req.body.brandName || "NichHome").trim().slice(0, 40);
@@ -3947,24 +4414,27 @@ app.post("/api/docker/refresh", requireAuth, async (req, res) => {
 });
 app.get("/api/notifications/discord", requireAuth, (req, res) => {
   const config = discordConfig();
-  res.json({ enabled: config.enabled, configured: Boolean(config.webhookUrl), webhookUrl: config.webhookUrl });
+  res.json({ enabled: config.enabled, configured: Boolean(config.webhookUrl), webhookUrl: config.webhookUrl, threadId: config.threadId });
 });
 app.put("/api/notifications/discord", requireAuth, (req, res) => {
   const webhookUrl = String(req.body.webhookUrl || "").trim();
+  const threadId = String(req.body.threadId ?? discordConfig().threadId ?? "").trim().slice(0, 80);
   const enabled = Boolean(req.body.enabled);
   const current = discordConfig();
   const nextWebhookUrl = webhookUrl || current.webhookUrl;
   if (webhookUrl && !validDiscordWebhook(webhookUrl)) return res.status(400).json({ error: "Enter a valid Discord webhook URL." });
   if (enabled && !nextWebhookUrl) return res.status(400).json({ error: "A Discord webhook URL is required when notifications are enabled." });
   if (webhookUrl) setSetting("discord_webhook_url", webhookUrl);
+  setSetting("discord_thread_id", threadId);
   setSetting("discord_enabled", String(enabled));
-  res.json({ ok: true, enabled, configured: Boolean(nextWebhookUrl), webhookUrl: nextWebhookUrl ? "configured" : "" });
+  res.json({ ok: true, enabled, configured: Boolean(nextWebhookUrl), webhookUrl: nextWebhookUrl ? "configured" : "", threadId });
 });
 app.post("/api/notifications/discord/test", requireAuth, async (req, res) => {
   const config = discordConfig();
   if (!config.enabled || !validDiscordWebhook(config.webhookUrl)) return res.status(400).json({ error: "Enable and save a valid Discord webhook first." });
   try {
-    const response = await fetch(config.webhookUrl, {
+    const webhookUrl = config.threadId ? `${config.webhookUrl}${config.webhookUrl.includes("?") ? "&" : "?"}thread_id=${encodeURIComponent(config.threadId)}` : config.webhookUrl;
+    const response = await fetch(webhookUrl, {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ username: "NichHome Uptime", embeds: [{ title: "NichHome Uptime notification test", description: "Structured Discord alert embeds are working.", color: 5763719, fields: [{ name: "Status", value: "Connected", inline: true }, { name: "Alert style", value: "Rich embed", inline: true }], footer: { text: "NichHome Uptime" }, timestamp: new Date().toISOString() }] }),
       signal: AbortSignal.timeout(10000)
@@ -4042,5 +4512,9 @@ app.get("/", (req, res) => {
   if (!getUser(req)) return res.redirect("/auth");
   res.sendFile(path.join(staticDir, "index.html"));
 });
+
+setInterval(() => {
+  try { cleanupRetention(); } catch (error) { console.error("Retention cleanup failed:", error.message); }
+}, 3600000).unref();
 
 app.listen(PORT, "0.0.0.0", () => console.log(`NichHome Uptime listening on ${PORT}`));

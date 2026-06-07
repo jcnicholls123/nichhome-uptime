@@ -125,7 +125,7 @@ async function waitForServer() {
     assert.ok(appJs.includes("function openMapLinkForm"));
     assert.ok(appJs.includes("Correct where this device comes from"));
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.1.0", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.1.1", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -190,6 +190,9 @@ async function waitForServer() {
     const hostDetail = await (await request(`/api/hosts/${homeAssistantHost.id}`)).json();
     assert.equal(hostDetail.items[0].itemType, "monitor");
     assert.equal(hostDetail.latestData.some((item) => item.targetType === "monitor" && item.metricKey === "api_value" && item.hostName === "Home Assistant"), true);
+    assert.equal((await request(`/api/hosts/${homeAssistantHost.id}/items/monitor/${apiMonitor.id}/refresh`, { method: "POST", body: "{}" })).status, 200);
+    const refreshedHostDetail = await (await request(`/api/hosts/${homeAssistantHost.id}`)).json();
+    assert.equal(refreshedHostDetail.latestData.some((item) => item.targetType === "monitor" && item.metricKey === "response_ms" && Object.prototype.hasOwnProperty.call(item, "change")), true);
     const monitorAlertOptions = await (await request("/api/alert-rules/options")).json();
     assert.equal(monitorAlertOptions.monitor.some((target) => String(target.id) === String(apiMonitor.id) && target.metrics.some((metric) => metric.key === "api_value")), true);
     assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Zigbee API should be online", targetType: "monitor", targetId: String(apiMonitor.id), metricKey: "api_value", operator: "!=", threshold: "online", severity: "warning", description: "Home Assistant state endpoint should report online", actionText: "Check Home Assistant and Zigbee bridge", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
@@ -219,12 +222,16 @@ async function waitForServer() {
     const dockerHosts = await (await request("/api/docker/hosts")).json();
     assert.equal(dockerHosts.length, 1);
     assert.equal(dockerHosts[0].status, "up");
+    const truenasAppsHost = await (await request("/api/hosts", { method: "POST", body: JSON.stringify({ name: "TrueNAS Apps", hostType: "truenas", description: "Docker host grouping" }) })).json();
+    assert.equal((await request(`/api/hosts/${truenasAppsHost.id}/items`, { method: "POST", body: JSON.stringify({ itemType: "docker-host", itemId: String(dockerHosts[0].id), label: "Docker Engine" }) })).status, 201);
     const connectedDockerStatus = await (await request("/api/docker/status")).json();
     assert.equal(connectedDockerStatus.available, true);
     const containers = await (await request("/api/docker/containers")).json();
     assert.equal(containers.length, 1);
     assert.equal(containers[0].hostName, "Test Docker");
     assert.equal(containers[0].status, "up");
+    assert.equal((await request(`/api/hosts/${truenasAppsHost.id}/items`, { method: "POST", body: JSON.stringify({ itemType: "docker", itemId: containers[0].id, label: "glance container" }) })).status, 201);
+    assert.equal((await (await request(`/api/hosts/${truenasAppsHost.id}`)).json()).items.length, 2);
     assert.equal((await request(`/api/docker/containers/${encodeURIComponent(containers[0].id)}/details`)).status, 200);
     const alertOptions = await (await request("/api/alert-rules/options")).json();
     assert.equal(alertOptions.docker[0].metrics.some((metric) => metric.key === "restart_count"), true);
@@ -246,7 +253,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.1.0");
+    assert.equal(adminSettings.app.version, "1.1.1");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);

@@ -12,6 +12,20 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.1.1] - 2026-06-07
+
+### Added
+
+- Add Host can now create the host and its first item together: ping, HTTP,
+  TCP, custom API/JSON, SNMP v2c, or an existing item attachment
+- Host items are now collapsible, showing their latest variables inline with
+  refresh, graph, trigger, and remove actions
+- Host metric graphs now use a larger Zabbix-style filled chart with gridlines,
+  axis labels, and last/min/avg/max stats
+- Dedicated Docker page now includes Docker host management with edit, refresh,
+  delete, and add actions
+- Latest host data now includes simple +/- trend values for graphable metrics
+
 ## [1.1.0] - 2026-06-07
 
 ### Added

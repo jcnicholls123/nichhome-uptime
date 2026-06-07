@@ -1140,6 +1140,27 @@ function decorateLatestRows(rows) {
   return rows.map((row) => ({ ...row, ...(hosts.get(`${row.targetType}:${row.targetId}`) || { hostId: null, hostName: "", hostType: "", tags: "" }) }));
 }
 
+function latestMetricTrend(row) {
+  const numeric = (rows) => rows.map((item) => Number(item.value)).filter(Number.isFinite);
+  let values = [];
+  if (row.targetType === "monitor" && row.metricKey === "response_ms") values = numeric(db.prepare("SELECT response_ms AS value FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL ORDER BY checked_at DESC LIMIT 2").all(Number(row.targetId)));
+  if (row.targetType === "docker" && row.metricKey === "cpu_percent") values = numeric(db.prepare("SELECT cpu_percent AS value FROM docker_metrics WHERE container_id = ? AND cpu_percent IS NOT NULL ORDER BY polled_at DESC LIMIT 2").all(row.targetId));
+  if (row.targetType === "docker" && row.metricKey === "memory_percent") {
+    const limit = Number(db.prepare("SELECT memory_limit_bytes AS value FROM docker_containers WHERE container_id = ?").get(row.targetId)?.value || 0);
+    if (limit > 0) values = numeric(db.prepare("SELECT memory_bytes * 100.0 / ? AS value FROM docker_metrics WHERE container_id = ? AND memory_bytes IS NOT NULL ORDER BY polled_at DESC LIMIT 2").all(limit, row.targetId));
+  }
+  if (row.targetType === "snmp") {
+    const separator = row.metricKey.indexOf("|");
+    const category = separator > 0 ? row.metricKey.slice(0, separator) : "";
+    const key = separator > 0 ? row.metricKey.slice(separator + 1) : "";
+    if (category === "device" && key === "response_ms") values = numeric(db.prepare("SELECT response_ms AS value FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL ORDER BY polled_at DESC LIMIT 2").all(Number(row.targetId)));
+    else values = numeric(db.prepare("SELECT value FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? ORDER BY recorded_at DESC LIMIT 2").all(Number(row.targetId), category, key));
+  }
+  if (values.length < 2) return { change: null, trend: "flat" };
+  const change = Number((values[0] - values[1]).toFixed(3));
+  return { change, trend: change > 0 ? "up" : change < 0 ? "down" : "flat" };
+}
+
 function latestDataRows() {
   const rows = [];
   for (const monitor of db.prepare("SELECT * FROM monitors ORDER BY name").all()) {
@@ -1168,7 +1189,7 @@ function latestDataRows() {
   for (const camera of db.prepare("SELECT * FROM hikvision_cameras ORDER BY name").all()) {
     for (const metric of hikvisionAlertMetrics(camera)) rows.push({ targetType: "hikvision", targetId: camera.id, targetName: camera.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: camera.last_polled_at, graphable: false });
   }
-  return decorateLatestRows(rows);
+  return decorateLatestRows(rows.map((row) => ({ ...row, ...latestMetricTrend(row) })));
 }
 
 function alertRuleValue(rule) {
@@ -3044,6 +3065,39 @@ app.post("/api/hosts/:id/items", requireAuth, (req, res) => {
   db.prepare("UPDATE hosts SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hostId);
   res.status(201).json({ ok: true });
 });
+app.post("/api/hosts/:id/items/:itemType/:itemId/refresh", requireAuth, async (req, res) => {
+  const hostId = Number(req.params.id);
+  const itemType = String(req.params.itemType || "");
+  const itemId = String(req.params.itemId || "");
+  if (!db.prepare("SELECT 1 FROM host_links WHERE host_id = ? AND item_type = ? AND item_id = ?").get(hostId, itemType, itemId)) return res.status(404).json({ error: "Host item link not found." });
+  try {
+    if (itemType === "monitor") await runMonitor(Number(itemId));
+    else if (itemType === "snmp") await pollSnmpDevice(Number(itemId));
+    else if (itemType === "docker-host") await pollDockerHost(Number(itemId));
+    else if (itemType === "docker") {
+      const container = db.prepare("SELECT host_id FROM docker_containers WHERE container_id = ?").get(itemId);
+      if (!container) return res.status(404).json({ error: "Docker container not found." });
+      await pollDockerHost(container.host_id);
+    } else if (itemType === "unifi") {
+      const device = db.prepare("SELECT host_id FROM unifi_network_devices WHERE id = ?").get(itemId);
+      if (!device) return res.status(404).json({ error: "UniFi device not found." });
+      await pollUnifiNetworkHost(device.host_id);
+    } else if (itemType === "protect") {
+      const camera = db.prepare("SELECT host_id FROM protect_cameras WHERE id = ?").get(itemId);
+      if (!camera) return res.status(404).json({ error: "Protect camera not found." });
+      await pollProtectHost(camera.host_id);
+    } else if (itemType === "hikvision") {
+      const camera = db.prepare("SELECT host_id FROM hikvision_cameras WHERE id = ?").get(itemId);
+      if (!camera) return res.status(404).json({ error: "Hikvision camera not found." });
+      await pollHikvisionHost(camera.host_id);
+    } else return res.status(400).json({ error: "This host item type cannot be refreshed." });
+    db.prepare("UPDATE hosts SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hostId);
+    await evaluateAlertRules(itemType === "docker-host" ? "docker" : itemType, itemId);
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: error.message });
+  }
+});
 app.delete("/api/hosts/:id/items/:itemType/:itemId", requireAuth, (req, res) => {
   const result = db.prepare("DELETE FROM host_links WHERE host_id = ? AND item_type = ? AND item_id = ?").run(Number(req.params.id), String(req.params.itemType), String(req.params.itemId));
   if (!result.changes) return res.status(404).json({ error: "Host item link not found." });
@@ -3379,6 +3433,8 @@ app.put("/api/docker/hosts/:id", requireAuth, async (req, res) => {
 app.delete("/api/docker/hosts/:id", requireAuth, (req, res) => {
   const id = Number(req.params.id);
   db.transaction(() => {
+    db.prepare("DELETE FROM host_links WHERE item_type = 'docker' AND item_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
+    db.prepare("DELETE FROM host_links WHERE item_type = 'docker-host' AND item_id = ?").run(String(id));
     db.prepare("DELETE FROM alert_rules WHERE target_type = 'docker' AND target_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
     db.prepare("DELETE FROM docker_metrics WHERE container_id IN (SELECT container_id FROM docker_containers WHERE host_id = ?)").run(id);
     db.prepare("DELETE FROM docker_incidents WHERE host_id = ?").run(id);

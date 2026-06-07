@@ -1005,6 +1005,7 @@ async function loadSnmpProfiles() {
   for (const profile of snmpProfiles.filter((item) => item.slug !== "auto")) {
     const option = document.createElement("option"); option.value = profile.id; option.textContent = `${profile.name}${profile.source === "built-in" ? "" : " (imported)"}`; select.append(option);
   }
+  updateHostInitialSnmpProfiles();
   renderSnmpWorkspace();
 }
 
@@ -1286,6 +1287,7 @@ async function openDockerDetails(container) {
 function renderDockerWorkspace() {
   const metrics = document.getElementById("dockerPageMetrics");
   const list = document.getElementById("dockerPageContainers");
+  const hostList = document.getElementById("dockerPageHosts");
   if (!metrics || !list) return;
   metrics.replaceChildren(
     metricCard("Docker hosts", dockerStatus.hostCount || 0, `${dockerStatus.onlineHosts || 0} online`),
@@ -1293,6 +1295,21 @@ function renderDockerWorkspace() {
     metricCard("Unhealthy", dockerStatus.unhealthy || 0, "needs attention", Boolean(dockerStatus.unhealthy)),
     metricCard("Memory allocated", formatBytes(dockerContainers.reduce((sum, item) => sum + Number(item.memoryBytes || 0), 0)), "current usage")
   );
+  if (hostList) {
+    hostList.replaceChildren();
+    if (!dockerHosts.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No Docker hosts configured yet."; hostList.append(empty); }
+    for (const host of dockerHosts) {
+      const row = document.createElement("article"); row.className = `docker-host-row ${host.status === "down" ? "down" : ""}`;
+      const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const detail = document.createElement("small"); detail.textContent = `${host.connectionType.toUpperCase()} - ${host.endpoint} - ${host.lastError || host.status}`; copy.append(name, detail);
+      const actions = document.createElement("div"); actions.className = "monitor-actions";
+      const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.title = "Edit Docker host"; edit.addEventListener("click", () => openDockerHostForm(host));
+      const poll = document.createElement("button"); poll.className = "monitor-action"; poll.textContent = "refresh"; poll.title = "Refresh this Docker host"; poll.addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: JSON.stringify({ hostId: host.id }) }); await Promise.all([loadDockerFleet(), loadHosts(), loadAlertRules()]); showToast("Docker host refreshed", host.name); });
+      const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.title = "Remove Docker host"; remove.addEventListener("click", async () => { if (window.confirm(`Delete Docker host ${host.name} and its collected container data?`)) { await api(`/api/docker/hosts/${host.id}`, { method: "DELETE" }); await Promise.all([loadDockerFleet(), loadHosts(), loadAlertRules(), loadNetworkMap()]); showToast("Docker host removed", host.name); } });
+      actions.append(edit, poll, remove);
+      const status = document.createElement("span"); status.className = `status-label ${host.status === "up" ? "up" : "warn"}`; status.textContent = host.enabled ? host.status.toUpperCase() : "PAUSED";
+      row.append(copy, actions, status); hostList.append(row);
+    }
+  }
   list.replaceChildren();
   for (const item of dockerContainers) {
     const card = document.createElement("button"); card.className = `docker-detail-card ${item.status === "down" ? "down" : ""}`;
@@ -1327,8 +1344,9 @@ function renderHostLatestRows(rows, targetId = "hostLatestDataList") {
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = `${item.targetName} - ${item.metricLabel}`;
     const detail = document.createElement("small"); detail.textContent = `${item.targetType.toUpperCase()} - ${item.metricKey} - updated ${formatDate(item.updatedAt)}`; copy.append(name, detail);
     const value = document.createElement("span"); value.className = "latest-data-value"; value.textContent = `${item.value ?? "--"}${item.unit ? ` ${item.unit}` : ""}`;
+    const trend = document.createElement("span"); trend.className = `metric-trend ${item.trend || "flat"}`; trend.textContent = item.change == null ? "-" : `${item.change > 0 ? "+" : ""}${item.change}${item.unit ? ` ${item.unit}` : ""}`;
     const graph = document.createElement("button"); graph.className = "monitor-action"; graph.textContent = "graph"; graph.disabled = !item.graphable; graph.addEventListener("click", () => renderHostMetricGraph(item));
-    row.append(copy, value, graph); list.append(row);
+    row.append(copy, value, trend, graph); list.append(row);
   }
 }
 
@@ -1339,11 +1357,50 @@ async function renderHostMetricGraph(item) {
   const points = await api(`/api/metric-history?targetType=${encodeURIComponent(item.targetType)}&targetId=${encodeURIComponent(item.targetId)}&metricKey=${encodeURIComponent(item.metricKey)}&range=${encodeURIComponent(range)}`);
   const numeric = points.map((point) => ({ ...point, value: Number(point.value) })).filter((point) => Number.isFinite(point.value));
   if (numeric.length < 2) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Not enough numeric history for this host graph yet."; chart.append(empty); return; }
-  const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 860 280"); const left = 62; const top = 20; const width = 746; const height = 220;
-  const max = Math.max(...numeric.map((point) => point.value), 1); const min = Math.min(...numeric.map((point) => point.value), 0);
-  for (let index = 0; index <= 4; index += 1) { const y = top + (height / 4) * index; const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "chart-grid"); svg.append(line); chartText(svg, left - 8, y + 3, `${(max - ((max - min) / 4) * index).toFixed(1)}${item.unit ? ` ${item.unit}` : ""}`, "end"); }
-  chartText(svg, left, 262, `${item.targetName} - ${item.metricLabel}`, "start");
-  const path = document.createElementNS(ns, "path"); path.setAttribute("class", "response-path"); path.setAttribute("d", makePath(numeric.map((point) => point.value), width, height, min, max, left, top)); svg.append(path); chart.append(svg);
+  const values = numeric.map((point) => point.value);
+  const last = values.at(-1);
+  const min = Math.min(...values, 0);
+  const maxRaw = Math.max(...values, 1);
+  const padding = Math.max((maxRaw - min) * 0.12, maxRaw < 2 ? 0.1 : 1);
+  const max = maxRaw + padding;
+  const avg = values.reduce((sum, value) => sum + value, 0) / values.length;
+  const ns = "http://www.w3.org/2000/svg";
+  const panel = document.createElement("div"); panel.className = "zabbix-graph-card";
+  const header = document.createElement("div"); header.className = "zabbix-graph-heading";
+  const title = document.createElement("strong"); title.textContent = `${item.targetName}: ${item.metricLabel}`;
+  const stats = document.createElement("div"); stats.className = "zabbix-graph-stats";
+  for (const [label, value] of [["last", last], ["min", Math.min(...values)], ["avg", avg], ["max", maxRaw]]) {
+    const stat = document.createElement("span"); stat.innerHTML = `<small>${label}</small><b>${Number(value).toFixed(value < 10 ? 3 : 2)}${item.unit ? ` ${item.unit}` : ""}</b>`; stats.append(stat);
+  }
+  header.append(title, stats);
+  const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 1180 430"); svg.setAttribute("preserveAspectRatio", "none");
+  const defs = document.createElementNS(ns, "defs");
+  const gradient = document.createElementNS(ns, "linearGradient"); gradient.setAttribute("id", "hostGraphFill"); gradient.setAttribute("x1", "0"); gradient.setAttribute("x2", "0"); gradient.setAttribute("y1", "0"); gradient.setAttribute("y2", "1");
+  const stopA = document.createElementNS(ns, "stop"); stopA.setAttribute("offset", "0%"); stopA.setAttribute("stop-color", "#26a526"); stopA.setAttribute("stop-opacity", ".9");
+  const stopB = document.createElementNS(ns, "stop"); stopB.setAttribute("offset", "100%"); stopB.setAttribute("stop-color", "#26a526"); stopB.setAttribute("stop-opacity", ".18");
+  gradient.append(stopA, stopB); defs.append(gradient); svg.append(defs);
+  const left = 58; const top = 30; const width = 1080; const height = 315; const bottom = top + height;
+  const xFor = (index) => left + (width * index) / Math.max(numeric.length - 1, 1);
+  const yFor = (value) => bottom - ((value - min) / Math.max(max - min, 1)) * height;
+  for (let index = 0; index <= 5; index += 1) {
+    const value = min + ((max - min) / 5) * index;
+    const y = yFor(value);
+    const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "zabbix-grid-line"); svg.append(line);
+    chartText(svg, left - 8, y + 4, `${value.toFixed(value < 10 ? 1 : 0)}${item.unit ? ` ${item.unit}` : ""}`, "end");
+  }
+  for (let index = 0; index <= 12; index += 1) {
+    const x = left + (width / 12) * index;
+    const line = document.createElementNS(ns, "line"); line.setAttribute("x1", x); line.setAttribute("x2", x); line.setAttribute("y1", top); line.setAttribute("y2", bottom); line.setAttribute("class", "zabbix-grid-line vertical"); svg.append(line);
+  }
+  const linePoints = numeric.map((point, index) => `${index ? "L" : "M"} ${xFor(index).toFixed(2)} ${yFor(point.value).toFixed(2)}`).join(" ");
+  const area = document.createElementNS(ns, "path"); area.setAttribute("class", "zabbix-area"); area.setAttribute("d", `${linePoints} L ${xFor(numeric.length - 1).toFixed(2)} ${bottom} L ${left} ${bottom} Z`); svg.append(area);
+  const line = document.createElementNS(ns, "path"); line.setAttribute("class", "zabbix-line"); line.setAttribute("d", linePoints); svg.append(line);
+  const startLabel = new Date(numeric[0].recordedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const endLabel = new Date(numeric.at(-1).recordedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  chartText(svg, left, 392, startLabel, "start");
+  chartText(svg, left + width, 392, endLabel, "end");
+  chartText(svg, left + width / 2, 408, `${item.targetName} - ${item.metricLabel}`, "middle");
+  panel.append(header, svg); chart.append(panel);
 }
 
 async function renderSelectedHost(hostId = selectedHostId) {
@@ -1363,16 +1420,43 @@ async function renderSelectedHost(hostId = selectedHostId) {
     return;
   }
   const host = await api(`/api/hosts/${hostId}`);
+  const latestByItem = new Map();
+  for (const row of host.latestData || []) {
+    const key = `${row.targetType}:${row.targetId}`;
+    if (!latestByItem.has(key)) latestByItem.set(key, []);
+    latestByItem.get(key).push(row);
+  }
   title.textContent = host.name;
   help.textContent = `${host.hostType} - ${host.itemCount} item${host.itemCount === 1 ? "" : "s"} - ${host.problemCount} current problem${host.problemCount === 1 ? "" : "s"}`;
   itemList.replaceChildren();
   if (!host.items.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No items attached yet. Add ping, API, SNMP, Docker, or UniFi items to build this host."; itemList.append(empty); }
   for (const item of host.items) {
-    const row = document.createElement("article"); row.className = "profile-row";
+    const row = document.createElement("details"); row.className = "profile-row host-item-detail"; row.open = String(item.itemType) === "monitor" || String(item.itemType) === "snmp";
+    const summary = document.createElement("summary"); summary.className = "host-item-summary";
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = item.name; const detail = document.createElement("small"); detail.textContent = `${item.typeLabel} - ${item.target || "no target"} - ${formatDate(item.updatedAt)}`; copy.append(name, detail);
+    const latest = latestByItem.get(`${item.itemType}:${item.itemId}`) || [];
     const status = document.createElement("span"); status.className = `status-label ${hostStatusLabel(item.status)}`; status.textContent = item.missing ? "MISSING" : item.status.toUpperCase();
-    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { await api(`/api/hosts/${host.id}/items/${encodeURIComponent(item.itemType)}/${encodeURIComponent(item.itemId)}`, { method: "DELETE" }); await Promise.all([loadHosts(), loadNetworkMap(), loadAlertRules()]); selectedHostId = host.id; await renderSelectedHost(host.id); });
-    row.append(copy, status, remove); itemList.append(row);
+    const actions = document.createElement("div"); actions.className = "monitor-actions host-item-actions";
+    const refresh = document.createElement("button"); refresh.className = "monitor-action"; refresh.textContent = "refresh"; refresh.title = "Refresh item now"; refresh.disabled = item.missing; refresh.addEventListener("click", async () => { await api(`/api/hosts/${host.id}/items/${encodeURIComponent(item.itemType)}/${encodeURIComponent(item.itemId)}/refresh`, { method: "POST", body: "{}" }); await Promise.all([loadHosts(), loadAlertRules(), loadIncidents(), loadGraph()]); selectedHostId = host.id; await renderSelectedHost(host.id); showToast("Host item refreshed", item.name); });
+    const graphable = latest.find((row) => row.graphable);
+    const graph = document.createElement("button"); graph.className = "monitor-action"; graph.textContent = "graph"; graph.disabled = !graphable; graph.title = "Graph first graphable variable"; graph.addEventListener("click", () => renderHostMetricGraph(graphable));
+    const triggerable = ["monitor", "snmp", "docker", "unifi", "hikvision"].includes(item.itemType);
+    const trigger = document.createElement("button"); trigger.className = "monitor-action"; trigger.textContent = "trigger"; trigger.disabled = !triggerable || item.missing; trigger.title = "Create trigger for this item"; trigger.addEventListener("click", () => openAlertRule(null, { targetType: item.itemType, targetId: item.itemId, name: `${item.name} trigger` }));
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.title = "Remove from host"; remove.addEventListener("click", async () => { await api(`/api/hosts/${host.id}/items/${encodeURIComponent(item.itemType)}/${encodeURIComponent(item.itemId)}`, { method: "DELETE" }); await Promise.all([loadHosts(), loadNetworkMap(), loadAlertRules()]); selectedHostId = host.id; await renderSelectedHost(host.id); });
+    actions.append(refresh, graph, trigger, remove);
+    summary.append(copy, status, actions);
+    const variables = document.createElement("div"); variables.className = "host-variable-list";
+    if (!latest.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No latest variables collected for this item yet."; variables.append(empty); }
+    for (const metric of latest.slice(0, 40)) {
+      const metricRow = document.createElement("button"); metricRow.type = "button"; metricRow.className = "host-variable-row"; metricRow.disabled = !metric.graphable;
+      const metricCopy = document.createElement("span"); const metricName = document.createElement("strong"); metricName.textContent = metric.metricLabel; const metricDetail = document.createElement("small"); metricDetail.textContent = `${metric.metricKey} - ${formatDate(metric.updatedAt)}`; metricCopy.append(metricName, metricDetail);
+      const metricValue = document.createElement("b"); metricValue.textContent = `${metric.value ?? "--"}${metric.unit ? ` ${metric.unit}` : ""}`;
+      const metricTrend = document.createElement("em"); metricTrend.className = `metric-trend ${metric.trend || "flat"}`; metricTrend.textContent = metric.change == null ? "-" : `${metric.change > 0 ? "+" : ""}${metric.change}${metric.unit ? ` ${metric.unit}` : ""}`;
+      metricRow.append(metricCopy, metricValue, metricTrend);
+      metricRow.addEventListener("click", () => { if (metric.graphable) renderHostMetricGraph(metric); });
+      variables.append(metricRow);
+    }
+    row.append(summary, variables); itemList.append(row);
   }
   problemList.replaceChildren();
   if (!host.problems.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No current problems for this host."; problemList.append(empty); }
@@ -1418,9 +1502,78 @@ function openHostForm(host = null) {
   form.elements.hostType.value = host?.hostType || "server";
   form.elements.description.value = host?.description || "";
   form.elements.tags.value = host?.tags || "";
+  document.getElementById("hostInitialCard").hidden = Boolean(host);
+  updateHostInitialFields();
   document.getElementById("hostFormTitle").textContent = host ? `Edit ${host.name}` : "Add host";
   document.getElementById("hostFormError").textContent = "";
   document.getElementById("hostModal").hidden = false;
+}
+
+function updateHostInitialSnmpProfiles() {
+  const select = document.getElementById("hostInitialSnmpProfile");
+  if (!select) return;
+  const current = select.value;
+  select.replaceChildren();
+  const auto = document.createElement("option"); auto.value = ""; auto.textContent = "Auto detect"; select.append(auto);
+  for (const profile of snmpProfiles.filter((item) => item.slug !== "auto")) {
+    const option = document.createElement("option"); option.value = profile.id; option.textContent = profile.name; select.append(option);
+  }
+  if (current && [...select.options].some((option) => option.value === current)) select.value = current;
+}
+
+function updateHostInitialExistingSelect() {
+  const type = document.getElementById("hostInitialExistingType")?.value;
+  const select = document.getElementById("hostInitialExistingId");
+  if (!type || !select) return;
+  select.replaceChildren();
+  for (const item of hostAttachableItems[type] || []) {
+    const option = document.createElement("option"); option.value = item.id; option.textContent = `${item.name} - ${item.detail || item.status || item.id}`; select.append(option);
+  }
+  if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No existing items available"; select.append(option); }
+}
+
+async function updateHostInitialFields() {
+  const mode = document.getElementById("hostInitialMode")?.value || "none";
+  document.querySelectorAll("[data-host-initial]").forEach((item) => { item.hidden = true; });
+  const monitorModes = ["ping", "http", "tcp", "api"];
+  if (monitorModes.includes(mode)) document.querySelector('[data-host-initial="monitor"]').hidden = false;
+  if (mode === "api") document.querySelector('[data-host-initial="api"]').hidden = false;
+  if (mode === "snmp") { document.querySelector('[data-host-initial="snmp"]').hidden = false; updateHostInitialSnmpProfiles(); }
+  if (mode === "existing") {
+    document.querySelector('[data-host-initial="existing"]').hidden = false;
+    if (!Object.keys(hostAttachableItems).length) await loadHostAttachableItems();
+    updateHostInitialExistingSelect();
+  }
+}
+
+async function createAndAttachInitialHostItem(hostId, values) {
+  const mode = values.initialMode || "none";
+  if (mode === "none" || values.id) return;
+  if (["ping", "http", "tcp", "api"].includes(mode)) {
+    const target = String(values.initialTarget || "").trim();
+    if (!target) throw new Error("Enter a target for the first host item.");
+    const body = {
+      name: `${values.name} ${mode === "api" ? "API" : mode.toUpperCase()}`,
+      type: mode,
+      target,
+      intervalSeconds: Number(values.initialIntervalSeconds || 60),
+      timeoutSeconds: Number(values.initialTimeoutSeconds || 5),
+      apiMethod: values.initialApiMethod,
+      apiHeaders: values.initialApiHeaders,
+      apiJsonPath: values.initialApiJsonPath,
+      apiExpectedValue: values.initialApiExpectedValue
+    };
+    const created = await api("/api/monitors", { method: "POST", body: JSON.stringify(body) });
+    await api(`/api/hosts/${hostId}/items`, { method: "POST", body: JSON.stringify({ itemType: "monitor", itemId: String(created.id), label: body.name }) });
+  } else if (mode === "snmp") {
+    const target = String(values.initialTarget || "").trim();
+    if (!target) throw new Error("Enter a hostname/IP for the SNMP item.");
+    const created = await api("/api/snmp/devices", { method: "POST", body: JSON.stringify({ name: `${values.name} SNMP`, host: target, port: Number(values.initialSnmpPort || 161), community: values.initialSnmpCommunity || "public", profileId: values.initialSnmpProfileId || "", intervalSeconds: Number(values.initialIntervalSeconds || 60), timeoutSeconds: Number(values.initialTimeoutSeconds || 5) }) });
+    await api(`/api/hosts/${hostId}/items`, { method: "POST", body: JSON.stringify({ itemType: "snmp", itemId: String(created.id), label: `${values.name} SNMP` }) });
+  } else if (mode === "existing") {
+    if (!values.initialExistingId) throw new Error("Choose an existing item to attach.");
+    await api(`/api/hosts/${hostId}/items`, { method: "POST", body: JSON.stringify({ itemType: values.initialExistingType, itemId: values.initialExistingId, label: "" }) });
+  }
 }
 
 async function loadHostAttachableItems() {
@@ -1631,13 +1784,26 @@ function updateAlertRuleMetrics() {
   if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No metrics collected yet"; select.append(option); }
 }
 
-function openAlertRule(rule = null) {
+function openAlertRule(rule = null, preset = null) {
   const form = document.getElementById("alertRuleForm"); form.reset(); form.elements.id.value = rule?.id || "";
   for (const name of ["targetType", "targetId", "metricKey", "operator", "threshold"]) form.elements[name].disabled = false;
   updateAlertRuleTargets();
   renderAlertRuleDependencies(rule?.dependencyRuleId || "");
   if (rule) {
     form.elements.targetType.value = rule.targetType; updateAlertRuleTargets(); form.elements.targetId.value = rule.targetId; updateAlertRuleMetrics(); form.elements.metricKey.value = rule.metricKey; form.elements.operator.value = rule.operator; form.elements.threshold.value = rule.threshold; form.elements.functionName.value = rule.functionName || "last"; form.elements.windowSeconds.value = String(rule.windowSeconds || 0); form.elements.name.value = rule.name; form.elements.severity.value = rule.severity; form.elements.description.value = rule.description || ""; form.elements.actionText.value = rule.actionText || ""; form.elements.triggerCount.value = rule.triggerCount; form.elements.recoveryCount.value = rule.recoveryCount; form.elements.dependencyRuleId.value = rule.dependencyRuleId || ""; form.elements.enabled.checked = rule.enabled;
+  } else if (preset) {
+    form.elements.name.value = preset.name || "";
+    form.elements.targetType.value = preset.targetType;
+    updateAlertRuleTargets();
+    form.elements.targetId.value = String(preset.targetId);
+    updateAlertRuleMetrics();
+    const target = (alertRuleOptions[preset.targetType] || []).find((item) => String(item.id) === String(preset.targetId));
+    const firstMetric = target?.metrics?.find((metric) => metric.key === "status" || metric.key === "api_value") || target?.metrics?.[0];
+    if (firstMetric) form.elements.metricKey.value = firstMetric.key;
+    form.elements.operator.value = preset.operator || "!=";
+    form.elements.threshold.value = preset.threshold || (firstMetric?.key === "status" ? "up" : firstMetric?.key === "api_value" ? "online" : "");
+    form.elements.description.value = `Host item ${preset.targetType} should stay in its expected state.`;
+    form.elements.actionText.value = "Check the host item latest data, graph, and upstream service/device.";
   }
   for (const name of ["targetType", "targetId", "metricKey", "operator", "threshold"]) form.elements[name].disabled = Boolean(rule);
   document.getElementById("alertRuleEnabledLabel").hidden = !rule; document.getElementById("alertRuleError").textContent = ""; document.getElementById("alertRuleModal").hidden = false;
@@ -2474,11 +2640,14 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
   try { const values = Object.fromEntries(new FormData(form)); values.enabled = form.elements.enabled.checked; await api(values.id ? `/api/alert-rules/${values.id}` : "/api/alert-rules", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) }); document.getElementById("alertRuleModal").hidden = true; form.reset(); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Alert rule saved", "The rule was evaluated immediately"); } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
+document.getElementById("dockerPageAddHostInline").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
 document.getElementById("addHost").addEventListener("click", () => openHostForm());
 document.getElementById("showAutomationApi").addEventListener("click", openAutomationApi);
 document.getElementById("hostLatestRange").addEventListener("change", () => { document.getElementById("hostMetricChart").replaceChildren(); });
 document.getElementById("hostItemType").addEventListener("change", updateHostItemSelect);
+document.getElementById("hostInitialMode").addEventListener("change", updateHostInitialFields);
+document.getElementById("hostInitialExistingType").addEventListener("change", updateHostInitialExistingSelect);
 document.getElementById("hostForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("hostFormError"); error.textContent = "";
@@ -2486,8 +2655,10 @@ document.getElementById("hostForm").addEventListener("submit", async (event) => 
   try {
     const result = await api(values.id ? `/api/hosts/${values.id}` : "/api/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
     selectedHostId = values.id || result.id;
+    await createAndAttachInitialHostItem(selectedHostId, values);
     document.getElementById("hostModal").hidden = true;
-    await Promise.all([loadHosts(), loadNetworkMap()]);
+    hostAttachableItems = {};
+    await Promise.all([loadMonitors(), loadSnmpDevices(), loadHosts(), loadNetworkMap(), loadAlertRules()]);
     showToast("Host saved", values.name);
   } catch (err) { error.textContent = err.message; }
 });

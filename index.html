@@ -181,6 +181,7 @@
       <div class="content" id="dockerPage" hidden>
         <section class="page-heading"><div><p class="eyebrow">CONTROL ROOM / DOCKER FLEET</p><h1>Container intelligence</h1><p class="subhead">Hosts, stacks, resource usage, health, restart counts, and recent metrics.</p></div><div class="heading-actions"><button class="soft-button" id="dockerPageAddHost">Add Docker host</button><button class="command-button" id="dockerPageRefresh">Refresh fleet</button></div></section>
         <section class="metric-grid" id="dockerPageMetrics"></section>
+        <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">DOCKER HOSTS</span><h2>Configured Docker engines</h2><p class="form-help">Edit, test by refreshing, remove hosts, and manage where container data comes from.</p></div><button class="soft-button" id="dockerPageAddHostInline">Add Docker host</button></div><div class="docker-host-list" id="dockerPageHosts"></div></section>
         <section class="panel"><div class="panel-heading"><div><span class="section-tag blue">ALL ACTIVE CONTAINERS</span><h2>Docker fleet</h2></div></div><div class="docker-detail-grid" id="dockerPageContainers"></div></section>
       </div>
       <div class="content" id="hostsPage" hidden>
@@ -324,6 +325,26 @@
         <label>Host type<select name="hostType"><option value="server">Server / VM</option><option value="network">Network device</option><option value="truenas">TrueNAS apps</option><option value="home-assistant">Home Assistant</option><option value="camera">Camera/NVR</option><option value="generic">Other</option></select></label>
         <label>Description<input name="description" maxlength="500" placeholder="What this host represents"></label>
         <label>Tags<input name="tags" maxlength="500" placeholder="site: home, component: zigbee, owner: James"></label>
+        <div class="host-initial-card" id="hostInitialCard">
+          <label>First item<select name="initialMode" id="hostInitialMode"><option value="none">Just create the host</option><option value="ping">Create ping check</option><option value="http">Create HTTP/HTTPS check</option><option value="tcp">Create TCP port check</option><option value="api">Create custom API/JSON check</option><option value="snmp">Create SNMP v2c device</option><option value="existing">Attach an existing item</option></select></label>
+          <div class="host-initial-fields" data-host-initial="monitor">
+            <label>Target / address<input name="initialTarget" placeholder="10.69.24.5, https://homeassistant:8123, or 10.69.24.5:8123"></label>
+            <div class="form-columns"><label>Check every<select name="initialIntervalSeconds"><option value="20">20 seconds</option><option value="60" selected>1 minute</option><option value="300">5 minutes</option></select></label><label>Timeout<select name="initialTimeoutSeconds"><option value="2">2 seconds</option><option value="5" selected>5 seconds</option><option value="10">10 seconds</option></select></label></div>
+          </div>
+          <div class="host-initial-fields" data-host-initial="api" hidden>
+            <div class="form-columns"><label>API method<select name="initialApiMethod"><option value="GET">GET</option><option value="POST">POST</option><option value="PUT">PUT</option><option value="PATCH">PATCH</option></select></label><label>JSON path<input name="initialApiJsonPath" placeholder="state or attributes.value"></label></div>
+            <label>Headers JSON<textarea name="initialApiHeaders" rows="2" placeholder='{"Authorization":"Bearer token"}'></textarea></label>
+            <label>Expected value contains<input name="initialApiExpectedValue" placeholder="online, on, 24.5, or leave blank"></label>
+          </div>
+          <div class="host-initial-fields" data-host-initial="snmp" hidden>
+            <div class="form-columns"><label>SNMP port<input name="initialSnmpPort" type="number" min="1" max="65535" value="161"></label><label>Community<input name="initialSnmpCommunity" placeholder="public" value="public"></label></div>
+            <label>SNMP profile<select name="initialSnmpProfileId" id="hostInitialSnmpProfile"></select></label>
+          </div>
+          <div class="host-initial-fields" data-host-initial="existing" hidden>
+            <div class="form-columns"><label>Existing source<select name="initialExistingType" id="hostInitialExistingType"><option value="monitor">Monitor / ping / custom API</option><option value="snmp">SNMP device</option><option value="unifi">UniFi Network API device</option><option value="docker-host">Docker host</option><option value="docker">Docker container</option><option value="protect">UniFi Protect camera</option><option value="hikvision">Hikvision camera</option></select></label><label>Existing item<select name="initialExistingId" id="hostInitialExistingId"></select></label></div>
+          </div>
+          <p class="form-help">This is the easy-mode Zabbix bit: create the host and its first item together. You can add more items after.</p>
+        </div>
         <button class="command-button" type="submit">Save host</button>
         <p class="modal-error" id="hostFormError"></p>
       </form>

@@ -12,6 +12,14 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.5] - 2026-06-07
+
+### Fixed
+
+- Current Problems sidebar navigation now opens the real Zabbix-style problem
+  dashboard instead of showing the stale coming-next message
+- Docker Containers sidebar navigation now opens the container workspace
+
 ## [1.0.4] - 2026-06-07
 
 ### Added

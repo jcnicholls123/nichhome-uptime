@@ -195,6 +195,14 @@ document.querySelectorAll(".nav-item").forEach((item) => {
       showWorkspace("Docker");
       return;
     }
+    if (item.dataset.page === "Docker Containers") {
+      showWorkspace("Docker Containers");
+      return;
+    }
+    if (item.dataset.page === "Current Problems") {
+      showWorkspace("Current Problems");
+      return;
+    }
     if (item.dataset.page === "UniFi Network") {
       showWorkspace("UniFi Network");
       return;

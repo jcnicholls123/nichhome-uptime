@@ -11,6 +11,7 @@ const express = require("express");
 const Database = require("better-sqlite3");
 const snmp = require("net-snmp");
 const QRCode = require("qrcode");
+const nodemailer = require("nodemailer");
 const { XMLParser } = require("fast-xml-parser");
 const packageInfo = require("./package.json");
 const execFileAsync = promisify(execFile);
@@ -507,6 +508,67 @@ function migrateAlertRuleTargets() {
 
 migrateAlertRuleTargets();
 
+function migrateMonitorTypes() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'monitors'").get();
+  if (!table?.sql || table.sql.includes("'api'")) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE incidents RENAME TO incidents_old;
+      ALTER TABLE heartbeats RENAME TO heartbeats_old;
+      ALTER TABLE monitors RENAME TO monitors_old;
+      CREATE TABLE monitors (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        type TEXT NOT NULL CHECK(type IN ('http', 'tcp', 'api')),
+        target TEXT NOT NULL,
+        interval_seconds INTEGER NOT NULL DEFAULT 60,
+        timeout_seconds INTEGER NOT NULL DEFAULT 10,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        status TEXT NOT NULL DEFAULT 'pending',
+        response_ms INTEGER,
+        last_error TEXT,
+        last_checked_at TEXT,
+        next_check_at INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE TABLE heartbeats (
+        id INTEGER PRIMARY KEY,
+        monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+        status TEXT NOT NULL,
+        response_ms INTEGER,
+        message TEXT,
+        checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE INDEX IF NOT EXISTS heartbeats_monitor_checked ON heartbeats(monitor_id, checked_at DESC);
+      CREATE TABLE incidents (
+        id INTEGER PRIMARY KEY,
+        monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT,
+        cause TEXT
+      );
+      INSERT INTO monitors (id, name, type, target, interval_seconds, timeout_seconds, enabled, status, response_ms, last_error, last_checked_at, next_check_at, created_at)
+      SELECT id, name, type, target, interval_seconds, timeout_seconds, enabled, status, response_ms, last_error, last_checked_at, next_check_at, created_at FROM monitors_old;
+      INSERT INTO heartbeats (id, monitor_id, status, response_ms, message, checked_at)
+      SELECT id, monitor_id, status, response_ms, message, checked_at FROM heartbeats_old WHERE monitor_id IN (SELECT id FROM monitors);
+      INSERT INTO incidents (id, monitor_id, started_at, resolved_at, cause)
+      SELECT id, monitor_id, started_at, resolved_at, cause FROM incidents_old WHERE monitor_id IN (SELECT id FROM monitors);
+      DROP TABLE incidents_old;
+      DROP TABLE heartbeats_old;
+      DROP TABLE monitors_old;
+    `);
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+migrateMonitorTypes();
+ensureColumn("monitors", "api_method", "TEXT NOT NULL DEFAULT 'GET'");
+ensureColumn("monitors", "api_headers", "TEXT");
+ensureColumn("monitors", "api_json_path", "TEXT");
+ensureColumn("monitors", "api_expected_value", "TEXT");
+ensureColumn("monitors", "api_value", "TEXT");
+
 function repairDockerFleetData() {
   db.transaction(() => {
     db.prepare("UPDATE docker_hosts SET endpoint = RTRIM(endpoint, '/') WHERE connection_type IN ('http', 'https')").run();
@@ -669,15 +731,28 @@ function validateMonitor(input) {
   const target = String(input.target || "").trim();
   const intervalSeconds = Math.max(20, Math.min(86400, Number(input.intervalSeconds || 60)));
   const timeoutSeconds = Math.max(1, Math.min(60, Number(input.timeoutSeconds || 10)));
+  const apiMethod = String(input.apiMethod || input.api_method || "GET").toUpperCase();
+  const apiHeaders = String(input.apiHeaders || input.api_headers || "").trim();
+  const apiJsonPath = String(input.apiJsonPath || input.api_json_path || "").trim().replace(/^\$\.?/, "");
+  const apiExpectedValue = String(input.apiExpectedValue ?? input.api_expected_value ?? "").trim();
   if (name.length < 2 || name.length > 80) throw new Error("Monitor name must be between 2 and 80 characters.");
-  if (!["http", "tcp", "ping"].includes(type)) throw new Error("Monitor type must be HTTP, TCP, or Ping.");
-  if (type === "http") {
+  if (!["http", "tcp", "ping", "api"].includes(type)) throw new Error("Monitor type must be HTTP, TCP, Ping, or Custom API.");
+  if (["http", "api"].includes(type)) {
     const url = new URL(target);
-    if (!["http:", "https:"].includes(url.protocol)) throw new Error("HTTP targets must begin with http:// or https://.");
+    if (!["http:", "https:"].includes(url.protocol)) throw new Error("HTTP/API targets must begin with http:// or https://.");
   }
   if (type === "tcp" && !/^(\[[^\]]+\]|[^:]+):\d{1,5}$/.test(target)) throw new Error("TCP targets must use host:port format.");
   if (type === "ping" && (!target || target.length > 255 || /\s|:\/\//.test(target))) throw new Error("Ping targets must be a hostname or IP address.");
-  return { name, type: type === "ping" ? "tcp" : type, target: type === "ping" ? `ping://${target}` : target, intervalSeconds, timeoutSeconds };
+  if (type === "api") {
+    if (!["GET", "POST", "PUT", "PATCH"].includes(apiMethod)) throw new Error("Custom API method must be GET, POST, PUT, or PATCH.");
+    if (apiHeaders) {
+      try {
+        const parsed = JSON.parse(apiHeaders);
+        if (!parsed || Array.isArray(parsed) || typeof parsed !== "object") throw new Error("Headers must be an object.");
+      } catch { throw new Error('Custom API headers must be valid JSON, for example {"Authorization":"Bearer token"}'); }
+    }
+  }
+  return { name, type: type === "ping" ? "tcp" : type, target: type === "ping" ? `ping://${target}` : target, intervalSeconds, timeoutSeconds, apiMethod, apiHeaders, apiJsonPath, apiExpectedValue };
 }
 
 const knownTcpServices = {
@@ -788,6 +863,43 @@ function preferenceSettings() {
     mapShowUnifiClients: getSetting("map_show_unifi_clients", "false") === "true",
     mapReplaceInferredByDefault: getSetting("map_replace_inferred_by_default", "true") === "true"
   };
+}
+
+function uiSettings() {
+  let widgets = {};
+  try { widgets = JSON.parse(getSetting("dashboard_widgets", "{}")); } catch { widgets = {}; }
+  return {
+    brandName: getSetting("ui_brand_name", "NichHome"),
+    brandSubtitle: getSetting("ui_brand_subtitle", "UPTIME SYSTEMS"),
+    brandMark: getSetting("ui_brand_mark", "NH"),
+    dashboardWidgets: {
+      metrics: widgets.metrics !== false,
+      command: widgets.command !== false,
+      uptime: widgets.uptime !== false,
+      activity: widgets.activity !== false,
+      snmp: widgets.snmp !== false,
+      monitors: widgets.monitors !== false,
+      docker: widgets.docker !== false,
+      problems: widgets.problems !== false
+    }
+  };
+}
+
+function emailConfig() {
+  return {
+    enabled: getSetting("email_enabled", "false") === "true",
+    host: getSetting("email_host", ""),
+    port: Number(getSetting("email_port", "587")),
+    secure: getSetting("email_secure", "false") === "true",
+    username: getSetting("email_username", ""),
+    password: getSetting("email_password", ""),
+    from: getSetting("email_from", ""),
+    to: getSetting("email_to", "")
+  };
+}
+
+function validEmailConfig(config) {
+  return Boolean(config.host && Number.isInteger(config.port) && config.port > 0 && config.port <= 65535 && config.from.includes("@") && config.to.includes("@"));
 }
 
 function recordReportingPoint(sourceKey, status, responseMs = null) {
@@ -1448,6 +1560,26 @@ function telegramEscape(value) {
   return String(value ?? "").replace(/[<>&]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[char]));
 }
 
+async function sendEmail(subject, text, { throwOnFailure = false } = {}) {
+  const config = emailConfig();
+  if (!config.enabled || !validEmailConfig(config)) return;
+  try {
+    const transporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      auth: config.username ? { user: config.username, pass: config.password } : undefined,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 10000
+    });
+    await transporter.sendMail({ from: config.from, to: config.to, subject: String(subject).slice(0, 180), text: String(text).slice(0, 8000) });
+  } catch (error) {
+    if (throwOnFailure) throw error;
+    console.error("Email notification failed:", error.message);
+  }
+}
+
 const severityColours = { information: 3447003, warning: 16776960, average: 16753920, high: 15158332, disaster: 10038562 };
 
 async function legacySendDiscordAlert(rule, value, cause, recovered) {
@@ -1495,6 +1627,7 @@ async function sendDiscordAlert(rule, value, cause, recovered) {
     timestamp: new Date().toISOString()
   }]);
   await sendTelegram(`<b>${telegramEscape(title)}</b>\nSeverity: ${telegramEscape(recovered ? "Recovered" : rule.severity.toUpperCase())}\nTarget: ${telegramEscape(targetName)}\nMetric: ${telegramEscape(metricLabel)}\nExpression: ${telegramEscape(`${functionName}(${rule.metric_key}${rule.window_seconds ? `, ${Math.round(rule.window_seconds / 60)}m` : ""}) ${rule.operator} ${rule.threshold}`)}\nCurrent value: ${telegramEscape(value)}\nReason: ${telegramEscape(cause)}${rule.action_text ? `\nAction: ${telegramEscape(rule.action_text)}` : ""}`);
+  await sendEmail(title, `Severity: ${recovered ? "Recovered" : rule.severity.toUpperCase()}\nTarget: ${targetName}\nMetric: ${metricLabel}\nExpression: ${functionName}(${rule.metric_key}${rule.window_seconds ? `, ${Math.round(rule.window_seconds / 60)}m` : ""}) ${rule.operator} ${rule.threshold}\nCurrent value: ${value}\nReason: ${cause}${rule.action_text ? `\nAction: ${rule.action_text}` : ""}`);
 }
 
 async function sendDiscordOperational(title, recovered, description, fields = []) {
@@ -1508,6 +1641,8 @@ async function sendDiscordOperational(title, recovered, description, fields = []
   }]);
   const details = fields.filter((field) => field.value != null).map((field) => `\n${telegramEscape(field.name)}: ${telegramEscape(field.value)}`).join("");
   await sendTelegram(`<b>${telegramEscape(recovered ? `${title} recovered` : `${title} issue`)}</b>\n${telegramEscape(description || (recovered ? "The service has recovered." : "NichHome detected an operational problem."))}${details}`);
+  const emailDetails = fields.filter((field) => field.value != null).map((field) => `\n${field.name}: ${field.value}`).join("");
+  await sendEmail(recovered ? `${title} recovered` : `${title} issue`, `${description || (recovered ? "The service has recovered." : "NichHome detected an operational problem.")}${emailDetails}`);
 }
 
 let dockerFleetError = null;
@@ -2100,6 +2235,39 @@ async function checkHttp(target, timeoutSeconds) {
   return Date.now() - started;
 }
 
+function pickJsonPath(value, pathText) {
+  if (!pathText) return value;
+  return pathText.split(".").filter(Boolean).reduce((current, part) => {
+    if (current == null) return undefined;
+    const match = part.match(/^([^\[]+)(?:\[(\d+)\])?$/);
+    const key = match ? match[1] : part;
+    const next = current[key];
+    return match?.[2] != null ? next?.[Number(match[2])] : next;
+  }, value);
+}
+
+async function checkCustomApi(monitor) {
+  const started = Date.now();
+  const headers = monitor.api_headers ? JSON.parse(monitor.api_headers) : {};
+  const response = await fetch(monitor.target, {
+    method: monitor.api_method || "GET",
+    headers,
+    signal: AbortSignal.timeout(monitor.timeout_seconds * 1000),
+    redirect: "follow"
+  });
+  const text = await response.text();
+  if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  let value = text.trim();
+  if (monitor.api_json_path) {
+    const parsed = text ? JSON.parse(text) : {};
+    const picked = pickJsonPath(parsed, monitor.api_json_path);
+    if (picked == null) throw new Error(`JSON path ${monitor.api_json_path} was not found.`);
+    value = typeof picked === "string" ? picked : JSON.stringify(picked);
+  }
+  if (monitor.api_expected_value && !String(value).toLowerCase().includes(String(monitor.api_expected_value).toLowerCase())) throw new Error(`Expected ${monitor.api_expected_value}, got ${String(value).slice(0, 120)}`);
+  return { responseMs: Date.now() - started, value: String(value).slice(0, 300) };
+}
+
 function checkTcp(target, timeoutSeconds) {
   const separator = target.lastIndexOf(":");
   const host = target.slice(0, separator).replace(/^\[|\]$/g, "");
@@ -2142,7 +2310,11 @@ async function runMonitor(id) {
   let responseMs = null;
   let message = null;
   try {
-    responseMs = monitor.type === "http"
+    if (monitor.type === "api") {
+      const result = await checkCustomApi(monitor);
+      responseMs = result.responseMs;
+      message = result.value;
+    } else responseMs = monitor.type === "http"
       ? await checkHttp(monitor.target, monitor.timeout_seconds)
       : monitor.target.startsWith("ping://")
         ? await checkPing(monitor.target, monitor.timeout_seconds)
@@ -2153,8 +2325,8 @@ async function runMonitor(id) {
   }
   const previousStatus = monitor.status;
   db.transaction(() => {
-    db.prepare("UPDATE monitors SET status = ?, response_ms = ?, last_error = ?, last_checked_at = CURRENT_TIMESTAMP, next_check_at = ? WHERE id = ?")
-      .run(status, responseMs, message, Date.now() + monitor.interval_seconds * 1000, id);
+    db.prepare("UPDATE monitors SET status = ?, response_ms = ?, last_error = ?, api_value = ?, last_checked_at = CURRENT_TIMESTAMP, next_check_at = ? WHERE id = ?")
+      .run(status, responseMs, status === "down" ? message : null, monitor.type === "api" && status === "up" ? message : monitor.api_value, Date.now() + monitor.interval_seconds * 1000, id);
     db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, message) VALUES (?, ?, ?, ?)")
       .run(id, status, responseMs, message);
     recordReportingPoint(`monitor:${id}`, status, responseMs);
@@ -2277,7 +2449,8 @@ app.get("/api/monitors", requireAuth, (req, res) => {
     id: monitor.id, name: monitor.name, type: monitor.target.startsWith("ping://") ? "ping" : monitor.type, target: monitor.target.replace(/^ping:\/\//, ""),
     intervalSeconds: monitor.interval_seconds, timeoutSeconds: monitor.timeout_seconds,
     enabled: Boolean(monitor.enabled), status: monitor.status, responseMs: monitor.response_ms,
-    lastError: monitor.last_error, lastCheckedAt: monitor.last_checked_at
+    lastError: monitor.last_error, lastCheckedAt: monitor.last_checked_at,
+    apiMethod: monitor.api_method, apiHeaders: monitor.api_headers || "", apiJsonPath: monitor.api_json_path || "", apiExpectedValue: monitor.api_expected_value || "", apiValue: monitor.api_value || ""
   })));
 });
 app.get("/api/monitors/:id/history", requireAuth, (req, res) => {
@@ -2289,8 +2462,8 @@ app.get("/api/monitors/:id/history", requireAuth, (req, res) => {
 app.post("/api/monitors", requireAuth, async (req, res) => {
   let monitor;
   try { monitor = validateMonitor(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
-  const result = db.prepare("INSERT INTO monitors (name, type, target, interval_seconds, timeout_seconds) VALUES (?, ?, ?, ?, ?)")
-    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds);
+  const result = db.prepare("INSERT INTO monitors (name, type, target, interval_seconds, timeout_seconds, api_method, api_headers, api_json_path, api_expected_value) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds, monitor.apiMethod, monitor.apiHeaders, monitor.apiJsonPath, monitor.apiExpectedValue);
   await runMonitor(result.lastInsertRowid);
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -2367,8 +2540,8 @@ app.put("/api/monitors/:id", requireAuth, (req, res) => {
   let monitor;
   try { monitor = validateMonitor(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
   const enabled = req.body.enabled === false ? 0 : 1;
-  db.prepare("UPDATE monitors SET name = ?, type = ?, target = ?, interval_seconds = ?, timeout_seconds = ?, enabled = ?, next_check_at = 0 WHERE id = ?")
-    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds, enabled, id);
+  db.prepare("UPDATE monitors SET name = ?, type = ?, target = ?, interval_seconds = ?, timeout_seconds = ?, api_method = ?, api_headers = ?, api_json_path = ?, api_expected_value = ?, enabled = ?, next_check_at = 0 WHERE id = ?")
+    .run(monitor.name, monitor.type, monitor.target, monitor.intervalSeconds, monitor.timeoutSeconds, monitor.apiMethod, monitor.apiHeaders, monitor.apiJsonPath, monitor.apiExpectedValue, enabled, id);
   res.json({ ok: true });
 });
 app.delete("/api/monitors/:id", requireAuth, (req, res) => {
@@ -3308,10 +3481,33 @@ app.get("/api/admin/settings", requireAuth, (req, res) => {
     },
     discord: { ...discordConfig(), webhookUrl: discordConfig().webhookUrl ? "configured" : "" },
     telegram: { ...telegramConfig(), botToken: telegramConfig().botToken ? "configured" : "" },
+    email: { ...emailConfig(), password: emailConfig().password ? "configured" : "" },
+    ui: uiSettings(),
     features: featureSettings(),
     preferences: preferenceSettings(),
     storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
   });
+});
+app.put("/api/admin/ui", requireAuth, (req, res) => {
+  const brandName = String(req.body.brandName || "NichHome").trim().slice(0, 40);
+  const brandSubtitle = String(req.body.brandSubtitle || "UPTIME SYSTEMS").trim().slice(0, 40);
+  const brandMark = String(req.body.brandMark || "NH").trim().slice(0, 4).toUpperCase();
+  const dashboardWidgets = req.body.dashboardWidgets && typeof req.body.dashboardWidgets === "object" ? req.body.dashboardWidgets : {};
+  if (brandName.length < 2) return res.status(400).json({ error: "Brand name must be at least 2 characters." });
+  setSetting("ui_brand_name", brandName);
+  setSetting("ui_brand_subtitle", brandSubtitle);
+  setSetting("ui_brand_mark", brandMark || "NH");
+  setSetting("dashboard_widgets", JSON.stringify({
+    metrics: dashboardWidgets.metrics !== false,
+    command: dashboardWidgets.command !== false,
+    uptime: dashboardWidgets.uptime !== false,
+    activity: dashboardWidgets.activity !== false,
+    snmp: dashboardWidgets.snmp !== false,
+    monitors: dashboardWidgets.monitors !== false,
+    docker: dashboardWidgets.docker !== false,
+    problems: dashboardWidgets.problems !== false
+  }));
+  res.json({ ok: true, ui: uiSettings() });
 });
 app.put("/api/admin/features", requireAuth, (req, res) => {
   const features = {
@@ -3419,6 +3615,38 @@ app.post("/api/notifications/telegram/test", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(400).json({ error: `Unable to reach Telegram: ${error.message}` });
+  }
+});
+app.get("/api/notifications/email", requireAuth, (req, res) => {
+  const config = emailConfig();
+  res.json({ ...config, password: config.password ? "configured" : "" });
+});
+app.put("/api/notifications/email", requireAuth, (req, res) => {
+  const current = emailConfig();
+  const enabled = Boolean(req.body.enabled);
+  const next = {
+    enabled,
+    host: String(req.body.host || current.host || "").trim(),
+    port: Number(req.body.port || current.port || 587),
+    secure: Boolean(req.body.secure),
+    username: String(req.body.username || current.username || "").trim(),
+    password: String(req.body.password || current.password || ""),
+    from: String(req.body.from || current.from || "").trim(),
+    to: String(req.body.to || current.to || "").trim()
+  };
+  if (enabled && !validEmailConfig(next)) return res.status(400).json({ error: "Enter a valid SMTP host, port, from address, and recipient before enabling email." });
+  for (const [key, value] of Object.entries({ email_enabled: String(enabled), email_host: next.host, email_port: String(next.port), email_secure: String(next.secure), email_username: next.username, email_from: next.from, email_to: next.to })) setSetting(key, value);
+  if (req.body.password) setSetting("email_password", next.password);
+  res.json({ ok: true, ...next, password: next.password ? "configured" : "" });
+});
+app.post("/api/notifications/email/test", requireAuth, async (req, res) => {
+  const config = emailConfig();
+  if (!config.enabled || !validEmailConfig(config)) return res.status(400).json({ error: "Save valid enabled email settings first." });
+  try {
+    await sendEmail("NichHome Uptime notification test", "Email alerts are working.", { throwOnFailure: true });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: `Unable to send email: ${error.message}` });
   }
 });
 

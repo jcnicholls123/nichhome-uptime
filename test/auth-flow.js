@@ -58,6 +58,13 @@ const dockerServer = http.createServer((req, res) => {
     return res.end("<InputProxyChannelList><InputProxyChannel><id>1</id><name>Driveway</name><ipAddress>192.168.1.70</ipAddress><online>true</online></InputProxyChannel><InputProxyChannel><id>2</id><name>Garden</name><ipAddress>192.168.1.71</ipAddress><online>false</online></InputProxyChannel></InputProxyChannelList>");
   }
   if (req.url === "/_ping") return res.end("OK");
+  if (req.url === "/api/states/sensor.zigbee_bridge") {
+    if (req.headers.authorization !== "Bearer home-assistant-test") {
+      res.statusCode = 401;
+      return res.end(JSON.stringify({ error: "bad token" }));
+    }
+    return res.end(JSON.stringify({ entity_id: "sensor.zigbee_bridge", state: "online", attributes: { friendly_name: "Zigbee Bridge", devices: 42 } }));
+  }
   if (req.url === "/version") return res.end(JSON.stringify({ Version: "28.0.0", ApiVersion: "1.48" }));
   if (req.url === "/containers/json") {
     dockerContainerListRequests.push(req.url);
@@ -112,7 +119,7 @@ async function waitForServer() {
 (async () => {
   try {
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.3", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.4", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -163,13 +170,24 @@ async function waitForServer() {
     assert.equal(pingMonitors[0].status, "up");
     assert.ok(pingMonitors[0].responseMs <= 1);
     assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Offline service", type: "tcp", target: "127.0.0.1:1", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
+    assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Zigbee bridge API", type: "api", target: `http://127.0.0.1:${dockerPort}/api/states/sensor.zigbee_bridge`, apiHeaders: "{\"Authorization\":\"Bearer home-assistant-test\"}", apiJsonPath: "state", apiExpectedValue: "online", intervalSeconds: 20, timeoutSeconds: 5 }) })).status, 201);
+    const apiMonitor = (await (await request("/api/monitors")).json()).find((monitor) => monitor.name === "Zigbee bridge API");
+    assert.equal(apiMonitor.type, "api");
+    assert.equal(apiMonitor.status, "up");
+    assert.equal(apiMonitor.apiValue, "online");
     assert.equal((await (await request("/api/incidents")).json()).length, 1);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: false, webhookUrl: "" }) })).status, 200);
     assert.equal((await request("/api/notifications/telegram", { method: "PUT", body: JSON.stringify({ enabled: true, botToken: "bad", chatId: "123" }) })).status, 400);
     assert.equal((await request("/api/notifications/telegram", { method: "PUT", body: JSON.stringify({ enabled: false, botToken: "", chatId: "" }) })).status, 200);
+    assert.equal((await request("/api/notifications/email", { method: "PUT", body: JSON.stringify({ enabled: true, host: "", port: 587, from: "bad", to: "" }) })).status, 400);
+    assert.equal((await request("/api/notifications/email", { method: "PUT", body: JSON.stringify({ enabled: false, host: "", port: 587, from: "", to: "" }) })).status, 200);
+    assert.equal((await request("/api/admin/ui", { method: "PUT", body: JSON.stringify({ brandName: "JamesHome", brandSubtitle: "OPS DASH", brandMark: "JH", dashboardWidgets: { docker: false, problems: true } }) })).status, 200);
     const notificationAdminSettings = await (await request("/api/admin/settings")).json();
     assert.equal(notificationAdminSettings.telegram.enabled, false);
+    assert.equal(notificationAdminSettings.email.enabled, false);
+    assert.equal(notificationAdminSettings.ui.brandName, "JamesHome");
+    assert.equal(notificationAdminSettings.ui.dashboardWidgets.docker, false);
     assert.equal((await request("/api/dashboard/history")).status, 200);
     assert.equal((await request("/api/dashboard/history?range=90d")).status, 200);
     const dockerStatus = await (await request("/api/docker/status")).json();
@@ -208,7 +226,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.3");
+    assert.equal(adminSettings.app.version, "1.0.4");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);

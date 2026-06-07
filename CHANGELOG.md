@@ -12,6 +12,23 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.4] - 2026-06-07
+
+### Added
+
+- Admin Settings tabs for General, Notifications, and UI Customisation
+- Customisable top-left branding and Overview dashboard widget visibility
+- Email SMTP notifications with save/test support alongside Discord and Telegram
+- Custom API / JSON monitors for Home Assistant-style state endpoints with headers,
+  JSON-path extraction, expected-value checks, and renameable monitor names
+- Dedicated Current Problems workspace plus Overview Current Problems widget
+- Separate Docker Containers sidebar entry
+
+### Changed
+
+- Alert trigger setup copy is simpler and more operator-friendly while keeping the
+  Zabbix-style trigger engine underneath
+
 ## [1.0.3] - 2026-06-07
 
 ### Added

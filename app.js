@@ -31,29 +31,44 @@ let latestData = [];
 let adminSettings = null;
 let featureSettings = { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true };
 let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
+let uiSettings = { brandName: "NichHome", brandSubtitle: "UPTIME SYSTEMS", brandMark: "NH", dashboardWidgets: {} };
 let networkMap = { nodes: [], edges: [] };
 let notificationDiscordConfig = null;
 let notificationTelegramConfig = null;
+let notificationEmailConfig = null;
 let reportingRange = "24h";
 let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
-  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
+  const pages = { Overview: "overviewPage", "Current Problems": "currentProblemsPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Docker Containers": "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
+  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || ((name === "Docker" || name === "Docker Containers") && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
   document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
   if (name === "SNMP Devices") renderSnmpWorkspace();
   if (name === "Docker") renderDockerWorkspace();
+  if (name === "Docker Containers") renderDockerWorkspace();
   if (name === "UniFi Network") renderUnifiNetworkWorkspace();
   if (name === "Protect") renderProtectWorkspace();
   if (name === "Hikvision") renderHikvisionWorkspace();
   if (name === "Alert Rules") renderAlertRules();
+  if (name === "Current Problems") loadAlertRules();
   if (name === "Network Map") renderNetworkMap();
   if (name === "Notifications") loadNotificationsPage();
   if (name === "Admin Settings") loadAdminSettings();
+}
+
+function applyUiSettings() {
+  const brand = uiSettings || {};
+  document.querySelector(".brand-copy strong").textContent = brand.brandName || "NichHome";
+  document.querySelector(".brand-copy small").textContent = brand.brandSubtitle || "UPTIME SYSTEMS";
+  const mark = (brand.brandMark || "NH").slice(0, 4).toUpperCase();
+  const brandMark = document.querySelector(".brand-mark");
+  if (brandMark) brandMark.textContent = mark;
+  const widgets = brand.dashboardWidgets || {};
+  document.querySelectorAll("[data-dashboard-widget]").forEach((item) => { item.hidden = widgets[item.dataset.dashboardWidget] === false; });
 }
 
 function featureEnabled(name) {
@@ -73,7 +88,7 @@ function ensureAlertSourceOptions() {
 function applyFeatureVisibility() {
   const bindings = [
     ["snmp", ['[data-page="SNMP Devices"]', ".snmp-panel"]],
-    ["docker", ['[data-page="Docker"]', ".docker-panel"]],
+    ["docker", ['[data-page="Docker"]', '[data-page="Docker Containers"]', ".docker-panel"]],
     ["network", ['[data-page="UniFi Network"]']],
     ["protect", ['[data-page="Protect"]']],
     ["hikvision", ['[data-page="Hikvision"]']],
@@ -83,7 +98,7 @@ function applyFeatureVisibility() {
     for (const selector of selectors) document.querySelectorAll(selector).forEach((item) => { item.hidden = !featureEnabled(feature); });
   }
   const activePage = document.querySelector(".nav-item.active")?.dataset.page;
-  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Hikvision" && !featureEnabled("hikvision")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
+  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || ((activePage === "Docker" || activePage === "Docker Containers") && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Hikvision" && !featureEnabled("hikvision")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -669,11 +684,13 @@ function incidentElement(incident) {
   return row;
 }
 
-function renderNotificationsPage(discordConfig = null, telegramConfig = null) {
+function renderNotificationsPage(discordConfig = null, telegramConfig = null, emailConfig = null) {
   if (discordConfig) notificationDiscordConfig = discordConfig;
   if (telegramConfig) notificationTelegramConfig = telegramConfig;
+  if (emailConfig) notificationEmailConfig = emailConfig;
   discordConfig = notificationDiscordConfig;
   telegramConfig = notificationTelegramConfig;
+  emailConfig = notificationEmailConfig;
   const metrics = document.getElementById("notificationMetrics");
   const list = document.getElementById("notificationEventList");
   const channels = document.getElementById("notificationChannelList");
@@ -700,6 +717,7 @@ function renderNotificationsPage(discordConfig = null, telegramConfig = null) {
     ["Browser notifications", preferenceSettings.browserNotifications ? "Enabled" : "Off", browserState === "granted" ? "permission granted" : browserState, preferenceSettings.browserNotifications && browserState !== "granted"],
     ["Discord embeds", discordConfig?.enabled ? "Enabled" : "Off", discordConfig?.webhookUrl || "not configured", false],
     ["Telegram messages", telegramConfig?.enabled ? "Enabled" : "Off", telegramConfig?.chatId || "not configured", false],
+    ["Email SMTP", emailConfig?.enabled ? "Enabled" : "Off", emailConfig?.to || "not configured", false],
     ["Notification queue", open ? `${open} active` : "Clear", incidents[0] ? `Latest ${formatDate(incidents[0].startedAt)}` : "No events yet", open > 0]
   ]) {
     const row = document.createElement("article"); row.className = `profile-row ${alerting ? "active" : ""}`;
@@ -712,8 +730,8 @@ function renderNotificationsPage(discordConfig = null, telegramConfig = null) {
 }
 
 async function loadNotificationsPage() {
-  const [discordConfig, telegramConfig] = await Promise.all([api("/api/notifications/discord"), api("/api/notifications/telegram")]);
-  renderNotificationsPage(discordConfig, telegramConfig);
+  const [discordConfig, telegramConfig, emailConfig] = await Promise.all([api("/api/notifications/discord"), api("/api/notifications/telegram"), api("/api/notifications/email")]);
+  renderNotificationsPage(discordConfig, telegramConfig, emailConfig);
 }
 
 async function loadIncidents() {
@@ -974,6 +992,8 @@ async function loadSnmpProfiles() {
 
 function renderDockerFleet() {
   document.getElementById("dockerNavCount").textContent = dockerContainers.length;
+  const containerNav = document.getElementById("dockerContainersNavCount");
+  if (containerNav) containerNav.textContent = dockerContainers.length;
   const summary = document.getElementById("dockerSummary");
   const list = document.getElementById("dockerContainerList");
   const hosts = document.getElementById("dockerHostList");
@@ -1331,6 +1351,17 @@ function renderAlertRules() {
   const metrics = document.getElementById("alertRuleMetrics"); const list = document.getElementById("alertRuleList");
   if (!metrics || !list) return;
   metrics.replaceChildren(metricCard("Configured triggers", alertRules.length, "Zabbix-style expressions"), metricCard("Current problems", currentProblems.length, "open problem state", currentProblems.length > 0), metricCard("Latest metrics", latestData.length, "live values"), metricCard("SNMP rules", alertRules.filter((rule) => rule.targetType === "snmp").length, "device telemetry"), metricCard("Docker/UniFi", alertRules.filter((rule) => rule.targetType !== "snmp").length, "fleet triggers"));
+  const problemCount = document.getElementById("problemNavCount");
+  if (problemCount) { problemCount.textContent = currentProblems.length; problemCount.classList.toggle("alerting", currentProblems.length > 0); }
+  const problemMetrics = document.getElementById("currentProblemMetrics");
+  if (problemMetrics) {
+    problemMetrics.replaceChildren(
+      metricCard("Current problems", currentProblems.length, "unresolved triggers", currentProblems.length > 0),
+      metricCard("Disaster/high", currentProblems.filter((item) => ["disaster", "high"].includes(item.severity)).length, "needs action", currentProblems.some((item) => ["disaster", "high"].includes(item.severity))),
+      metricCard("Acknowledged", currentProblems.filter((item) => item.acknowledged).length, "known issues"),
+      metricCard("Triggers", alertRules.length, "configured rules")
+    );
+  }
   renderCurrentProblems();
   renderLatestData();
   list.replaceChildren();
@@ -1354,12 +1385,15 @@ function renderAlertRules() {
 function severityRank(severity) { return { disaster: 5, high: 4, average: 3, warning: 2, information: 1 }[severity] || 0; }
 
 function renderCurrentProblems() {
-  const list = document.getElementById("currentProblemList");
-  if (!list) return;
-  list.replaceChildren();
+  const lists = ["currentProblemList", "overviewProblemList", "currentProblemPageList"].map((id) => document.getElementById(id)).filter(Boolean);
+  if (!lists.length) return;
+  for (const list of lists) list.replaceChildren();
   const problems = [...currentProblems].sort((a, b) => severityRank(b.severity) - severityRank(a.severity) || String(b.startedAt).localeCompare(String(a.startedAt)));
-  if (!problems.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No current problems. Trigger board is clear."; list.append(empty); return; }
-  for (const problem of problems) {
+  if (!problems.length) {
+    for (const list of lists) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No current problems. Trigger board is clear."; list.append(empty); }
+    return;
+  }
+  const makeProblemRow = (problem) => {
     const row = document.createElement("article"); row.className = `rule-row active severity-${problem.severity}`;
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = problem.name;
     const detail = document.createElement("small"); detail.textContent = `${problem.targetName} - ${problem.metricLabel} - ${problem.functionName.toUpperCase()} ${problem.operator} ${problem.threshold}`;
@@ -1367,8 +1401,10 @@ function renderCurrentProblems() {
     copy.append(name, detail, cause);
     const state = document.createElement("span"); state.className = "status-label warn"; state.textContent = problem.severity.toUpperCase();
     const ack = document.createElement("button"); ack.className = "monitor-action"; ack.textContent = "ack"; ack.disabled = problem.acknowledged; ack.addEventListener("click", async () => { await api(`/api/alert-rules/${problem.ruleId}/acknowledge`, { method: "POST", body: "{}" }); await Promise.all([loadAlertRules(), loadIncidents()]); showToast("Problem acknowledged", problem.name); });
-    row.append(copy, state, ack); list.append(row);
-  }
+    row.append(copy, state, ack);
+    return row;
+  };
+  for (const list of lists) for (const problem of (list.id === "overviewProblemList" ? problems.slice(0, 5) : problems)) list.append(makeProblemRow(problem));
 }
 
 function renderLatestData() {
@@ -1763,6 +1799,7 @@ async function openMonitorDetails(monitor) {
     if (key === "enabled") form.elements[key].checked = value;
     else form.elements[key].value = value ?? "";
   }
+  toggleApiMonitorFields(form);
   const history = document.getElementById("historyList");
   history.replaceChildren();
   data.heartbeats.forEach((heartbeat) => {
@@ -1800,6 +1837,17 @@ document.getElementById("monitorForm").addEventListener("submit", async (event) 
   } finally {
     button.disabled = false;
   }
+});
+
+function toggleApiMonitorFields(form) {
+  if (!form) return;
+  const apiFields = form.querySelector(".api-monitor-fields");
+  if (apiFields) apiFields.hidden = form.elements.type.value !== "api";
+}
+
+document.querySelectorAll("#monitorForm select[name=type], #editMonitorForm select[name=type]").forEach((select) => {
+  select.addEventListener("change", () => toggleApiMonitorFields(select.form));
+  toggleApiMonitorFields(select.form);
 });
 
 document.getElementById("editMonitorForm").addEventListener("submit", async (event) => {
@@ -1849,26 +1897,48 @@ function fillAdminNotificationForms() {
     telegramForm.elements.chatId.value = adminSettings.telegram.chatId || "";
     telegramForm.elements.enabled.checked = Boolean(adminSettings.telegram.enabled);
   }
+  const emailForm = document.getElementById("adminEmailForm");
+  if (emailForm && adminSettings?.email) {
+    for (const key of ["host", "port", "username", "from", "to"]) emailForm.elements[key].value = adminSettings.email[key] || "";
+    emailForm.elements.password.value = "";
+    emailForm.elements.password.placeholder = adminSettings.email.password ? "Configured - leave blank to keep current password" : "SMTP password";
+    emailForm.elements.secure.checked = Boolean(adminSettings.email.secure);
+    emailForm.elements.enabled.checked = Boolean(adminSettings.email.enabled);
+  }
+}
+
+function fillAdminUiForm() {
+  const form = document.getElementById("uiSettingsForm");
+  if (!form || !adminSettings?.ui) return;
+  uiSettings = adminSettings.ui;
+  form.elements.brandName.value = uiSettings.brandName || "NichHome";
+  form.elements.brandSubtitle.value = uiSettings.brandSubtitle || "UPTIME SYSTEMS";
+  form.elements.brandMark.value = uiSettings.brandMark || "NH";
+  for (const key of ["metrics", "command", "problems", "uptime", "activity", "snmp", "monitors", "docker"]) form.elements[key].checked = uiSettings.dashboardWidgets?.[key] !== false;
+  applyUiSettings();
 }
 
 async function loadAdminSettings() {
   adminSettings = await api("/api/admin/settings");
   featureSettings = adminSettings.features || featureSettings;
   preferenceSettings = adminSettings.preferences || preferenceSettings;
+  uiSettings = adminSettings.ui || uiSettings;
   applyFeatureVisibility();
+  applyUiSettings();
   const metrics = document.getElementById("adminSettingsMetrics"); const list = document.getElementById("adminSystemList");
   if (!metrics || !list) return;
   metrics.replaceChildren(
     metricCard("Maintenance", adminSettings.maintenance.active ? "ON" : "OFF", adminSettings.maintenance.active ? `Until ${formatDate(adminSettings.maintenance.until)}` : "alerts are live", adminSettings.maintenance.active),
     metricCard("Enabled rules", adminSettings.alerts.enabledRules, "advanced alert rules"),
     metricCard("Active rule alerts", adminSettings.alerts.activeRules, `${adminSettings.alerts.acknowledgedRules} acknowledged`, adminSettings.alerts.activeRules > 0),
-    metricCard("Alert channels", `${[adminSettings.discord.enabled, adminSettings.telegram.enabled].filter(Boolean).length}/2`, "Discord and Telegram delivery")
+    metricCard("Alert channels", `${[adminSettings.discord.enabled, adminSettings.telegram.enabled, adminSettings.email.enabled].filter(Boolean).length}/3`, "Discord, Telegram, and email")
   );
   const featureForm = document.getElementById("featureSettingsForm");
   if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "hikvision", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   const preferenceForm = document.getElementById("preferenceSettingsForm");
   if (preferenceForm) for (const key of ["browserNotifications", "mapShowInferredLinks", "mapShowUnifiClients", "mapReplaceInferredByDefault"]) preferenceForm.elements[key].checked = Boolean(preferenceSettings[key]);
   fillAdminNotificationForms();
+  fillAdminUiForm();
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
   for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
@@ -1937,6 +2007,44 @@ document.getElementById("adminTestTelegram").addEventListener("click", async () 
     showToast("Telegram test sent", "Check your Telegram chat");
   } catch (err) { error.textContent = err.message; }
 });
+document.getElementById("adminEmailForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("adminEmailError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form));
+  values.enabled = form.elements.enabled.checked;
+  values.secure = form.elements.secure.checked;
+  try {
+    await api("/api/notifications/email", { method: "PUT", body: JSON.stringify(values) });
+    adminSettings = await api("/api/admin/settings");
+    fillAdminNotificationForms();
+    await loadNotificationsPage();
+    showToast("Email saved", form.elements.enabled.checked ? "SMTP email alerts enabled" : "Email alerts disabled");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("adminTestEmail").addEventListener("click", async () => {
+  const error = document.getElementById("adminEmailError"); error.textContent = "";
+  try {
+    await api("/api/notifications/email/test", { method: "POST", body: "{}" });
+    showToast("Email test sent", "Check your inbox");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("uiSettingsForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("uiSettingsError"); error.textContent = "";
+  const dashboardWidgets = {};
+  for (const key of ["metrics", "command", "problems", "uptime", "activity", "snmp", "monitors", "docker"]) dashboardWidgets[key] = form.elements[key].checked;
+  try {
+    const result = await api("/api/admin/ui", { method: "PUT", body: JSON.stringify({ brandName: form.elements.brandName.value, brandSubtitle: form.elements.brandSubtitle.value, brandMark: form.elements.brandMark.value, dashboardWidgets }) });
+    uiSettings = result.ui;
+    applyUiSettings();
+    showToast("UI customisation saved", "Branding and dashboard widgets updated");
+  } catch (err) { error.textContent = err.message; }
+});
+document.querySelectorAll(".admin-tab").forEach((tab) => tab.addEventListener("click", () => {
+  document.querySelector(".admin-tab.active")?.classList.remove("active");
+  tab.classList.add("active");
+  document.querySelectorAll(".admin-section").forEach((section) => section.classList.toggle("active", section.dataset.adminSection === tab.dataset.adminTab));
+}));
 document.getElementById("notificationPreferenceForm").addEventListener("submit", async (event) => {
   event.preventDefault();
   const form = event.currentTarget; const error = document.getElementById("notificationPreferenceError"); error.textContent = "";
@@ -2144,6 +2252,8 @@ document.getElementById("addAlertRule").addEventListener("click", () => openAler
 document.getElementById("addAlertRuleInline").addEventListener("click", () => openAlertRule());
 document.getElementById("alertTemplateSelect").addEventListener("change", renderAlertTemplates);
 document.getElementById("refreshProblems").addEventListener("click", async () => { await loadAlertRules(); showToast("Problems refreshed", `${currentProblems.length} current problem${currentProblems.length === 1 ? "" : "s"}`); });
+document.getElementById("refreshCurrentProblems").addEventListener("click", async () => { await loadAlertRules(); showToast("Problems refreshed", `${currentProblems.length} current problem${currentProblems.length === 1 ? "" : "s"}`); });
+document.getElementById("overviewOpenProblems").addEventListener("click", () => showWorkspace("Current Problems"));
 document.getElementById("latestDataSearch").addEventListener("input", renderLatestData);
 document.getElementById("latestDataRange").addEventListener("change", () => { document.getElementById("latestMetricChart").replaceChildren(); });
 document.getElementById("alertTemplateForm").addEventListener("submit", async (event) => {

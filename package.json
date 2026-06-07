@@ -1,6 +1,6 @@
 {
   "name": "nichhome-uptime",
-  "version": "1.0.3",
+  "version": "1.0.4",
   "private": true,
   "description": "SNMP-first uptime and infrastructure monitoring dashboard",
   "main": "server.js",
@@ -17,6 +17,7 @@
     "express": "^5.2.1",
     "fast-xml-parser": "^5.8.0",
     "net-snmp": "^3.26.3",
+    "nodemailer": "^8.0.10",
     "qrcode": "^1.5.4"
   }
 }

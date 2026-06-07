@@ -41,15 +41,14 @@ let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "Current Problems": "currentProblemsPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "Docker Containers": "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
-  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || ((name === "Docker" || name === "Docker Containers") && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
+  const pages = { Overview: "overviewPage", "Current Problems": "currentProblemsPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
+  if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
   document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
   if (name === "SNMP Devices") renderSnmpWorkspace();
   if (name === "Docker") renderDockerWorkspace();
-  if (name === "Docker Containers") renderDockerWorkspace();
   if (name === "UniFi Network") renderUnifiNetworkWorkspace();
   if (name === "Protect") renderProtectWorkspace();
   if (name === "Hikvision") renderHikvisionWorkspace();
@@ -88,7 +87,7 @@ function ensureAlertSourceOptions() {
 function applyFeatureVisibility() {
   const bindings = [
     ["snmp", ['[data-page="SNMP Devices"]', ".snmp-panel"]],
-    ["docker", ['[data-page="Docker"]', '[data-page="Docker Containers"]', ".docker-panel"]],
+    ["docker", ['[data-page="Docker"]', ".docker-panel"]],
     ["network", ['[data-page="UniFi Network"]']],
     ["protect", ['[data-page="Protect"]']],
     ["hikvision", ['[data-page="Hikvision"]']],
@@ -98,7 +97,7 @@ function applyFeatureVisibility() {
     for (const selector of selectors) document.querySelectorAll(selector).forEach((item) => { item.hidden = !featureEnabled(feature); });
   }
   const activePage = document.querySelector(".nav-item.active")?.dataset.page;
-  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || ((activePage === "Docker" || activePage === "Docker Containers") && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Hikvision" && !featureEnabled("hikvision")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
+  if ((activePage === "SNMP Devices" && !featureEnabled("snmp")) || (activePage === "Docker" && !featureEnabled("docker")) || (activePage === "UniFi Network" && !featureEnabled("network")) || (activePage === "Protect" && !featureEnabled("protect")) || (activePage === "Hikvision" && !featureEnabled("hikvision")) || (activePage === "Network Map" && !featureEnabled("networkMap"))) showWorkspace("Overview");
 }
 
 const sidebar = document.querySelector(".sidebar");
@@ -193,10 +192,6 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "Docker") {
       showWorkspace("Docker");
-      return;
-    }
-    if (item.dataset.page === "Docker Containers") {
-      showWorkspace("Docker Containers");
       return;
     }
     if (item.dataset.page === "Current Problems") {
@@ -1000,8 +995,6 @@ async function loadSnmpProfiles() {
 
 function renderDockerFleet() {
   document.getElementById("dockerNavCount").textContent = dockerContainers.length;
-  const containerNav = document.getElementById("dockerContainersNavCount");
-  if (containerNav) containerNav.textContent = dockerContainers.length;
   const summary = document.getElementById("dockerSummary");
   const list = document.getElementById("dockerContainerList");
   const hosts = document.getElementById("dockerHostList");
@@ -1495,6 +1488,30 @@ function openMapNode(node = null) {
   document.getElementById("mapNodeTitle").textContent = node ? `Edit ${node.name}` : "Add manual node"; document.getElementById("mapNodeError").textContent = ""; document.getElementById("mapNodeModal").hidden = false;
 }
 
+function openMapLinkForm(targetNode = null) {
+  for (const id of ["mapLinkFrom", "mapLinkTo"]) {
+    const select = document.getElementById(id);
+    select.replaceChildren();
+    for (const node of networkMap.nodes) {
+      const option = document.createElement("option");
+      option.value = node.id;
+      option.textContent = `${node.name} (${node.type})`;
+      select.append(option);
+    }
+  }
+  const form = document.getElementById("mapLinkForm");
+  form.reset();
+  form.elements.linkMode.value = targetNode ? "replace" : preferenceSettings.mapReplaceInferredByDefault ? "replace" : "manual";
+  if (targetNode) {
+    form.elements.to.value = targetNode.id;
+    document.getElementById("mapLinkTitle").textContent = `Correct where ${targetNode.name} comes from`;
+  } else {
+    document.getElementById("mapLinkTitle").textContent = "Correct map link";
+  }
+  document.getElementById("mapLinkError").textContent = "";
+  document.getElementById("mapLinkModal").hidden = false;
+}
+
 function enableTopologyDrag(button, node, canvas, position) {
   let start = null;
   let moved = false;
@@ -1592,7 +1609,7 @@ function renderNetworkMap() {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg"); svg.setAttribute("viewBox", "0 0 100 100"); svg.setAttribute("preserveAspectRatio", "none");
   for (const edge of networkMap.edges) { const from = positions.get(edge.from); const to = positions.get(edge.to); if (!from || !to) continue; const line = document.createElementNS("http://www.w3.org/2000/svg", "line"); line.setAttribute("x1", from.x); line.setAttribute("y1", from.y); line.setAttribute("x2", to.x); line.setAttribute("y2", to.y); line.setAttribute("class", edge.type === "replace" ? "replace" : edge.manual ? "manual" : "inferred"); svg.append(line); }
   canvas.append(svg);
-  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail}`; const label = document.createElement("span"); label.className = "topology-node-label"; label.textContent = node.name; button.append(makeIconBadge(node, "node-glyph"), label); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
+  for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail} - click to edit, use Line on the card below to correct parent links`; const label = document.createElement("span"); label.className = "topology-node-label"; label.textContent = node.name; button.append(makeIconBadge(node, "node-glyph"), label); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
   map.append(canvas);
   for (const type of [...new Set(["subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
@@ -1600,7 +1617,7 @@ function renderNetworkMap() {
     for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const header = document.createElement("div"); header.className = "topology-node-header"; const name = document.createElement("strong"); name.textContent = node.name; header.append(makeIconBadge(node, "node-glyph"), name); const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(header, detail, links); cards.append(card); }
     for (const node of nodes) {
       const matching = [...cards.children].find((card) => card.querySelector("strong")?.textContent === node.name);
-      if (matching) { const actions = document.createElement("div"); actions.className = "monitor-actions"; const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openMapNode(node)); actions.append(edit); if (node.manual) { const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete map node ${node.name}?`)) { await api(`/api/network-map/nodes/${node.id.split(":")[1]}`, { method: "DELETE" }); await loadNetworkMap(); } }); actions.append(remove); } matching.append(actions); }
+      if (matching) { const actions = document.createElement("div"); actions.className = "monitor-actions"; const link = document.createElement("button"); link.className = "monitor-action"; link.textContent = "line"; link.title = "Correct where this device comes from"; link.addEventListener("click", () => openMapLinkForm(node)); const edit = document.createElement("button"); edit.className = "monitor-action"; edit.textContent = "i"; edit.addEventListener("click", () => openMapNode(node)); actions.append(link, edit); if (node.manual) { const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { if (window.confirm(`Delete map node ${node.name}?`)) { await api(`/api/network-map/nodes/${node.id.split(":")[1]}`, { method: "DELETE" }); await loadNetworkMap(); } }); actions.append(remove); } matching.append(actions); }
     }
     group.append(title, cards); map.append(group);
   }
@@ -2418,8 +2435,8 @@ document.getElementById("mapNodeForm").addEventListener("submit", async (event) 
     document.getElementById("mapNodeModal").hidden = true; await loadNetworkMap(); showToast("Map node saved", form.elements.name.value);
   } catch (err) { document.getElementById("mapNodeError").textContent = err.message; }
 });
-document.getElementById("addMapLink").addEventListener("click", () => { for (const id of ["mapLinkFrom", "mapLinkTo"]) { const select = document.getElementById(id); select.replaceChildren(); for (const node of networkMap.nodes) { const option = document.createElement("option"); option.value = node.id; option.textContent = `${node.name} (${node.type})`; select.append(option); } } document.querySelector("#mapLinkForm select[name=linkMode]").value = preferenceSettings.mapReplaceInferredByDefault ? "replace" : "manual"; document.getElementById("mapLinkError").textContent = ""; document.getElementById("mapLinkModal").hidden = false; });
-document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast("Map link added", form.elements.label.value || "Manual relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
+document.getElementById("addMapLink").addEventListener("click", () => openMapLinkForm());
+document.getElementById("mapLinkForm").addEventListener("submit", async (event) => { event.preventDefault(); const form = event.currentTarget; try { await api("/api/network-map/links", { method: "POST", body: JSON.stringify(Object.fromEntries(new FormData(form))) }); document.getElementById("mapLinkModal").hidden = true; await loadNetworkMap(); showToast(form.elements.linkMode.value === "replace" ? "Map parent corrected" : "Map link added", form.elements.label.value || "Relationship saved"); } catch (err) { document.getElementById("mapLinkError").textContent = err.message; } });
 document.getElementById("resetNetworkMapLayout").addEventListener("click", async () => { await api("/api/network-map/layout/reset", { method: "POST", body: "{}" }); await loadNetworkMap(); showToast("Topology layout reset", "Saved inferred-node positions were cleared"); });
 document.querySelectorAll("[data-close]").forEach((button) => button.addEventListener("click", () => { document.getElementById(button.dataset.close).hidden = true; }));
 document.querySelectorAll(".modal-backdrop").forEach((modal) => modal.addEventListener("click", (event) => { if (event.target === modal) modal.hidden = true; }));

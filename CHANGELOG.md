@@ -12,6 +12,17 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.6] - 2026-06-07
+
+### Changed
+
+- Sidebar workspace order now starts with Overview and keeps Alert Rules at the
+  bottom of the Workspace group
+- Docker sidebar navigation is now a single clean Docker entry instead of
+  separate duplicate host/container entries
+- Network Map link correction is clearer: devices now expose a Line action that
+  opens a preselected replace-parent flow for fixing wrong topology lines
+
 ## [1.0.5] - 2026-06-07
 
 ### Fixed

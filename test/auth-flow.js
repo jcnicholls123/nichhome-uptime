@@ -121,9 +121,11 @@ async function waitForServer() {
     const appJs = fs.readFileSync(path.join(__dirname, "..", "app.js"), "utf8");
     assert.ok(appJs.includes('item.dataset.page === "Current Problems"'));
     assert.ok(appJs.includes('showWorkspace("Current Problems")'));
-    assert.ok(appJs.includes('item.dataset.page === "Docker Containers"'));
+    assert.ok(!appJs.includes('item.dataset.page === "Docker Containers"'));
+    assert.ok(appJs.includes("function openMapLinkForm"));
+    assert.ok(appJs.includes("Correct where this device comes from"));
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.5", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.0.6", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -230,7 +232,7 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.0.5");
+    assert.equal(adminSettings.app.version, "1.0.6");
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);

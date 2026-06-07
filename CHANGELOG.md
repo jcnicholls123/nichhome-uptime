@@ -12,6 +12,22 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.0.3] - 2026-06-07
+
+### Added
+
+- Telegram alert delivery with bot token and chat ID settings in Admin Settings
+- Admin Settings notification tab/panel for managing Discord and Telegram in one place
+
+### Changed
+
+- Notifications page now links to central channel settings and shows Telegram channel status
+- Uptime response graphs use light median smoothing to reduce misleading one-bucket spikes
+
+### Fixed
+
+- Discord settings can now keep the saved webhook when saving from Admin Settings
+
 ## [1.0.2] - 2026-06-06
 
 ### Added

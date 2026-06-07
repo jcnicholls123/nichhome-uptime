@@ -1054,6 +1054,14 @@ function discordConfig() {
   };
 }
 
+function telegramConfig() {
+  return {
+    enabled: getSetting("telegram_enabled", "false") === "true",
+    botToken: getSetting("telegram_bot_token", ""),
+    chatId: getSetting("telegram_chat_id", "")
+  };
+}
+
 function validDiscordWebhook(value) {
   try {
     const url = new URL(value);
@@ -1061,6 +1069,10 @@ function validDiscordWebhook(value) {
   } catch {
     return false;
   }
+}
+
+function validTelegramConfig(config) {
+  return Boolean(String(config.botToken || "").match(/^\d+:[A-Za-z0-9_-]{20,}$/) && String(config.chatId || "").trim().length >= 2);
 }
 
 function validateSnmpDevice(input, current = {}) {
@@ -1411,6 +1423,31 @@ async function sendDiscord(content, embeds = undefined) {
   }
 }
 
+async function sendTelegram(text, { throwOnFailure = false } = {}) {
+  const config = telegramConfig();
+  if (!config.enabled || !validTelegramConfig(config)) return;
+  try {
+    const response = await fetch(`https://api.telegram.org/bot${config.botToken}/sendMessage`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ chat_id: config.chatId, text: String(text).slice(0, 3900), parse_mode: "HTML", disable_web_page_preview: true }),
+      signal: AbortSignal.timeout(10000)
+    });
+    if (!response.ok) {
+      const error = new Error(`Telegram returned HTTP ${response.status}.`);
+      if (throwOnFailure) throw error;
+      console.error("Telegram notification failed:", error.message);
+    }
+  } catch (error) {
+    if (throwOnFailure) throw error;
+    console.error("Telegram notification failed:", error.message);
+  }
+}
+
+function telegramEscape(value) {
+  return String(value ?? "").replace(/[<>&]/g, (char) => ({ "<": "&lt;", ">": "&gt;", "&": "&amp;" }[char]));
+}
+
 const severityColours = { information: 3447003, warning: 16776960, average: 16753920, high: 15158332, disaster: 10038562 };
 
 async function legacySendDiscordAlert(rule, value, cause, recovered) {
@@ -1457,6 +1494,7 @@ async function sendDiscordAlert(rule, value, cause, recovered) {
     footer: { text: `NichHome Uptime - ${recovered ? "Problem resolved" : "Current problem"}` },
     timestamp: new Date().toISOString()
   }]);
+  await sendTelegram(`<b>${telegramEscape(title)}</b>\nSeverity: ${telegramEscape(recovered ? "Recovered" : rule.severity.toUpperCase())}\nTarget: ${telegramEscape(targetName)}\nMetric: ${telegramEscape(metricLabel)}\nExpression: ${telegramEscape(`${functionName}(${rule.metric_key}${rule.window_seconds ? `, ${Math.round(rule.window_seconds / 60)}m` : ""}) ${rule.operator} ${rule.threshold}`)}\nCurrent value: ${telegramEscape(value)}\nReason: ${telegramEscape(cause)}${rule.action_text ? `\nAction: ${telegramEscape(rule.action_text)}` : ""}`);
 }
 
 async function sendDiscordOperational(title, recovered, description, fields = []) {
@@ -1468,6 +1506,8 @@ async function sendDiscordOperational(title, recovered, description, fields = []
     footer: { text: `NichHome Uptime · ${new Date().toLocaleString("en-GB")}` },
     timestamp: new Date().toISOString()
   }]);
+  const details = fields.filter((field) => field.value != null).map((field) => `\n${telegramEscape(field.name)}: ${telegramEscape(field.value)}`).join("");
+  await sendTelegram(`<b>${telegramEscape(recovered ? `${title} recovered` : `${title} issue`)}</b>\n${telegramEscape(description || (recovered ? "The service has recovered." : "NichHome detected an operational problem."))}${details}`);
 }
 
 let dockerFleetError = null;
@@ -3267,6 +3307,7 @@ app.get("/api/admin/settings", requireAuth, (req, res) => {
       acknowledgedRules: db.prepare("SELECT COUNT(*) AS count FROM alert_rule_incidents WHERE resolved_at IS NULL AND acknowledged_at IS NOT NULL").get().count
     },
     discord: { ...discordConfig(), webhookUrl: discordConfig().webhookUrl ? "configured" : "" },
+    telegram: { ...telegramConfig(), botToken: telegramConfig().botToken ? "configured" : "" },
     features: featureSettings(),
     preferences: preferenceSettings(),
     storage: { sqlitePath: path.join(DATA_DIR, "nichhome.sqlite") }
@@ -3331,11 +3372,13 @@ app.get("/api/notifications/discord", requireAuth, (req, res) => {
 app.put("/api/notifications/discord", requireAuth, (req, res) => {
   const webhookUrl = String(req.body.webhookUrl || "").trim();
   const enabled = Boolean(req.body.enabled);
+  const current = discordConfig();
+  const nextWebhookUrl = webhookUrl || current.webhookUrl;
   if (webhookUrl && !validDiscordWebhook(webhookUrl)) return res.status(400).json({ error: "Enter a valid Discord webhook URL." });
-  if (enabled && !webhookUrl) return res.status(400).json({ error: "A Discord webhook URL is required when notifications are enabled." });
-  setSetting("discord_webhook_url", webhookUrl);
+  if (enabled && !nextWebhookUrl) return res.status(400).json({ error: "A Discord webhook URL is required when notifications are enabled." });
+  if (webhookUrl) setSetting("discord_webhook_url", webhookUrl);
   setSetting("discord_enabled", String(enabled));
-  res.json({ ok: true });
+  res.json({ ok: true, enabled, configured: Boolean(nextWebhookUrl), webhookUrl: nextWebhookUrl ? "configured" : "" });
 });
 app.post("/api/notifications/discord/test", requireAuth, async (req, res) => {
   const config = discordConfig();
@@ -3350,6 +3393,32 @@ app.post("/api/notifications/discord/test", requireAuth, async (req, res) => {
     res.json({ ok: true });
   } catch (error) {
     res.status(400).json({ error: `Unable to reach Discord: ${error.message}` });
+  }
+});
+app.get("/api/notifications/telegram", requireAuth, (req, res) => {
+  const config = telegramConfig();
+  res.json({ enabled: config.enabled, botToken: config.botToken ? "configured" : "", chatId: config.chatId });
+});
+app.put("/api/notifications/telegram", requireAuth, (req, res) => {
+  const enabled = Boolean(req.body.enabled);
+  const botToken = String(req.body.botToken || "").trim();
+  const chatId = String(req.body.chatId || "").trim();
+  const current = telegramConfig();
+  const next = { enabled, botToken: botToken || current.botToken, chatId: chatId || current.chatId };
+  if (enabled && !validTelegramConfig(next)) return res.status(400).json({ error: "Enter a valid Telegram bot token and chat ID before enabling Telegram." });
+  if (botToken) setSetting("telegram_bot_token", botToken);
+  if (chatId) setSetting("telegram_chat_id", chatId);
+  setSetting("telegram_enabled", String(enabled));
+  res.json({ ok: true, enabled, botToken: (botToken || current.botToken) ? "configured" : "", chatId: chatId || current.chatId });
+});
+app.post("/api/notifications/telegram/test", requireAuth, async (req, res) => {
+  const config = telegramConfig();
+  if (!config.enabled || !validTelegramConfig(config)) return res.status(400).json({ error: "Save valid enabled Telegram settings first." });
+  try {
+    await sendTelegram("<b>NichHome Uptime notification test</b>\nTelegram alerts are working.", { throwOnFailure: true });
+    res.json({ ok: true });
+  } catch (error) {
+    res.status(400).json({ error: `Unable to reach Telegram: ${error.message}` });
   }
 });
 

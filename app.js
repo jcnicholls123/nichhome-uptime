@@ -33,6 +33,7 @@ let featureSettings = { snmp: true, docker: true, network: true, protect: true, 
 let preferenceSettings = { browserNotifications: false, mapShowInferredLinks: true, mapShowUnifiClients: false, mapReplaceInferredByDefault: true };
 let networkMap = { nodes: [], edges: [] };
 let notificationDiscordConfig = null;
+let notificationTelegramConfig = null;
 let reportingRange = "24h";
 let searchFilter = "";
 let lastOpenIncidentCount = null;
@@ -668,9 +669,11 @@ function incidentElement(incident) {
   return row;
 }
 
-function renderNotificationsPage(discordConfig = null) {
+function renderNotificationsPage(discordConfig = null, telegramConfig = null) {
   if (discordConfig) notificationDiscordConfig = discordConfig;
+  if (telegramConfig) notificationTelegramConfig = telegramConfig;
   discordConfig = notificationDiscordConfig;
+  telegramConfig = notificationTelegramConfig;
   const metrics = document.getElementById("notificationMetrics");
   const list = document.getElementById("notificationEventList");
   const channels = document.getElementById("notificationChannelList");
@@ -696,6 +699,7 @@ function renderNotificationsPage(discordConfig = null) {
   for (const [label, value, detail, alerting] of [
     ["Browser notifications", preferenceSettings.browserNotifications ? "Enabled" : "Off", browserState === "granted" ? "permission granted" : browserState, preferenceSettings.browserNotifications && browserState !== "granted"],
     ["Discord embeds", discordConfig?.enabled ? "Enabled" : "Off", discordConfig?.webhookUrl || "not configured", false],
+    ["Telegram messages", telegramConfig?.enabled ? "Enabled" : "Off", telegramConfig?.chatId || "not configured", false],
     ["Notification queue", open ? `${open} active` : "Clear", incidents[0] ? `Latest ${formatDate(incidents[0].startedAt)}` : "No events yet", open > 0]
   ]) {
     const row = document.createElement("article"); row.className = `profile-row ${alerting ? "active" : ""}`;
@@ -708,8 +712,8 @@ function renderNotificationsPage(discordConfig = null) {
 }
 
 async function loadNotificationsPage() {
-  const discordConfig = await api("/api/notifications/discord");
-  renderNotificationsPage(discordConfig);
+  const [discordConfig, telegramConfig] = await Promise.all([api("/api/notifications/discord"), api("/api/notifications/telegram")]);
+  renderNotificationsPage(discordConfig, telegramConfig);
 }
 
 async function loadIncidents() {
@@ -770,6 +774,15 @@ function makeSparsePath(values, width, height, minimum, maximum, left = 0, top =
   }).filter(Boolean).join(" ");
 }
 
+function smoothSparseValues(values, radius = 1) {
+  return values.map((value, index) => {
+    if (value == null || !Number.isFinite(value)) return null;
+    const neighbours = values.slice(Math.max(0, index - radius), index + radius + 1).filter((item) => item != null && Number.isFinite(item)).sort((a, b) => a - b);
+    if (!neighbours.length) return value;
+    return neighbours[Math.floor(neighbours.length / 2)];
+  });
+}
+
 function chartText(svg, x, y, value, anchor = "start") {
   const text = document.createElementNS("http://www.w3.org/2000/svg", "text"); text.setAttribute("x", x); text.setAttribute("y", y); text.setAttribute("text-anchor", anchor); text.setAttribute("class", "chart-label"); text.textContent = value; svg.append(text);
 }
@@ -810,7 +823,7 @@ async function loadGraph() {
   const responses = history.map((point) => point.responseMs == null ? null : Number(point.responseMs));
   const response = document.createElementNS(ns, "path");
   response.setAttribute("class", "response-path");
-  response.setAttribute("d", makeSparsePath(responses, width, height, 0, maxResponse, left, top));
+  response.setAttribute("d", makeSparsePath(smoothSparseValues(responses), width, height, 0, maxResponse, left, top));
   svg.append(uptime, response);
   chart.append(svg);
 }
@@ -1808,12 +1821,34 @@ async function openDiscord() {
   const form = document.getElementById("discordForm");
   form.elements.webhookUrl.value = config.webhookUrl;
   form.elements.enabled.checked = config.enabled;
-  document.getElementById("discordDot").style.background = config.enabled ? "var(--green)" : "#6f7975";
+  const dot = document.querySelector("#discordDot");
+  if (dot) dot.style.background = config.enabled ? "var(--green)" : "#6f7975";
   document.getElementById("discordModal").hidden = false;
 }
 async function loadDiscordStatus() {
   const config = await api("/api/notifications/discord");
-  document.getElementById("discordDot").style.background = config.enabled ? "var(--green)" : "#6f7975";
+  const dot = document.querySelector("#discordDot");
+  if (dot) dot.style.background = config.enabled ? "var(--green)" : "#6f7975";
+}
+
+function fillAdminNotificationForms() {
+  const discordForm = document.getElementById("adminDiscordForm");
+  if (discordForm && adminSettings?.discord) {
+    discordForm.elements.webhookUrl.value = "";
+    discordForm.elements.webhookUrl.placeholder = adminSettings.discord.configured || adminSettings.discord.webhookUrl
+      ? "Configured - leave blank to keep current webhook"
+      : "https://discord.com/api/webhooks/...";
+    discordForm.elements.enabled.checked = Boolean(adminSettings.discord.enabled);
+  }
+  const telegramForm = document.getElementById("adminTelegramForm");
+  if (telegramForm && adminSettings?.telegram) {
+    telegramForm.elements.botToken.value = "";
+    telegramForm.elements.botToken.placeholder = adminSettings.telegram.botToken
+      ? "Configured - leave blank to keep current token"
+      : "123456:ABC...";
+    telegramForm.elements.chatId.value = adminSettings.telegram.chatId || "";
+    telegramForm.elements.enabled.checked = Boolean(adminSettings.telegram.enabled);
+  }
 }
 
 async function loadAdminSettings() {
@@ -1827,12 +1862,13 @@ async function loadAdminSettings() {
     metricCard("Maintenance", adminSettings.maintenance.active ? "ON" : "OFF", adminSettings.maintenance.active ? `Until ${formatDate(adminSettings.maintenance.until)}` : "alerts are live", adminSettings.maintenance.active),
     metricCard("Enabled rules", adminSettings.alerts.enabledRules, "advanced alert rules"),
     metricCard("Active rule alerts", adminSettings.alerts.activeRules, `${adminSettings.alerts.acknowledgedRules} acknowledged`, adminSettings.alerts.activeRules > 0),
-    metricCard("Discord", adminSettings.discord.enabled ? "ON" : "OFF", adminSettings.discord.webhookUrl || "not configured")
+    metricCard("Alert channels", `${[adminSettings.discord.enabled, adminSettings.telegram.enabled].filter(Boolean).length}/2`, "Discord and Telegram delivery")
   );
   const featureForm = document.getElementById("featureSettingsForm");
   if (featureForm) for (const key of ["snmp", "docker", "network", "protect", "hikvision", "networkMap"]) featureForm.elements[key].checked = featureEnabled(key);
   const preferenceForm = document.getElementById("preferenceSettingsForm");
   if (preferenceForm) for (const key of ["browserNotifications", "mapShowInferredLinks", "mapShowUnifiClients", "mapReplaceInferredByDefault"]) preferenceForm.elements[key].checked = Boolean(preferenceSettings[key]);
+  fillAdminNotificationForms();
   document.getElementById("maintenanceStatus").textContent = adminSettings.maintenance.active ? `Active until ${formatDate(adminSettings.maintenance.until)}: ${adminSettings.maintenance.reason}` : "Maintenance is off. New alert rule incidents will notify normally.";
   list.replaceChildren();
   for (const [label, value] of [["Version", adminSettings.app.version], ["Node", adminSettings.app.node], ["Data directory", adminSettings.app.dataDir], ["SQLite database", adminSettings.storage.sqlitePath]]) {
@@ -1857,13 +1893,49 @@ document.getElementById("testDiscord").addEventListener("click", async () => {
 });
 document.getElementById("refreshNotifications").addEventListener("click", async () => { await loadIncidents(); await loadNotificationsPage(); showToast("Notifications refreshed", "Latest alert state loaded"); });
 document.getElementById("notificationOpenIncidents").addEventListener("click", openIncidents);
-document.getElementById("notificationOpenDiscord").addEventListener("click", openDiscord);
+document.getElementById("notificationOpenDiscord").addEventListener("click", () => showWorkspace("Admin Settings"));
 document.getElementById("notificationTestDiscord").addEventListener("click", async () => {
   try {
     await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
     await loadNotificationsPage();
     showToast("Discord test sent", "Check your Discord channel");
   } catch (err) { showToast("Discord test failed", err.message); }
+});
+document.getElementById("adminDiscordForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("adminDiscordError"); error.textContent = "";
+  try {
+    await api("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ webhookUrl: form.elements.webhookUrl.value, enabled: form.elements.enabled.checked }) });
+    adminSettings = await api("/api/admin/settings");
+    fillAdminNotificationForms();
+    await loadNotificationsPage();
+    showToast("Discord saved", form.elements.enabled.checked ? "Rich Discord alerts enabled" : "Discord alerts disabled");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("adminTestDiscord").addEventListener("click", async () => {
+  const error = document.getElementById("adminDiscordError"); error.textContent = "";
+  try {
+    await api("/api/notifications/discord/test", { method: "POST", body: "{}" });
+    showToast("Discord test sent", "Check your Discord channel");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("adminTelegramForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("adminTelegramError"); error.textContent = "";
+  try {
+    await api("/api/notifications/telegram", { method: "PUT", body: JSON.stringify({ botToken: form.elements.botToken.value, chatId: form.elements.chatId.value, enabled: form.elements.enabled.checked }) });
+    adminSettings = await api("/api/admin/settings");
+    fillAdminNotificationForms();
+    await loadNotificationsPage();
+    showToast("Telegram saved", form.elements.enabled.checked ? "Telegram alerts enabled" : "Telegram alerts disabled");
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("adminTestTelegram").addEventListener("click", async () => {
+  const error = document.getElementById("adminTelegramError"); error.textContent = "";
+  try {
+    await api("/api/notifications/telegram/test", { method: "POST", body: "{}" });
+    showToast("Telegram test sent", "Check your Telegram chat");
+  } catch (err) { error.textContent = err.message; }
 });
 document.getElementById("notificationPreferenceForm").addEventListener("submit", async (event) => {
   event.preventDefault();

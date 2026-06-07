@@ -431,6 +431,8 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .latest-data-row small { color: #6f7a75; font-size: 11px; }
 .latest-data-value { min-width: 96px; color: var(--ink); font-family: "DM Mono"; font-size: 12px; text-align: right; }
 .latest-metric-chart { margin-top: 12px; border: 1px solid var(--line); border-radius: 12px; background: rgba(255,255,255,.55); }
+.admin-notification-panel { grid-column: 1 / -1; }
+.notification-channel-grid { display: grid; grid-template-columns: repeat(2, minmax(260px, 1fr)); gap: 14px; }
 .snmp-workspace { min-height: calc(100vh - 76px); }
 .snmp-alert-panel, .snmp-profile-panel { min-height: 310px; }
 .snmp-fleet-panel { grid-column: 1 / -1; }
@@ -530,6 +532,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
   .heading-actions { display: none; }
   .dashboard-grid { grid-template-columns: 1fr; }
   .auvik-command-grid { grid-template-columns: 1fr; }
+  .notification-channel-grid { grid-template-columns: 1fr; }
   .snmp-panel { grid-column: auto; }
   .nav-item { min-height: 46px; font-size: 14px; }
   .nav-label, .brand-copy small, .sidebar-footer small { font-size: 11px; }

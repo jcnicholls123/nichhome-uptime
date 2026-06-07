@@ -12,6 +12,16 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.1.2] - 2026-06-07
+
+### Fixed
+
+- Add Host now shows the hostname/IP target field when creating a first SNMP
+  item, so SNMP hosts can be created in one pass
+- Collapsible host item rows now align their expand control, item text, status,
+  and action buttons correctly instead of stacking actions down the left edge
+- Host item action buttons now keep usable widths on mobile and desktop
+
 ## [1.1.1] - 2026-06-07
 
 ### Added

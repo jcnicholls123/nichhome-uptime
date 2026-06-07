@@ -1444,6 +1444,7 @@ async function renderSelectedHost(hostId = selectedHostId) {
     const trigger = document.createElement("button"); trigger.className = "monitor-action"; trigger.textContent = "trigger"; trigger.disabled = !triggerable || item.missing; trigger.title = "Create trigger for this item"; trigger.addEventListener("click", () => openAlertRule(null, { targetType: item.itemType, targetId: item.itemId, name: `${item.name} trigger` }));
     const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.title = "Remove from host"; remove.addEventListener("click", async () => { await api(`/api/hosts/${host.id}/items/${encodeURIComponent(item.itemType)}/${encodeURIComponent(item.itemId)}`, { method: "DELETE" }); await Promise.all([loadHosts(), loadNetworkMap(), loadAlertRules()]); selectedHostId = host.id; await renderSelectedHost(host.id); });
     actions.append(refresh, graph, trigger, remove);
+    actions.addEventListener("click", (event) => event.stopPropagation());
     summary.append(copy, status, actions);
     const variables = document.createElement("div"); variables.className = "host-variable-list";
     if (!latest.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No latest variables collected for this item yet."; variables.append(empty); }
@@ -1535,7 +1536,7 @@ function updateHostInitialExistingSelect() {
 async function updateHostInitialFields() {
   const mode = document.getElementById("hostInitialMode")?.value || "none";
   document.querySelectorAll("[data-host-initial]").forEach((item) => { item.hidden = true; });
-  const monitorModes = ["ping", "http", "tcp", "api"];
+  const monitorModes = ["ping", "http", "tcp", "api", "snmp"];
   if (monitorModes.includes(mode)) document.querySelector('[data-host-initial="monitor"]').hidden = false;
   if (mode === "api") document.querySelector('[data-host-initial="api"]').hidden = false;
   if (mode === "snmp") { document.querySelector('[data-host-initial="snmp"]').hidden = false; updateHostInitialSnmpProfiles(); }

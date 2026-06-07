@@ -266,7 +266,7 @@ document.querySelector("#monitorForm select[name=type]").addEventListener("chang
     event.target.value = "http";
     return;
   }
-  document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "192.168.1.10:443" : event.target.value === "ping" ? "192.168.1.10" : "https://home.example.com";
+  document.querySelector("#monitorForm input[name=target]").placeholder = event.target.value === "tcp" ? "service.example.local:443" : event.target.value === "ping" ? "service.example.local" : "https://status.example.com";
 });
 mobileMenuButton.addEventListener("click", () => setMobileMenu(!sidebar.classList.contains("open")));
 sidebarBackdrop.addEventListener("click", () => setMobileMenu(false));
@@ -2449,7 +2449,7 @@ function toggleDockerEndpoint() {
   const type = form.elements.connectionType.value;
   const socket = type === "socket";
   const endpoint = form.elements.endpoint;
-  endpoint.placeholder = socket ? "/var/run/docker.sock" : `${type}://192.168.1.10:${type === "https" ? "2376" : "2375"}`;
+  endpoint.placeholder = socket ? "/var/run/docker.sock" : `${type}://docker.example.local:${type === "https" ? "2376" : "2375"}`;
   if (socket && /^https?:\/\//.test(endpoint.value)) endpoint.value = "/var/run/docker.sock";
   if (!socket && endpoint.value.startsWith("/")) endpoint.value = endpoint.placeholder;
   if (!socket && /^https?:\/\//.test(endpoint.value) && !endpoint.value.startsWith(`${type}://`)) endpoint.value = endpoint.value.replace(/^https?/, type);

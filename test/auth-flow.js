@@ -21,28 +21,28 @@ const dockerContainerListRequests = [];
 const dockerServer = http.createServer((req, res) => {
   res.setHeader("Content-Type", "application/json");
   if (req.url === "/proxy/network/integration/v1/sites") {
-    if (req.headers["x-api-key"] !== "network-test-key") {
+    if (req.headers["x-api-key"] !== "dummy-network-api-key") {
       res.statusCode = 401;
       return res.end(JSON.stringify({ error: "bad key" }));
     }
     return res.end(JSON.stringify({ data: [{ id: "default", name: "Default" }] }));
   }
   if (req.url === "/proxy/network/integration/v1/sites/default/devices?offset=0&limit=250") return res.end(JSON.stringify({ data: [
-    { id: "gw1", name: "UCG Fiber", model: "UCG-Fiber", macAddress: "aa:bb:cc:dd:ee:01", ipAddress: "192.168.1.1", state: "ONLINE", features: ["gateway"], firmwareVersion: "4.1.0", latestFirmwareVersion: "4.1.2", updateAvailable: true },
-    { id: "ap1", name: "U7 Pro Max", model: "U7-Pro-Max", macAddress: "aa:bb:cc:dd:ee:02", ipAddress: "192.168.1.2", state: "OFFLINE", features: ["accessPoint"], firmwareVersion: "7.0.0" }
+    { id: "gw1", name: "Example Gateway", model: "UCG-Fiber", macAddress: "aa:bb:cc:dd:ee:01", ipAddress: "198.51.100.1", state: "ONLINE", features: ["gateway"], firmwareVersion: "4.1.0", latestFirmwareVersion: "4.1.2", updateAvailable: true },
+    { id: "ap1", name: "Example AP", model: "U7-Pro-Max", macAddress: "aa:bb:cc:dd:ee:02", ipAddress: "198.51.100.2", state: "OFFLINE", features: ["accessPoint"], firmwareVersion: "7.0.0" }
   ] }));
   if (req.url === "/proxy/network/integration/v1/sites/default/clients?offset=0&limit=500") return res.end(JSON.stringify({ data: [
-    { id: "client1", name: "iPhone", macAddress: "aa:bb:cc:dd:ee:10", ipAddress: "192.168.1.50", type: "WIRELESS", uplinkDeviceId: "ap1", connectedAt: new Date().toISOString() },
-    { id: "client2", name: "NAS", macAddress: "aa:bb:cc:dd:ee:11", ipAddress: "192.168.1.60", type: "WIRED", uplinkDeviceId: "gw1", connectedAt: new Date().toISOString() }
+    { id: "client1", name: "Example phone", macAddress: "aa:bb:cc:dd:ee:10", ipAddress: "198.51.100.50", type: "WIRELESS", uplinkDeviceId: "ap1", connectedAt: new Date().toISOString() },
+    { id: "client2", name: "Example NAS", macAddress: "aa:bb:cc:dd:ee:11", ipAddress: "198.51.100.60", type: "WIRED", uplinkDeviceId: "gw1", connectedAt: new Date().toISOString() }
   ] }));
   if (req.url === "/proxy/protect/integration/v1/cameras") {
-    if (req.headers["x-api-key"] !== "protect-test-key") {
+    if (req.headers["x-api-key"] !== "dummy-protect-api-key") {
       res.statusCode = 401;
       return res.end(JSON.stringify({ error: "bad key" }));
     }
     return res.end(JSON.stringify([
-      { id: "cam1", name: "Front Door", state: "CONNECTED", isConnected: true, marketName: "G5 Bullet", host: "192.168.1.50", lastSeen: Date.now(), recordingSettings: { mode: "always" } },
-      { id: "cam2", name: "Garage", state: "DISCONNECTED", isConnected: false, marketName: "G4 Instant", host: "192.168.1.51", lastSeen: Math.floor(Date.now() / 1000), recordingSettings: { mode: "detections" } }
+      { id: "cam1", name: "Entry Camera", state: "CONNECTED", isConnected: true, marketName: "G5 Bullet", host: "198.51.100.70", lastSeen: Date.now(), recordingSettings: { mode: "always" } },
+      { id: "cam2", name: "Warehouse Camera", state: "DISCONNECTED", isConnected: false, marketName: "G4 Instant", host: "198.51.100.71", lastSeen: Math.floor(Date.now() / 1000), recordingSettings: { mode: "detections" } }
     ]));
   }
   if (req.url === "/ISAPI/System/deviceInfo") {
@@ -55,11 +55,11 @@ const dockerServer = http.createServer((req, res) => {
   }
   if (req.url === "/ISAPI/ContentMgmt/InputProxy/channels") {
     res.setHeader("Content-Type", "application/xml");
-    return res.end("<InputProxyChannelList><InputProxyChannel><id>1</id><name>Driveway</name><ipAddress>192.168.1.70</ipAddress><online>true</online></InputProxyChannel><InputProxyChannel><id>2</id><name>Garden</name><ipAddress>192.168.1.71</ipAddress><online>false</online></InputProxyChannel></InputProxyChannelList>");
+    return res.end("<InputProxyChannelList><InputProxyChannel><id>1</id><name>Camera One</name><ipAddress>198.51.100.80</ipAddress><online>true</online></InputProxyChannel><InputProxyChannel><id>2</id><name>Camera Two</name><ipAddress>198.51.100.81</ipAddress><online>false</online></InputProxyChannel></InputProxyChannelList>");
   }
   if (req.url === "/_ping") return res.end("OK");
   if (req.url === "/api/states/sensor.zigbee_bridge") {
-    if (req.headers.authorization !== "Bearer home-assistant-test") {
+    if (req.headers.authorization !== "Bearer dummy-api-token") {
       res.statusCode = 401;
       return res.end(JSON.stringify({ error: "bad token" }));
     }
@@ -125,7 +125,7 @@ async function waitForServer() {
     assert.ok(appJs.includes("function openMapLinkForm"));
     assert.ok(appJs.includes("Correct where this device comes from"));
     await waitForServer();
-    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.2.0", channel: "stable" });
+    assert.deepEqual(await (await request("/api/version")).json(), { name: "NichHome Uptime", version: "1.3.0", channel: "stable" });
     assert.deepEqual(await (await request("/api/setup/status")).json(), { required: true });
     assert.equal((await request("/")).status, 302);
     assert.equal((await request("/api/setup", { method: "POST", body: JSON.stringify({ username: "admin", password: "1234567" }) })).status, 400);
@@ -135,9 +135,9 @@ async function waitForServer() {
     const initialProfile = await (await request("/api/me")).json();
     assert.equal(initialProfile.username, "admin");
     assert.equal(initialProfile.displayName, "");
-    assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "James" }) })).status, 200);
+    assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "Alex" }) })).status, 200);
     const namedProfile = await (await request("/api/me")).json();
-    assert.equal(namedProfile.displayName, "James");
+    assert.equal(namedProfile.displayName, "Alex");
     assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "J" }) })).status, 400);
     assert.equal((await request("/api/me", { method: "PUT", body: JSON.stringify({ displayName: "" }) })).status, 200);
     assert.equal((await (await request("/api/me")).json()).displayName, "");
@@ -176,7 +176,7 @@ async function waitForServer() {
     assert.equal(pingMonitors[0].status, "up");
     assert.ok(pingMonitors[0].responseMs <= 1);
     assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Offline service", type: "tcp", target: "127.0.0.1:1", intervalSeconds: 20, timeoutSeconds: 1 }) })).status, 201);
-    assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Zigbee bridge API", type: "api", target: `http://127.0.0.1:${dockerPort}/api/states/sensor.zigbee_bridge`, apiHeaders: "{\"Authorization\":\"Bearer home-assistant-test\"}", apiJsonPath: "state", apiExpectedValue: "online", intervalSeconds: 20, timeoutSeconds: 5 }) })).status, 201);
+    assert.equal((await request("/api/monitors", { method: "POST", body: JSON.stringify({ name: "Zigbee bridge API", type: "api", target: `http://127.0.0.1:${dockerPort}/api/states/sensor.zigbee_bridge`, apiHeaders: "{\"Authorization\":\"Bearer dummy-api-token\"}", apiJsonPath: "state", apiExpectedValue: "online", intervalSeconds: 20, timeoutSeconds: 5 }) })).status, 201);
     const apiMonitor = (await (await request("/api/monitors")).json()).find((monitor) => monitor.name === "Zigbee bridge API");
     assert.equal(apiMonitor.type, "api");
     assert.equal(apiMonitor.status, "up");
@@ -200,13 +200,13 @@ async function waitForServer() {
     assert.equal((await (await request("/api/incidents")).json()).length >= 1, true);
     const zabbixExport = {
       exportedAt: "2026-06-07T14:55:32+01:00",
-      hosts: [{ hostid: "9001", host: "10.69.24.5", name: "Migrated HA", description: "Imported host", macros: [{ macro: "{$TOKEN}", value: "secret" }], tags: [{ tag: "component", value: "home-assistant" }], interfaces: [] }],
+      hosts: [{ hostid: "9001", host: "app.example.local", name: "Migrated API Host", description: "Imported host", macros: [{ macro: "{$TOKEN}", value: "placeholder value" }], tags: [{ tag: "component", value: "api" }], interfaces: [] }],
       items: [
         { itemid: "7001", hostid: "9001", name: "ICMP response time", key_: "icmppingsec", type: 3, value_type: 0, delay: "1m", units: "s", preprocessing: [] },
-        { itemid: "7002", hostid: "9001", name: "ZHA offline device count", key_: "ha.zha.offline", type: 19, value_type: 3, delay: "1m", units: "", url: "http://10.69.24.5/api/states/sensor.zha_offline", preprocessing: [{ type: "JSONPATH", parameters: "$.state" }] }
+        { itemid: "7002", hostid: "9001", name: "API offline device count", key_: "api.offline.count", type: 19, value_type: 3, delay: "1m", units: "", url: "https://api.example.local/states/sensor.offline", preprocessing: [{ type: "JSONPATH", parameters: "$.state" }] }
       ],
-      triggers: [{ triggerid: "8001", description: "HA latency is high", expression: "avg(/Migrated HA/icmppingsec,5m)>50", priority: 3, status: 0, comments: "Latency over 50 ms for 5 minutes", opdata: "Check HA network path" }],
-      webScenarios: [{ httptestid: "6001", hostid: "9001", name: "Home Assistant availability", delay: "1m", steps: [{ name: "GET Home Assistant", url: "http://10.69.24.5:8123" }] }]
+      triggers: [{ triggerid: "8001", description: "API latency is high", expression: "avg(/Migrated API Host/icmppingsec,5m)>50", priority: 3, status: 0, comments: "Latency over 50 ms for 5 minutes", opdata: "Check API network path" }],
+      webScenarios: [{ httptestid: "6001", hostid: "9001", name: "Example API availability", delay: "1m", steps: [{ name: "GET Example API", url: "https://api.example.local/health" }] }]
     };
     const dryRun = await (await request("/api/zabbix/import", { method: "POST", body: JSON.stringify({ export: zabbixExport, dryRun: true }) })).json();
     assert.deepEqual(dryRun.preview, { hosts: 1, items: 2, triggers: 1, webScenarios: 1 });
@@ -216,18 +216,32 @@ async function waitForServer() {
     assert.equal(zabbixImported.summary.hostsCreated, 1);
     assert.equal(zabbixImported.summary.itemsCreated, 2);
     assert.equal(zabbixImported.summary.triggersCreated, 1);
-    const migratedHost = (await (await request("/api/hosts")).json()).find((host) => host.name === "Migrated HA");
+    const secondImport = await (await request("/api/zabbix/import", { method: "POST", body: JSON.stringify({ export: zabbixExport }) })).json();
+    assert.equal(secondImport.summary.hostsCreated, 0);
+    assert.equal(secondImport.summary.itemsCreated, 0);
+    assert.equal(secondImport.summary.itemsUpdated, 2);
+    const migratedHost = (await (await request("/api/hosts")).json()).find((host) => host.name === "Migrated API Host");
     assert.equal(migratedHost.itemCount, 2);
     const migratedDetail = await (await request(`/api/hosts/${migratedHost.id}`)).json();
     assert.equal(migratedDetail.macros[0].macro, "{$TOKEN}");
+    assert.equal(migratedDetail.macros[0].isSecret, true);
+    assert.equal(migratedDetail.macros[0].value, "");
     assert.equal(migratedDetail.hostTags[0].tag, "component");
-    assert.equal(migratedDetail.webScenarios[0].name, "Home Assistant availability");
+    assert.equal(migratedDetail.webScenarios[0].name, "Example API availability");
     assert.equal(migratedDetail.latestData.some((item) => item.targetType === "custom" && item.metricLabel === "ICMP response time"), true);
     const customMetrics = await (await request(`/api/custom-metrics?hostId=${migratedHost.id}`)).json();
     assert.equal(customMetrics.length, 2);
     assert.equal((await request(`/api/custom-metrics/${customMetrics[0].id}/value`, { method: "POST", body: JSON.stringify({ value: "60", status: "up" }) })).status, 200);
+    const customCreate = await request("/api/custom-metrics", { method: "POST", body: JSON.stringify({ hostId: migratedHost.id, name: "Generic JSON API state", key: "example.api.state", url: `http://127.0.0.1:${dockerPort}/api/states/sensor.zigbee_bridge`, method: "GET", headers: { Authorization: "Bearer dummy-api-token" }, extractType: "json", jsonPath: "state", units: "", intervalSeconds: 20, timeoutSeconds: 5 }) });
+    assert.equal(customCreate.status, 201);
+    const createdCustom = await customCreate.json();
+    assert.equal((await request(`/api/custom-metrics/${createdCustom.id}/poll`, { method: "POST", body: "{}" })).status, 200);
+    const customAfterCreate = await (await request(`/api/custom-metrics?hostId=${migratedHost.id}`)).json();
+    const genericItem = customAfterCreate.find((item) => item.id === createdCustom.id);
+    assert.equal(genericItem.lastValue, "online");
+    assert.equal(genericItem.params.headers.Authorization, "configured");
     const customAlertOptions = await (await request("/api/alert-rules/options")).json();
-    assert.equal(customAlertOptions.custom.some((target) => target.name.includes("Migrated HA")), true);
+    assert.equal(customAlertOptions.custom.some((target) => target.name.includes("Migrated API Host")), true);
     assert.equal((await (await request("/api/zabbix/import-runs")).json()).length > 0, true);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: true, webhookUrl: "https://example.com/nope" }) })).status, 400);
     assert.equal((await request("/api/notifications/discord", { method: "PUT", body: JSON.stringify({ enabled: false, webhookUrl: "" }) })).status, 200);
@@ -235,11 +249,11 @@ async function waitForServer() {
     assert.equal((await request("/api/notifications/telegram", { method: "PUT", body: JSON.stringify({ enabled: false, botToken: "", chatId: "" }) })).status, 200);
     assert.equal((await request("/api/notifications/email", { method: "PUT", body: JSON.stringify({ enabled: true, host: "", port: 587, from: "bad", to: "" }) })).status, 400);
     assert.equal((await request("/api/notifications/email", { method: "PUT", body: JSON.stringify({ enabled: false, host: "", port: 587, from: "", to: "" }) })).status, 200);
-    assert.equal((await request("/api/admin/ui", { method: "PUT", body: JSON.stringify({ brandName: "JamesHome", brandSubtitle: "OPS DASH", brandMark: "JH", dashboardWidgets: { docker: false, problems: true } }) })).status, 200);
+    assert.equal((await request("/api/admin/ui", { method: "PUT", body: JSON.stringify({ brandName: "ExampleOps", brandSubtitle: "OPS DASH", brandMark: "EO", dashboardWidgets: { docker: false, problems: true } }) })).status, 200);
     const notificationAdminSettings = await (await request("/api/admin/settings")).json();
     assert.equal(notificationAdminSettings.telegram.enabled, false);
     assert.equal(notificationAdminSettings.email.enabled, false);
-    assert.equal(notificationAdminSettings.ui.brandName, "JamesHome");
+    assert.equal(notificationAdminSettings.ui.brandName, "ExampleOps");
     assert.equal(notificationAdminSettings.ui.dashboardWidgets.docker, false);
     assert.equal((await request("/api/dashboard/history")).status, 200);
     assert.equal((await request("/api/dashboard/history?range=90d")).status, 200);
@@ -284,7 +298,11 @@ async function waitForServer() {
     assert.equal(templateResponse.status, 200);
     assert.ok((await templateResponse.json()).created.length >= 1);
     const adminSettings = await (await request("/api/admin/settings")).json();
-    assert.equal(adminSettings.app.version, "1.2.0");
+    assert.equal(adminSettings.app.version, "1.3.0");
+    assert.equal(adminSettings.storage.retentionDays, 30);
+    assert.equal((await request("/api/admin/storage", { method: "PUT", body: JSON.stringify({ retentionDays: 45 }) })).status, 200);
+    assert.equal((await (await request("/api/admin/settings")).json()).storage.retentionDays, 45);
+    assert.equal((await request("/api/admin/storage", { method: "PUT", body: JSON.stringify({ retentionDays: 30 }) })).status, 200);
     assert.deepEqual(adminSettings.features, { snmp: true, docker: true, network: true, protect: true, hikvision: true, networkMap: true });
     assert.equal(adminSettings.preferences.mapReplaceInferredByDefault, true);
     assert.equal((await request("/api/admin/preferences", { method: "PUT", body: JSON.stringify({ browserNotifications: true, mapShowInferredLinks: true, mapShowUnifiClients: true, mapReplaceInferredByDefault: false }) })).status, 200);
@@ -336,9 +354,9 @@ async function waitForServer() {
     assert.equal((await request("/api/protect/status")).status, 200);
     assert.deepEqual(await (await request("/api/protect/cameras")).json(), []);
     assert.equal((await request("/api/protect/refresh", { method: "POST", body: "{}" })).status, 400);
-    assert.equal((await request("/api/protect/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "protect-test-key" }) })).status, 200);
-    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "protect-test-key" }) })).status, 201);
-    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Protect", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "protect-test-key" }) })).status, 409);
+    assert.equal((await request("/api/protect/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "dummy-protect-api-key" }) })).status, 200);
+    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Test Protect", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "dummy-protect-api-key" }) })).status, 201);
+    assert.equal((await request("/api/protect/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Protect", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "dummy-protect-api-key" }) })).status, 409);
     const protectHosts = await (await request("/api/protect/hosts")).json();
     assert.equal(protectHosts.length, 1);
     assert.equal(protectHosts[0].status, "up");
@@ -347,8 +365,13 @@ async function waitForServer() {
     assert.equal(protectStatus.offline, 1);
     const protectCameras = await (await request("/api/protect/cameras")).json();
     assert.equal(protectCameras.length, 2);
-    assert.equal(protectCameras.some((camera) => camera.name === "Front Door" && camera.status === "up"), true);
-    assert.equal(protectCameras.some((camera) => camera.name === "Garage" && camera.status === "down"), true);
+    assert.equal(protectCameras.some((camera) => camera.name === "Entry Camera" && camera.status === "up"), true);
+    assert.equal(protectCameras.some((camera) => camera.name === "Warehouse Camera" && camera.status === "down"), true);
+    const protectAlertOptions = await (await request("/api/alert-rules/options")).json();
+    const protectTarget = protectAlertOptions.protect.find((camera) => camera.name.includes("Warehouse Camera"));
+    assert.equal(protectTarget.metrics.some((metric) => metric.key === "state" && metric.value === "DISCONNECTED"), true);
+    assert.equal(protectTarget.metrics.some((metric) => metric.key === "last_poll_age_seconds"), true);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Warehouse Camera connected", targetType: "protect", targetId: protectTarget.id, metricKey: "state", operator: "!=", threshold: "CONNECTED", severity: "high", description: "Protect camera should be connected", actionText: "Check camera power and network", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
     assert.equal((await request("/api/protect/refresh", { method: "POST", body: JSON.stringify({ hostId: protectHosts[0].id }) })).status, 200);
     const protectMap = await (await request("/api/network-map")).json();
     assert.equal(protectMap.nodes.some((node) => node.type === "protect-host"), true);
@@ -365,10 +388,10 @@ async function waitForServer() {
     assert.equal(hikvisionStatus.total, 2);
     assert.equal(hikvisionStatus.offline, 1);
     const hikvisionCameras = await (await request("/api/hikvision/cameras")).json();
-    assert.equal(hikvisionCameras.some((camera) => camera.name === "Driveway" && camera.status === "up"), true);
-    assert.equal(hikvisionCameras.some((camera) => camera.name === "Garden" && camera.status === "down"), true);
+    assert.equal(hikvisionCameras.some((camera) => camera.name === "Camera One" && camera.status === "up"), true);
+    assert.equal(hikvisionCameras.some((camera) => camera.name === "Camera Two" && camera.status === "down"), true);
     const hikvisionAlertOptions = await (await request("/api/alert-rules/options")).json();
-    const hikvisionTarget = hikvisionAlertOptions.hikvision.find((camera) => camera.name.includes("Driveway"));
+    const hikvisionTarget = hikvisionAlertOptions.hikvision.find((camera) => camera.name.includes("Camera One"));
     assert.ok(hikvisionTarget.metrics.some((metric) => metric.key === "status"));
     assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "hikvision-camera-health", targetType: "hikvision", targetId: hikvisionTarget.id }) })).status, 200);
     const hikvisionMap = await (await request("/api/network-map")).json();
@@ -378,9 +401,9 @@ async function waitForServer() {
     assert.equal((await request("/api/unifi-network/status")).status, 200);
     assert.deepEqual(await (await request("/api/unifi-network/devices")).json(), []);
     assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: "{}" })).status, 400);
-    assert.equal((await request("/api/unifi-network/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "network-test-key" }) })).status, 200);
-    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "network-test-key" }) })).status, 201);
-    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Network", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "network-test-key" }) })).status, 409);
+    assert.equal((await request("/api/unifi-network/hosts/test", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "dummy-network-api-key" }) })).status, 200);
+    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Test Network", endpoint: `http://127.0.0.1:${dockerPort}`, apiKey: "dummy-network-api-key" }) })).status, 201);
+    assert.equal((await request("/api/unifi-network/hosts", { method: "POST", body: JSON.stringify({ name: "Duplicate Network", endpoint: `http://127.0.0.1:${dockerPort}/`, apiKey: "dummy-network-api-key" }) })).status, 409);
     const networkHosts = await (await request("/api/unifi-network/hosts")).json();
     assert.equal(networkHosts.length, 1);
     assert.equal(networkHosts[0].status, "up");
@@ -390,17 +413,17 @@ async function waitForServer() {
     assert.equal(networkStatus.offlineDevices, 1);
     assert.equal(networkStatus.clients, 2);
     const networkDevices = await (await request("/api/unifi-network/devices")).json();
-    assert.equal(networkDevices.some((device) => device.name === "UCG Fiber" && device.deviceType === "gateway"), true);
-    assert.equal(networkDevices.some((device) => device.name === "UCG Fiber" && device.updateAvailable === true), true);
-    assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.status === "down"), true);
+    assert.equal(networkDevices.some((device) => device.name === "Example Gateway" && device.deviceType === "gateway"), true);
+    assert.equal(networkDevices.some((device) => device.name === "Example Gateway" && device.updateAvailable === true), true);
+    assert.equal(networkDevices.some((device) => device.name === "Example AP" && device.status === "down"), true);
     const networkClients = await (await request("/api/unifi-network/clients")).json();
     assert.equal(networkClients.length, 2);
-    assert.equal(networkDevices.some((device) => device.name === "U7 Pro Max" && device.clientCount === 1), true);
+    assert.equal(networkDevices.some((device) => device.name === "Example AP" && device.clientCount === 1), true);
     const unifiAlertOptions = await (await request("/api/alert-rules/options")).json();
-    const unifiUpdateTarget = unifiAlertOptions.unifi.find((device) => device.name.includes("UCG Fiber"));
+    const unifiUpdateTarget = unifiAlertOptions.unifi.find((device) => device.name.includes("Example Gateway"));
     assert.equal(unifiUpdateTarget.metrics.some((metric) => metric.key === "update_available" && metric.value === 1), true);
-    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber update available", targetType: "unifi", targetId: `unifi:${unifiUpdateTarget.id}`, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi update waiting", actionText: "Schedule firmware update", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
-    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "UCG Fiber status", targetType: "unifi", targetId: unifiUpdateTarget.id, metricKey: "status", operator: "!=", threshold: "up", severity: "warning", description: "UniFi status changed", actionText: "Check UniFi Network", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Example Gateway update available", targetType: "unifi", targetId: `unifi:${unifiUpdateTarget.id}`, metricKey: "update_available", operator: "==", threshold: "1", severity: "information", description: "UniFi update waiting", actionText: "Schedule firmware update", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "Example Gateway status", targetType: "unifi", targetId: unifiUpdateTarget.id, metricKey: "status", operator: "!=", threshold: "up", severity: "warning", description: "UniFi status changed", actionText: "Check UniFi Network", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
     assert.equal((await request("/api/alert-rules/templates/apply", { method: "POST", body: JSON.stringify({ template: "unifi-updates", targetType: "unifi", targetId: `unifi:${unifiUpdateTarget.id}` }) })).status, 200);
     assert.equal((await request("/api/unifi-network/refresh", { method: "POST", body: JSON.stringify({ hostId: networkHosts[0].id }) })).status, 200);
     const unifiMap = await (await request("/api/network-map")).json();
@@ -426,7 +449,7 @@ async function waitForServer() {
     assert.equal(importedOids.some((item) => item.valueType === "CHAR" && item.regex === "temp=([0-9.]+)'C"), true);
     assert.equal(importedOids.some((item) => item.valueType === "TEXT"), true);
     const nichhomeXml = `<?xml version="1.0"?><nichhome_template version="1.0"><template><name>Raspberry Pi SNMP Only</name><items><item><name>System uptime</name><key>system.uptime</key><oid>1.3.6.1.2.1.1.3.0</oid><type>timeticks</type><unit>uptime</unit></item><item><name>Raspberry Pi temperature raw</name><key>raspberrypi.temperature.raw</key><oid>1.3.6.1.4.1.8072.1.3.2.3.1.1.11.116.101.109.112.101.114.97.116.117.114.101</oid><type>string</type><preprocessing><step><type>regex</type><pattern>temp=([0-9.]+)</pattern><output>\\1</output></step></preprocessing></item><item><name>Raspberry Pi throttled raw</name><key>raspberrypi.throttled.raw</key><oid>1.3.6.1.4.1.8072.1.3.2.3.1.1.9.116.104.114.111.116.116.108.101.100</oid><type>string</type><preprocessing><step><type>regex</type><pattern>throttled=(0x[0-9A-Fa-f]+)</pattern><output>\\1</output></step></preprocessing></item><item><name>Raspberry Pi temperature</name><key>raspberrypi.temperature</key><source_key>raspberrypi.temperature.raw</source_key><type>numeric</type><unit>C</unit></item></items></template></nichhome_template>`;
-    const raspiImportResponse = await request("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ name: "James Nicholls", xml: nichhomeXml }) });
+    const raspiImportResponse = await request("/api/snmp/profiles/import", { method: "POST", body: JSON.stringify({ name: "Example Raspberry Pi", xml: nichhomeXml }) });
     assert.equal(raspiImportResponse.status, 201);
     const raspiImport = await raspiImportResponse.json();
     assert.equal(raspiImport.imported, 3);
@@ -441,8 +464,17 @@ async function waitForServer() {
     assert.equal(snmpDevices.length, 1);
     assert.equal(snmpDevices[0].status, "down");
     assert.equal(snmpDevices[0].profile.type, "network-device");
+    const writeDb = new Database(path.join(dataDir, "nichhome.sqlite"));
+    writeDb.prepare("INSERT INTO snmp_interfaces (device_id, interface_index, name, alias, admin_status, oper_status, speed_bps, in_octets, out_octets, in_errors, out_errors, in_discards, out_discards) VALUES (?, 1, 'if1', 'WAN', 1, 1, 1000000000, 1000, 2000, 0, 0, 0, 0)").run(snmpDevices[0].id);
+    writeDb.prepare("INSERT INTO snmp_interface_metrics (device_id, interface_index, in_octets, out_octets, in_errors, out_errors, in_discards, out_discards, admin_status, oper_status, speed_bps, recorded_at) VALUES (?, 1, 1000, 2000, 0, 0, 0, 0, 1, 1, 1000000000, datetime('now', '-2 minutes'))").run(snmpDevices[0].id);
+    writeDb.prepare("INSERT INTO snmp_interface_metrics (device_id, interface_index, in_octets, out_octets, in_errors, out_errors, in_discards, out_discards, admin_status, oper_status, speed_bps, recorded_at) VALUES (?, 1, 61000, 122000, 1, 0, 2, 0, 1, 1, 1000000000, datetime('now', '-1 minutes'))").run(snmpDevices[0].id);
+    writeDb.close();
     const snmpAlertOptions = await (await request("/api/alert-rules/options")).json();
     assert.equal(snmpAlertOptions.snmp.some((device) => String(device.id) === String(snmpDevices[0].id) && device.metrics.some((metric) => metric.key === "device|status")), true);
+    const interfaceTarget = snmpAlertOptions["snmp-interface"].find((target) => target.name.includes("WAN"));
+    assert.equal(interfaceTarget.metrics.some((metric) => metric.key === "in_bps" && metric.value > 0), true);
+    assert.equal(interfaceTarget.metrics.some((metric) => metric.key === "oper_status" && metric.value === 1), true);
+    assert.equal((await request("/api/alert-rules", { method: "POST", body: JSON.stringify({ name: "WAN upload high", targetType: "snmp-interface", targetId: interfaceTarget.id, metricKey: "out_bps", operator: ">", threshold: "1000", functionName: "avg", windowSeconds: 60, severity: "warning", description: "Interface upload above threshold", actionText: "Check traffic source", triggerCount: 1, recoveryCount: 1 }) })).status, 201);
     assert.equal((await (await request("/api/incidents")).json()).length >= 2, true);
     const snmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.ok(Array.isArray(snmpDetails.interfaces));
@@ -458,7 +490,7 @@ async function waitForServer() {
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], profileId: imported.id, community: "", enabled: true }) })).status, 200);
     const customDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.equal(customDetails.device.profile.assigned.id, imported.id);
-    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "U7 Pro Max", community: "", enabled: true }) })).status, 200);
+    assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "Example Access Point", community: "", enabled: true }) })).status, 200);
     const editedSnmpDetails = await (await request(`/api/snmp/devices/${snmpDevices[0].id}/details`)).json();
     assert.equal(editedSnmpDetails.device.profile.type, "access-point");
     assert.equal((await request(`/api/snmp/devices/${snmpDevices[0].id}`, { method: "PUT", body: JSON.stringify({ ...snmpDevices[0], name: "TrueNAS Storage", community: "", enabled: true }) })).status, 200);

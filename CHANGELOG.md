@@ -12,6 +12,28 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.3.0] - 2026-06-07
+
+### Added
+
+- UniFi Protect cameras are now alert-rule targets with camera status, Protect
+  state, recording mode, last-seen age, and last-poll age metrics
+- SNMP interfaces are now alert-rule targets with inbound/outbound bps, port
+  status, speed, errors, and discards for WAN and switch-port alerting
+- Ping monitors now store packet loss plus average/min/max latency metrics for
+  graphs and alert rules
+- Generic host-attached custom HTTP/API items with method, headers, body,
+  JSON/XML/RSS/text extraction, history, graphing, polling, and alert support
+- Alert windows now accept duration strings such as `1m`, `2m`, `5m`, and `30m`
+
+### Changed
+
+- Zabbix import masks secret-like macros in API responses and keeps imports
+  idempotent across reruns
+- README now documents public setup for SNMP, UniFi Network, UniFi Protect,
+  custom HTTP/API items, Zabbix import, alert rules, notifications, and retention
+- Public fixtures and placeholders now use neutral example data only
+
 ## [1.2.0] - 2026-06-07
 
 ### Added
@@ -221,7 +243,7 @@ include breaking changes while the monitoring engine and integrations mature.
 ### Fixed
 
 - The dashboard greeting now uses the signed-in username and local time of day
-  instead of the hardcoded `Good evening, James.`
+  instead of a hardcoded personal greeting
 
 ## [1.0.0-beta.27] - 2026-06-05
 

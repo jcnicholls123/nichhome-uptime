@@ -68,6 +68,10 @@ db.exec(`
     monitor_id INTEGER NOT NULL REFERENCES monitors(id) ON DELETE CASCADE,
     status TEXT NOT NULL,
     response_ms INTEGER,
+    packet_loss_percent REAL,
+    latency_avg_ms REAL,
+    latency_min_ms REAL,
+    latency_max_ms REAL,
     message TEXT,
     checked_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
@@ -164,6 +168,13 @@ db.exec(`
     interface_index INTEGER NOT NULL,
     in_octets INTEGER,
     out_octets INTEGER,
+    in_errors INTEGER,
+    out_errors INTEGER,
+    in_discards INTEGER,
+    out_discards INTEGER,
+    admin_status INTEGER,
+    oper_status INTEGER,
+    speed_bps INTEGER,
     recorded_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
   );
   CREATE INDEX IF NOT EXISTS snmp_interface_metrics_device_recorded ON snmp_interface_metrics(device_id, recorded_at DESC);
@@ -399,6 +410,8 @@ db.exec(`
     host_id INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
     macro TEXT NOT NULL,
     value TEXT,
+    value_hash TEXT,
+    is_secret INTEGER NOT NULL DEFAULT 0,
     description TEXT,
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY(host_id, macro)
@@ -519,6 +532,19 @@ ensureColumn("snmp_interfaces", "in_errors", "INTEGER");
 ensureColumn("snmp_interfaces", "out_errors", "INTEGER");
 ensureColumn("snmp_interfaces", "in_discards", "INTEGER");
 ensureColumn("snmp_interfaces", "out_discards", "INTEGER");
+ensureColumn("snmp_interface_metrics", "in_errors", "INTEGER");
+ensureColumn("snmp_interface_metrics", "out_errors", "INTEGER");
+ensureColumn("snmp_interface_metrics", "in_discards", "INTEGER");
+ensureColumn("snmp_interface_metrics", "out_discards", "INTEGER");
+ensureColumn("snmp_interface_metrics", "admin_status", "INTEGER");
+ensureColumn("snmp_interface_metrics", "oper_status", "INTEGER");
+ensureColumn("snmp_interface_metrics", "speed_bps", "INTEGER");
+ensureColumn("heartbeats", "packet_loss_percent", "REAL");
+ensureColumn("heartbeats", "latency_avg_ms", "REAL");
+ensureColumn("heartbeats", "latency_min_ms", "REAL");
+ensureColumn("heartbeats", "latency_max_ms", "REAL");
+ensureColumn("host_macros", "value_hash", "TEXT");
+ensureColumn("host_macros", "is_secret", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("snmp_profile_oids", "regex", "TEXT");
 ensureColumn("docker_containers", "host_id", "INTEGER");
 ensureColumn("docker_containers", "raw_container_id", "TEXT");
@@ -708,6 +734,59 @@ function migrateAlertRuleCustomTargets() {
 
 migrateAlertRuleCustomTargets();
 
+function migrateAlertRulePublicTargets() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
+  if (!table?.sql || (table.sql.includes("'protect'") && table.sql.includes("'snmp-interface'"))) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE alert_rule_incidents RENAME TO alert_rule_incidents_old;
+      ALTER TABLE alert_rules RENAME TO alert_rules_old;
+      CREATE TABLE alert_rules (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'snmp-interface', 'docker', 'unifi', 'protect', 'hikvision', 'monitor', 'custom')),
+        target_id TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        threshold TEXT NOT NULL,
+        function_name TEXT NOT NULL DEFAULT 'last',
+        window_seconds INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        severity TEXT NOT NULL DEFAULT 'warning',
+        description TEXT,
+        action_text TEXT,
+        trigger_count INTEGER NOT NULL DEFAULT 1,
+        recovery_count INTEGER NOT NULL DEFAULT 1,
+        failure_streak INTEGER NOT NULL DEFAULT 0,
+        recovery_streak INTEGER NOT NULL DEFAULT 0,
+        last_evaluated_at TEXT,
+        dependency_rule_id INTEGER
+      );
+      CREATE TABLE alert_rule_incidents (
+        id INTEGER PRIMARY KEY,
+        rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+        current_value TEXT,
+        cause TEXT,
+        acknowledged_at TEXT,
+        acknowledged_by TEXT,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT
+      );
+      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
+      SELECT id, name, target_type, target_id, metric_key, operator, threshold, COALESCE(function_name, 'last'), COALESCE(window_seconds, 0), enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
+      INSERT INTO alert_rule_incidents (id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at)
+      SELECT id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at FROM alert_rule_incidents_old WHERE rule_id IN (SELECT id FROM alert_rules);
+      DROP TABLE alert_rule_incidents_old;
+      DROP TABLE alert_rules_old;
+    `);
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+migrateAlertRulePublicTargets();
+
 function migrateMonitorTypes() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'monitors'").get();
   if (!table?.sql || table.sql.includes("'api'")) return;
@@ -763,6 +842,10 @@ function migrateMonitorTypes() {
 }
 
 migrateMonitorTypes();
+ensureColumn("heartbeats", "packet_loss_percent", "REAL");
+ensureColumn("heartbeats", "latency_avg_ms", "REAL");
+ensureColumn("heartbeats", "latency_min_ms", "REAL");
+ensureColumn("heartbeats", "latency_max_ms", "REAL");
 ensureColumn("monitors", "api_method", "TEXT NOT NULL DEFAULT 'GET'");
 ensureColumn("monitors", "api_headers", "TEXT");
 ensureColumn("monitors", "api_json_path", "TEXT");
@@ -1195,9 +1278,14 @@ function hikvisionAlertMetrics(camera) {
 }
 
 function monitorAlertMetrics(monitor) {
+  const latest = db.prepare("SELECT packet_loss_percent AS packetLossPercent, latency_avg_ms AS latencyAvgMs, latency_min_ms AS latencyMinMs, latency_max_ms AS latencyMaxMs FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT 1").get(monitor.id) || {};
   return [
     { key: "status", label: "Monitor status", value: monitor.status, unit: "" },
     { key: "response_ms", label: "Response time", value: monitor.response_ms, unit: "ms" },
+    { key: "packet_loss_percent", label: "Packet loss", value: latest.packetLossPercent, unit: "%" },
+    { key: "latency_avg_ms", label: "Average latency", value: latest.latencyAvgMs ?? monitor.response_ms, unit: "ms" },
+    { key: "latency_min_ms", label: "Minimum latency", value: latest.latencyMinMs ?? monitor.response_ms, unit: "ms" },
+    { key: "latency_max_ms", label: "Maximum latency", value: latest.latencyMaxMs ?? monitor.response_ms, unit: "ms" },
     { key: "last_error", label: "Last error", value: monitor.last_error || "", unit: "" },
     { key: "api_value", label: "API extracted value", value: monitor.api_value || "", unit: "" }
   ];
@@ -1215,6 +1303,73 @@ function customMetricAlertMetrics(item) {
     { key: "status", label: "Item status", value: item?.status || "unknown", unit: "" },
     { key: "nodata_seconds", label: "Seconds since last data", value: secondsSince(item?.last_polled_at), unit: "s" },
     { key: "last_error", label: "Last error", value: item?.last_error || "", unit: "" }
+  ];
+}
+
+function protectAlertMetrics(camera) {
+  return [
+    { key: "status", label: "Camera status", value: camera?.status || "unknown", unit: "" },
+    { key: "state", label: "Protect state", value: camera?.state || "", unit: "" },
+    { key: "recording_mode", label: "Recording mode", value: camera?.recording_mode || "", unit: "" },
+    { key: "last_seen_age_seconds", label: "Seconds since last seen", value: secondsSince(camera?.last_seen), unit: "s" },
+    { key: "last_poll_age_seconds", label: "Seconds since last poll", value: secondsSince(camera?.last_polled_at), unit: "s" }
+  ];
+}
+
+function maskSensitiveConfig(value) {
+  if (Array.isArray(value)) return value.map(maskSensitiveConfig);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+    const sensitive = /authorization|token|secret|key|password|cookie/i.test(key);
+    return [key, sensitive && entry ? "configured" : maskSensitiveConfig(entry)];
+  }));
+}
+
+function snmpInterfaceId(deviceId, interfaceIndex) {
+  return `${deviceId}:${interfaceIndex}`;
+}
+
+function parseSnmpInterfaceId(value) {
+  const [deviceId, interfaceIndex] = String(value || "").split(":").map(Number);
+  return Number.isFinite(deviceId) && Number.isFinite(interfaceIndex) ? { deviceId, interfaceIndex } : null;
+}
+
+function snmpInterfaceRecord(targetId) {
+  const parsed = parseSnmpInterfaceId(targetId);
+  if (!parsed) return null;
+  return db.prepare(`
+    SELECT snmp_interfaces.*, snmp_devices.name AS device_name
+    FROM snmp_interfaces JOIN snmp_devices ON snmp_devices.id = snmp_interfaces.device_id
+    WHERE snmp_interfaces.device_id = ? AND snmp_interfaces.interface_index = ?
+  `).get(parsed.deviceId, parsed.interfaceIndex);
+}
+
+function snmpInterfaceRates(deviceId, interfaceIndex) {
+  const rows = db.prepare("SELECT in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND interface_index = ? ORDER BY recorded_at DESC LIMIT 2").all(deviceId, interfaceIndex);
+  if (rows.length < 2) return { inBps: null, outBps: null };
+  const [latest, previous] = rows;
+  const seconds = (new Date(`${latest.recordedAt}Z`) - new Date(`${previous.recordedAt}Z`)) / 1000;
+  if (seconds <= 0) return { inBps: null, outBps: null };
+  const inDelta = Number(latest.inOctets) - Number(previous.inOctets);
+  const outDelta = Number(latest.outOctets) - Number(previous.outOctets);
+  return {
+    inBps: inDelta >= 0 ? Number(((inDelta * 8) / seconds).toFixed(2)) : null,
+    outBps: outDelta >= 0 ? Number(((outDelta * 8) / seconds).toFixed(2)) : null
+  };
+}
+
+function snmpInterfaceAlertMetrics(row) {
+  const rates = row ? snmpInterfaceRates(row.device_id, row.interface_index) : {};
+  return [
+    { key: "in_bps", label: "Download / inbound bps", value: rates.inBps, unit: "bps" },
+    { key: "out_bps", label: "Upload / outbound bps", value: rates.outBps, unit: "bps" },
+    { key: "admin_status", label: "Admin status", value: row?.admin_status ?? null, unit: "" },
+    { key: "oper_status", label: "Operational status", value: row?.oper_status ?? null, unit: "" },
+    { key: "speed_bps", label: "Interface speed", value: row?.speed_bps ?? null, unit: "bps" },
+    { key: "in_errors", label: "Inbound errors", value: row?.in_errors ?? 0, unit: "" },
+    { key: "out_errors", label: "Outbound errors", value: row?.out_errors ?? 0, unit: "" },
+    { key: "in_discards", label: "Inbound discards", value: row?.in_discards ?? 0, unit: "" },
+    { key: "out_discards", label: "Outbound discards", value: row?.out_discards ?? 0, unit: "" }
   ];
 }
 
@@ -1317,6 +1472,7 @@ function latestMetricTrend(row) {
     if (category === "device" && key === "response_ms") values = numeric(db.prepare("SELECT response_ms AS value FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL ORDER BY polled_at DESC LIMIT 2").all(Number(row.targetId)));
     else values = numeric(db.prepare("SELECT value FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? ORDER BY recorded_at DESC LIMIT 2").all(Number(row.targetId), category, key));
   }
+  if (row.targetType === "snmp-interface") values = numeric(alertMetricSamples({ target_type: "snmp-interface", target_id: row.targetId, metric_key: row.metricKey, window_seconds: 86400 }).slice(0, 2));
   if (row.targetType === "custom" && row.metricKey === "value") values = numeric(db.prepare("SELECT value FROM custom_metric_history WHERE item_id = ? ORDER BY recorded_at DESC LIMIT 2").all(Number(row.targetId)));
   if (values.length < 2) return { change: null, trend: "flat" };
   const change = Number((values[0] - values[1]).toFixed(3));
@@ -1326,8 +1482,15 @@ function latestMetricTrend(row) {
 function latestDataRows() {
   const rows = [];
   for (const monitor of db.prepare("SELECT * FROM monitors ORDER BY name").all()) {
+    const pingStats = monitor.target.startsWith("ping://") ? db.prepare("SELECT packet_loss_percent AS packetLossPercent, latency_avg_ms AS latencyAvgMs, latency_min_ms AS latencyMinMs, latency_max_ms AS latencyMaxMs FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT 1").get(monitor.id) || {} : {};
     rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "status", metricLabel: "Monitor status", value: monitor.status, unit: "", updatedAt: monitor.last_checked_at, graphable: false });
     rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "response_ms", metricLabel: "Response time", value: monitor.response_ms, unit: "ms", updatedAt: monitor.last_checked_at, graphable: true });
+    if (monitor.target.startsWith("ping://")) {
+      rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "packet_loss_percent", metricLabel: "Packet loss", value: pingStats.packetLossPercent ?? null, unit: "%", updatedAt: monitor.last_checked_at, graphable: true });
+      rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "latency_avg_ms", metricLabel: "Average latency", value: pingStats.latencyAvgMs ?? monitor.response_ms, unit: "ms", updatedAt: monitor.last_checked_at, graphable: true });
+      rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "latency_min_ms", metricLabel: "Minimum latency", value: pingStats.latencyMinMs ?? monitor.response_ms, unit: "ms", updatedAt: monitor.last_checked_at, graphable: true });
+      rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "latency_max_ms", metricLabel: "Maximum latency", value: pingStats.latencyMaxMs ?? monitor.response_ms, unit: "ms", updatedAt: monitor.last_checked_at, graphable: true });
+    }
     if (monitor.type === "api") rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "api_value", metricLabel: "API extracted value", value: monitor.api_value || "", unit: "", updatedAt: monitor.last_checked_at, graphable: Number.isFinite(Number(monitor.api_value)) });
     if (monitor.last_error) rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "last_error", metricLabel: "Last error", value: monitor.last_error, unit: "", updatedAt: monitor.last_checked_at, graphable: false });
   }
@@ -1337,6 +1500,15 @@ function latestDataRows() {
       metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "",
       updatedAt: metric.key.startsWith("device|") ? device.last_polled_at : db.prepare("SELECT updated_at FROM snmp_profile_metrics WHERE device_id = ? AND category || '|' || metric_key = ?").get(device.id, metric.key)?.updated_at || device.last_polled_at,
       graphable: metric.key === "device|response_ms" || Boolean(db.prepare("SELECT 1 FROM snmp_profile_metric_history WHERE device_id = ? AND category || '|' || metric_key = ? LIMIT 1").get(device.id, metric.key))
+    });
+  }
+  for (const iface of db.prepare("SELECT snmp_interfaces.*, snmp_devices.name AS deviceName FROM snmp_interfaces JOIN snmp_devices ON snmp_devices.id = snmp_interfaces.device_id ORDER BY snmp_devices.name, snmp_interfaces.interface_index").all()) {
+    const targetId = snmpInterfaceId(iface.device_id, iface.interface_index);
+    const targetName = `${iface.deviceName} - ${iface.alias || iface.name || `Interface ${iface.interface_index}`}`;
+    for (const metric of snmpInterfaceAlertMetrics(iface)) rows.push({
+      targetType: "snmp-interface", targetId, targetName, metricKey: metric.key, metricLabel: metric.label,
+      value: metric.value, unit: metric.unit || "", updatedAt: iface.updated_at,
+      graphable: ["in_bps", "out_bps", "in_errors", "out_errors", "in_discards", "out_discards"].includes(metric.key)
     });
   }
   for (const item of db.prepare("SELECT custom_metric_items.*, hosts.name AS hostName FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name").all()) {
@@ -1377,6 +1549,11 @@ function alertRuleValue(rule) {
     return db.prepare("SELECT value FROM snmp_profile_metrics WHERE device_id = ? AND category = ? AND metric_key = ?")
       .get(Number(rule.target_id), category, key)?.value ?? null;
   }
+  if (rule.target_type === "snmp-interface") {
+    const row = snmpInterfaceRecord(rule.target_id);
+    if (!row) return null;
+    return snmpInterfaceAlertMetrics(row).find((metric) => metric.key === rule.metric_key)?.value ?? null;
+  }
   if (rule.target_type === "unifi") {
     const device = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(rule.target_id);
     if (!device) return null;
@@ -1388,11 +1565,20 @@ function alertRuleValue(rule) {
     if (!camera) return null;
     return camera[rule.metric_key] ?? null;
   }
+  if (rule.target_type === "protect") {
+    const camera = db.prepare("SELECT * FROM protect_cameras WHERE id = ?").get(rule.target_id);
+    if (!camera) return null;
+    return protectAlertMetrics(camera).find((metric) => metric.key === rule.metric_key)?.value ?? null;
+  }
   if (rule.target_type === "monitor") {
     const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(Number(rule.target_id));
     if (!monitor) return null;
     if (rule.metric_key === "status") return monitor.status;
     if (rule.metric_key === "response_ms") return monitor.response_ms;
+    if (["packet_loss_percent", "latency_avg_ms", "latency_min_ms", "latency_max_ms"].includes(rule.metric_key)) {
+      const column = { packet_loss_percent: "packet_loss_percent", latency_avg_ms: "latency_avg_ms", latency_min_ms: "latency_min_ms", latency_max_ms: "latency_max_ms" }[rule.metric_key];
+      return db.prepare(`SELECT ${column} AS value FROM heartbeats WHERE monitor_id = ? AND ${column} IS NOT NULL ORDER BY checked_at DESC LIMIT 1`).get(Number(rule.target_id))?.value ?? null;
+    }
     if (rule.metric_key === "api_value") return monitor.api_value ?? "";
     if (rule.metric_key === "last_error") return monitor.last_error ?? "";
     return monitor[rule.metric_key] ?? null;
@@ -1417,6 +1603,10 @@ function alertRuleMetricLabel(rule) {
     const device = db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(Number(rule.target_id));
     return device ? snmpAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
   }
+  if (rule.target_type === "snmp-interface") {
+    const row = snmpInterfaceRecord(rule.target_id);
+    return row ? snmpInterfaceAlertMetrics(row).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
   if (rule.target_type === "unifi") {
     const device = db.prepare("SELECT * FROM unifi_network_devices WHERE id = ?").get(rule.target_id);
     return device ? unifiAlertMetrics(device).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
@@ -1424,6 +1614,10 @@ function alertRuleMetricLabel(rule) {
   if (rule.target_type === "hikvision") {
     const camera = db.prepare("SELECT * FROM hikvision_cameras WHERE id = ?").get(rule.target_id);
     return camera ? hikvisionAlertMetrics(camera).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
+  if (rule.target_type === "protect") {
+    const camera = db.prepare("SELECT * FROM protect_cameras WHERE id = ?").get(rule.target_id);
+    return camera ? protectAlertMetrics(camera).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
   }
   if (rule.target_type === "monitor") {
     const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(Number(rule.target_id));
@@ -1439,7 +1633,12 @@ function alertRuleMetricLabel(rule) {
 
 function alertRuleTargetName(rule) {
   if (rule.target_type === "snmp") return db.prepare("SELECT name FROM snmp_devices WHERE id = ?").get(Number(rule.target_id))?.name || `SNMP ${rule.target_id}`;
+  if (rule.target_type === "snmp-interface") {
+    const row = snmpInterfaceRecord(rule.target_id);
+    return row ? `${row.device_name}: ${row.alias || row.name || `Interface ${row.interface_index}`}` : `SNMP interface ${rule.target_id}`;
+  }
   if (rule.target_type === "unifi") return db.prepare("SELECT name FROM unifi_network_devices WHERE id = ?").get(rule.target_id)?.name || `UniFi ${rule.target_id}`;
+  if (rule.target_type === "protect") return db.prepare("SELECT name FROM protect_cameras WHERE id = ?").get(rule.target_id)?.name || `Protect camera ${rule.target_id}`;
   if (rule.target_type === "hikvision") return db.prepare("SELECT name FROM hikvision_cameras WHERE id = ?").get(rule.target_id)?.name || `Hikvision ${rule.target_id}`;
   if (rule.target_type === "monitor") return db.prepare("SELECT name FROM monitors WHERE id = ?").get(Number(rule.target_id))?.name || `Monitor ${rule.target_id}`;
   if (rule.target_type === "custom") {
@@ -1472,6 +1671,29 @@ function alertMetricSamples(rule) {
     return db.prepare("SELECT value, recorded_at AS recordedAt FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500")
       .all(Number(rule.target_id), category, key, window);
   }
+  if (rule.target_type === "snmp-interface") {
+    const parsed = parseSnmpInterfaceId(rule.target_id);
+    if (!parsed) return [];
+    if (["admin_status", "oper_status", "speed_bps", "in_errors", "out_errors", "in_discards", "out_discards"].includes(rule.metric_key)) {
+      const column = {
+        admin_status: "admin_status", oper_status: "oper_status", speed_bps: "speed_bps",
+        in_errors: "in_errors", out_errors: "out_errors", in_discards: "in_discards", out_discards: "out_discards"
+      }[rule.metric_key];
+      return db.prepare(`SELECT ${column} AS value, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND interface_index = ? AND ${column} IS NOT NULL AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500`)
+        .all(parsed.deviceId, parsed.interfaceIndex, window);
+    }
+    if (rule.metric_key === "in_bps" || rule.metric_key === "out_bps") {
+      const rows = db.prepare("SELECT in_octets AS inOctets, out_octets AS outOctets, recorded_at AS recordedAt FROM snmp_interface_metrics WHERE device_id = ? AND interface_index = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 501").all(parsed.deviceId, parsed.interfaceIndex, window);
+      const samples = [];
+      for (let index = 0; index < rows.length - 1; index += 1) {
+        const latest = rows[index]; const previous = rows[index + 1];
+        const seconds = (new Date(`${latest.recordedAt}Z`) - new Date(`${previous.recordedAt}Z`)) / 1000;
+        const delta = rule.metric_key === "in_bps" ? Number(latest.inOctets) - Number(previous.inOctets) : Number(latest.outOctets) - Number(previous.outOctets);
+        if (seconds > 0 && delta >= 0) samples.push({ value: (delta * 8) / seconds, recordedAt: latest.recordedAt });
+      }
+      return samples;
+    }
+  }
   if (rule.target_type === "docker") {
     if (rule.metric_key === "cpu_percent") return db.prepare("SELECT cpu_percent AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND cpu_percent IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500").all(rule.target_id, window);
     if (rule.metric_key === "memory_percent") {
@@ -1484,12 +1706,20 @@ function alertMetricSamples(rule) {
   }
   if (rule.target_type === "monitor") {
     if (rule.metric_key === "response_ms") return db.prepare("SELECT response_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "packet_loss_percent") return db.prepare("SELECT packet_loss_percent AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND packet_loss_percent IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "latency_avg_ms") return db.prepare("SELECT latency_avg_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_avg_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "latency_min_ms") return db.prepare("SELECT latency_min_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_min_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "latency_max_ms") return db.prepare("SELECT latency_max_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_max_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
     if (rule.metric_key === "status") return db.prepare("SELECT status AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
     if (rule.metric_key === "api_value") return db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
   }
   if (rule.target_type === "custom") {
     if (rule.metric_key === "value") return db.prepare("SELECT value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500").all(Number(rule.target_id), window);
     if (rule.metric_key === "status") return db.prepare("SELECT status AS value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at DESC LIMIT 500").all(Number(rule.target_id), window);
+  }
+  if (rule.target_type === "protect") {
+    const current = alertRuleValue(rule);
+    return current == null ? [] : [{ value: current, recordedAt: new Date().toISOString() }];
   }
   const current = alertRuleValue(rule);
   return current == null ? [] : [{ value: current, recordedAt: new Date().toISOString() }];
@@ -1550,6 +1780,12 @@ function zabbixSeconds(value, fallback = 60) {
   return Math.max(1, Math.min(31536000, number * (multipliers[String(match[2] || "s").toLowerCase()] || 1)));
 }
 
+function durationSecondsInput(value, fallback = 0) {
+  if (typeof value === "string" && /[smhdw]$/i.test(value.trim())) return zabbixSeconds(value, fallback);
+  const seconds = Number(value ?? fallback);
+  return Number.isFinite(seconds) ? seconds : fallback;
+}
+
 function zabbixSeverity(priority) {
   return ["information", "information", "warning", "average", "high", "disaster"][Number(priority)] || "warning";
 }
@@ -1575,8 +1811,11 @@ function stringifyZabbixTags(tags) {
 function upsertHostMacro(hostId, macro) {
   const name = String(macro.macro || macro.name || "").trim();
   if (!name) return false;
-  db.prepare("INSERT INTO host_macros (host_id, macro, value, description) VALUES (?, ?, ?, ?) ON CONFLICT(host_id, macro) DO UPDATE SET value=excluded.value, description=excluded.description")
-    .run(hostId, name, String(macro.value ?? ""), String(macro.description || ""));
+  const rawValue = String(macro.value ?? "");
+  const isSecret = /PASS|PASSWORD|TOKEN|SECRET|KEY|CREDENTIAL|AUTH/i.test(name);
+  const valueHash = isSecret && rawValue ? crypto.createHash("sha256").update(rawValue).digest("hex") : null;
+  db.prepare("INSERT INTO host_macros (host_id, macro, value, value_hash, is_secret, description) VALUES (?, ?, ?, ?, ?, ?) ON CONFLICT(host_id, macro) DO UPDATE SET value=excluded.value, value_hash=excluded.value_hash, is_secret=excluded.is_secret, description=excluded.description")
+    .run(hostId, name, isSecret ? "" : rawValue, valueHash, isSecret ? 1 : 0, String(macro.description || ""));
   return true;
 }
 
@@ -2026,13 +2265,13 @@ async function discoverSnmpInterfaces(device) {
       in_octets=excluded.in_octets, out_octets=excluded.out_octets, in_errors=excluded.in_errors, out_errors=excluded.out_errors,
       in_discards=excluded.in_discards, out_discards=excluded.out_discards, updated_at=CURRENT_TIMESTAMP
   `);
-  const insertMetric = db.prepare("INSERT INTO snmp_interface_metrics (device_id, interface_index, in_octets, out_octets) VALUES (?, ?, ?, ?)");
+  const insertMetric = db.prepare("INSERT INTO snmp_interface_metrics (device_id, interface_index, in_octets, out_octets, in_errors, out_errors, in_discards, out_discards, admin_status, oper_status, speed_bps) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)");
   const save = db.transaction(() => {
     for (const row of interfaces.values()) {
       const inOctets = row.inOctets ?? row.inOctets32 ?? null;
       const outOctets = row.outOctets ?? row.outOctets32 ?? null;
       upsert.run(device.id, row.index, row.name || "", row.alias || "", row.mac || "", row.adminStatus || null, row.operStatus || null, row.highSpeed ? row.highSpeed * 1000000 : row.speed || null, inOctets, outOctets, row.inErrors || 0, row.outErrors || 0, row.inDiscards || 0, row.outDiscards || 0);
-      if (inOctets != null || outOctets != null) insertMetric.run(device.id, row.index, inOctets, outOctets);
+      if (inOctets != null || outOctets != null) insertMetric.run(device.id, row.index, inOctets, outOctets, row.inErrors || 0, row.outErrors || 0, row.inDiscards || 0, row.outDiscards || 0, row.adminStatus || null, row.operStatus || null, row.highSpeed ? row.highSpeed * 1000000 : row.speed || null);
     }
     db.prepare("DELETE FROM snmp_interface_metrics WHERE id IN (SELECT id FROM snmp_interface_metrics WHERE device_id = ? ORDER BY recorded_at DESC LIMIT -1 OFFSET 10000)").run(device.id);
   });
@@ -2146,7 +2385,12 @@ async function pollSnmpDevice(id) {
   })();
   if (status === "down" && previousStatus !== "down") await sendDiscordOperational(`SNMP device ${device.name}`, false, message, [{ name: "Address", value: device.host }, { name: "Profile", value: snmpDeviceProfile(device).label }]);
   if (status === "up" && previousStatus === "down") await sendDiscordOperational(`SNMP device ${device.name}`, true, "SNMP polling has recovered.", [{ name: "Address", value: device.host }, { name: "Identity", value: sysName || device.host }]);
-  if (status === "up") await evaluateAlertRules("snmp", id);
+  if (status === "up") {
+    await evaluateAlertRules("snmp", id);
+    for (const row of db.prepare("SELECT interface_index AS interfaceIndex FROM snmp_interfaces WHERE device_id = ?").all(id)) {
+      await evaluateAlertRules("snmp-interface", snmpInterfaceId(id, row.interfaceIndex));
+    }
+  }
   return db.prepare("SELECT * FROM snmp_devices WHERE id = ?").get(id);
 }
 
@@ -2441,7 +2685,7 @@ function validateProtectHost(input) {
   const tlsVerify = input.tlsVerify === true;
   if (name.length < 2 || name.length > 80) throw new Error("Protect host name must be between 2 and 80 characters.");
   const url = new URL(endpoint);
-  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://192.168.1.1.");
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://network.example.local.");
   endpoint = url.origin;
   if (apiKey.length < 8 || apiKey.length > 500) throw new Error("Enter a UniFi Protect API key.");
   return { name, endpoint, apiKey, tlsVerify };
@@ -2514,6 +2758,7 @@ async function pollProtectHost(hostOrId) {
       if (status === "down" && !openIncident) db.prepare("INSERT INTO protect_incidents (camera_id, host_id, camera_name, cause) VALUES (?, ?, ?, ?)").run(id, host.id, name, state || "Camera disconnected");
       if (status === "up" && openIncident) db.prepare("UPDATE protect_incidents SET resolved_at = CURRENT_TIMESTAMP WHERE camera_id = ? AND resolved_at IS NULL").run(id);
     })();
+    await evaluateAlertRules("protect", id);
     if (status === "down" && !openIncident) await sendDiscordOperational(`Protect camera ${name}`, false, state || "Camera disconnected", [{ name: "Host", value: host.name }, { name: "Model", value: camera.marketName || camera.modelKey || "--" }]);
     if (status === "up" && previous && previous.status === "down") await sendDiscordOperational(`Protect camera ${name}`, true, "Camera is connected again.", [{ name: "Host", value: host.name }]);
   }
@@ -2548,7 +2793,7 @@ function validateHikvisionHost(input) {
   const tlsVerify = input.tlsVerify === true;
   if (name.length < 2 || name.length > 80) throw new Error("Hikvision host name must be between 2 and 80 characters.");
   const url = new URL(endpoint);
-  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the Hikvision/NVR base URL, for example http://192.168.1.50.");
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the Hikvision/NVR base URL, for example https://camera.example.local.");
   endpoint = url.origin;
   if (username.length < 1 || username.length > 80) throw new Error("Enter the Hikvision username.");
   if (password.length < 1 || password.length > 500) throw new Error("Enter the Hikvision password.");
@@ -2699,7 +2944,7 @@ function validateUnifiNetworkHost(input) {
   const tlsVerify = input.tlsVerify === true;
   if (name.length < 2 || name.length > 80) throw new Error("UniFi Network host name must be between 2 and 80 characters.");
   const url = new URL(endpoint);
-  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://192.168.1.1.");
+  if (!["https:", "http:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) throw new Error("Enter the UniFi console base URL, for example https://protect.example.local.");
   endpoint = url.origin;
   if (apiKey.length < 8 || apiKey.length > 500) throw new Error("Enter a UniFi Network API key.");
   return { name, endpoint, apiKey, tlsVerify };
@@ -2899,6 +3144,92 @@ async function checkCustomApi(monitor) {
   return { responseMs: Date.now() - started, value: String(value).slice(0, 300) };
 }
 
+function extractXmlPath(value, pathText) {
+  const parsed = new XMLParser({ ignoreAttributes: false, parseTagValue: true, trimValues: true, processEntities: false }).parse(value || "");
+  return pickJsonPath(parsed, pathText);
+}
+
+function applyCustomExtraction(text, params = {}) {
+  const mode = String(params.extractType || params.mode || (params.jsonPath ? "json" : params.xmlPath ? "xml" : params.regex ? "regex" : "text")).toLowerCase();
+  if (mode === "json") {
+    const parsed = text ? JSON.parse(text) : {};
+    const picked = pickJsonPath(parsed, params.jsonPath || params.path || "");
+    if (picked == null) throw new Error(`JSON path ${params.jsonPath || params.path} was not found.`);
+    return typeof picked === "string" ? picked : JSON.stringify(picked);
+  }
+  if (mode === "xml" || mode === "rss") {
+    const picked = extractXmlPath(text, params.xmlPath || params.path || "");
+    if (picked == null) throw new Error(`XML path ${params.xmlPath || params.path} was not found.`);
+    return typeof picked === "string" ? picked : JSON.stringify(picked);
+  }
+  if (mode === "regex") return applyValueExtraction(text, params.regex || params.textRegex || "");
+  return String(text || "").trim();
+}
+
+async function pollCustomMetricItem(id) {
+  const item = db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(Number(id));
+  if (!item || !item.enabled) return null;
+  const params = item.params_json ? JSON.parse(item.params_json) : {};
+  if (!/^https?:$/i.test(new URL(params.url || "http://invalid.local").protocol) || !params.url) {
+    db.prepare("UPDATE custom_metric_items SET status = 'unsupported', last_error = ?, last_polled_at = CURRENT_TIMESTAMP, next_poll_at = ? WHERE id = ?")
+      .run("Custom item has no HTTP/HTTPS URL configured.", Date.now() + item.delay_seconds * 1000, item.id);
+    return db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(item.id);
+  }
+  let status = "up";
+  let value = null;
+  let message = null;
+  try {
+    const started = Date.now();
+    const response = await fetch(params.url, {
+      method: params.method || "GET",
+      headers: params.headers || {},
+      body: ["GET", "HEAD"].includes(String(params.method || "GET").toUpperCase()) ? undefined : params.body || undefined,
+      redirect: "follow",
+      signal: AbortSignal.timeout(Math.max(1, Number(params.timeoutSeconds || item.delay_seconds || 10)) * 1000)
+    });
+    const text = await response.text();
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    value = String(applyCustomExtraction(text, params)).slice(0, 2000);
+    message = `HTTP ${response.status} in ${Date.now() - started} ms`;
+  } catch (error) {
+    status = "down";
+    message = String(error.message || error).slice(0, 300);
+  }
+  db.transaction(() => {
+    db.prepare("UPDATE custom_metric_items SET status = ?, last_value = ?, last_error = ?, last_polled_at = CURRENT_TIMESTAMP, next_poll_at = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+      .run(status, status === "up" ? value : item.last_value, status === "down" ? message : null, Date.now() + item.delay_seconds * 1000, item.id);
+    db.prepare("INSERT INTO custom_metric_history (item_id, value, status, message) VALUES (?, ?, ?, ?)").run(item.id, status === "up" ? value : item.last_value, status, message);
+    db.prepare("DELETE FROM custom_metric_history WHERE recorded_at < datetime('now', ?)").run(retentionWindow());
+  })();
+  await evaluateAlertRules("custom", item.id);
+  return db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(item.id);
+}
+
+function validateCustomMetricInput(input, current = {}) {
+  const hostId = Number(input.hostId ?? current.host_id ?? 0);
+  const name = String(input.name || current.name || "").trim();
+  const keyName = String(input.key || input.keyName || current.key_name || name.toLowerCase().replace(/[^a-z0-9_.-]+/g, ".")).trim().slice(0, 240);
+  const url = String(input.url || current.params?.url || "").trim();
+  const method = String(input.method || current.params?.method || "GET").toUpperCase();
+  const headers = input.headers && typeof input.headers === "object" ? input.headers : typeof input.headers === "string" && input.headers.trim() ? JSON.parse(input.headers) : current.params?.headers || {};
+  const body = String(input.body ?? current.params?.body ?? "");
+  const intervalSeconds = Math.max(10, Math.min(86400, Number(input.intervalSeconds || input.delaySeconds || current.delay_seconds || 60)));
+  const timeoutSeconds = Math.max(1, Math.min(120, Number(input.timeoutSeconds || current.params?.timeoutSeconds || 10)));
+  const extractType = String(input.extractType || current.params?.extractType || (input.jsonPath ? "json" : input.xmlPath ? "xml" : input.regex ? "regex" : "text")).toLowerCase();
+  if (!hostId || !db.prepare("SELECT 1 FROM hosts WHERE id = ?").get(hostId)) throw new Error("Choose a valid host for this custom item.");
+  if (name.length < 2 || name.length > 160) throw new Error("Custom item name must be 2-160 characters.");
+  const parsedUrl = new URL(url);
+  if (!["http:", "https:"].includes(parsedUrl.protocol) || parsedUrl.username || parsedUrl.password) throw new Error("Enter an HTTP/HTTPS URL without embedded credentials.");
+  if (!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD"].includes(method)) throw new Error("Choose a valid HTTP method.");
+  if (!["text", "json", "xml", "rss", "regex"].includes(extractType)) throw new Error("Choose a valid extraction mode.");
+  return {
+    hostId, name, keyName, units: String(input.units || current.units || "").slice(0, 40), valueType: String(input.valueType || current.value_type || "").slice(0, 40),
+    intervalSeconds, timeoutSeconds,
+    params: { url, method, headers, body, timeoutSeconds, extractType, jsonPath: String(input.jsonPath || current.params?.jsonPath || ""), xmlPath: String(input.xmlPath || current.params?.xmlPath || ""), regex: String(input.regex || input.textRegex || current.params?.regex || "") },
+    preprocessing: Array.isArray(input.preprocessing) ? input.preprocessing : current.preprocessing || []
+  };
+}
+
 function checkTcp(target, timeoutSeconds) {
   const separator = target.lastIndexOf(":");
   const host = target.slice(0, separator).replace(/^\[|\]$/g, "");
@@ -2924,7 +3255,9 @@ async function checkPing(target, timeoutSeconds) {
     ? ["-n", "1", "-w", String(timeoutSeconds * 1000), host]
     : ["-c", "1", "-W", String(timeoutSeconds), host];
   const { stdout, stderr } = await execFileAsync("ping", args, { timeout: (timeoutSeconds + 2) * 1000 });
-  return parsePingLatency(`${stdout}\n${stderr}`) ?? Date.now() - started;
+  const parsed = parsePingStats(`${stdout}\n${stderr}`);
+  const latency = parsed.latencyAvgMs ?? parsed.responseMs ?? Date.now() - started;
+  return { responseMs: latency, packetLossPercent: parsed.packetLossPercent ?? 0, latencyAvgMs: latency, latencyMinMs: parsed.latencyMinMs ?? latency, latencyMaxMs: parsed.latencyMaxMs ?? latency };
 }
 
 function parsePingLatency(output) {
@@ -2934,32 +3267,53 @@ function parsePingLatency(output) {
   return summary ? Number(summary[1].replace(",", ".")) : null;
 }
 
+function parsePingStats(output) {
+  const text = String(output || "");
+  const packetLoss = text.match(/(\d+(?:[.,]\d+)?)\s*%\s*(?:packet\s*)?loss/i) || text.match(/Lost\s*=\s*\d+\s*\((\d+(?:[.,]\d+)?)%/i);
+  const direct = parsePingLatency(text);
+  const unix = text.match(/(?:rtt|round-trip)[^=]*=\s*(\d+(?:[.,]\d+)?)\/(\d+(?:[.,]\d+)?)\/(\d+(?:[.,]\d+)?)/i);
+  const win = text.match(/Minimum\s*=\s*(\d+(?:[.,]\d+)?)ms,\s*Maximum\s*=\s*(\d+(?:[.,]\d+)?)ms,\s*Average\s*=\s*(\d+(?:[.,]\d+)?)ms/i);
+  const parse = (value) => Number(String(value).replace(",", "."));
+  if (unix) return { packetLossPercent: packetLoss ? parse(packetLoss[1]) : 0, latencyMinMs: parse(unix[1]), latencyAvgMs: parse(unix[2]), latencyMaxMs: parse(unix[3]), responseMs: direct ?? parse(unix[2]) };
+  if (win) return { packetLossPercent: packetLoss ? parse(packetLoss[1]) : 0, latencyMinMs: parse(win[1]), latencyMaxMs: parse(win[2]), latencyAvgMs: parse(win[3]), responseMs: direct ?? parse(win[3]) };
+  return { packetLossPercent: packetLoss ? parse(packetLoss[1]) : null, responseMs: direct, latencyAvgMs: direct, latencyMinMs: direct, latencyMaxMs: direct };
+}
+
 async function runMonitor(id) {
   const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(id);
   if (!monitor || !monitor.enabled) return null;
   let status = "up";
   let responseMs = null;
+  let packetLossPercent = null;
+  let latencyAvgMs = null;
+  let latencyMinMs = null;
+  let latencyMaxMs = null;
   let message = null;
   try {
     if (monitor.type === "api") {
       const result = await checkCustomApi(monitor);
       responseMs = result.responseMs;
       message = result.value;
-    } else responseMs = monitor.type === "http"
-      ? await checkHttp(monitor.target, monitor.timeout_seconds)
-      : monitor.target.startsWith("ping://")
-        ? await checkPing(monitor.target, monitor.timeout_seconds)
-        : await checkTcp(monitor.target, monitor.timeout_seconds);
+    } else if (monitor.type === "http") responseMs = await checkHttp(monitor.target, monitor.timeout_seconds);
+    else if (monitor.target.startsWith("ping://")) {
+      const ping = await checkPing(monitor.target, monitor.timeout_seconds);
+      responseMs = ping.responseMs;
+      packetLossPercent = ping.packetLossPercent;
+      latencyAvgMs = ping.latencyAvgMs;
+      latencyMinMs = ping.latencyMinMs;
+      latencyMaxMs = ping.latencyMaxMs;
+    } else responseMs = await checkTcp(monitor.target, monitor.timeout_seconds);
   } catch (error) {
     status = "down";
     message = String(error.message || error).slice(0, 300);
+    if (monitor.target.startsWith("ping://")) packetLossPercent = 100;
   }
   const previousStatus = monitor.status;
   db.transaction(() => {
     db.prepare("UPDATE monitors SET status = ?, response_ms = ?, last_error = ?, api_value = ?, last_checked_at = CURRENT_TIMESTAMP, next_check_at = ? WHERE id = ?")
       .run(status, responseMs, status === "down" ? message : null, monitor.type === "api" && status === "up" ? message : monitor.api_value, Date.now() + monitor.interval_seconds * 1000, id);
-    db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, message) VALUES (?, ?, ?, ?)")
-      .run(id, status, responseMs, message);
+    db.prepare("INSERT INTO heartbeats (monitor_id, status, response_ms, packet_loss_percent, latency_avg_ms, latency_min_ms, latency_max_ms, message) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+      .run(id, status, responseMs, packetLossPercent, latencyAvgMs, latencyMinMs, latencyMaxMs, message);
     recordReportingPoint(`monitor:${id}`, status, responseMs);
     db.prepare("DELETE FROM heartbeats WHERE id IN (SELECT id FROM heartbeats WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT -1 OFFSET 1000)").run(id);
     if (status === "down" && previousStatus !== "down") {
@@ -2987,6 +3341,8 @@ async function schedulerTick() {
     await Promise.all(due.map(({ id }) => runMonitor(id)));
     const dueSnmp = db.prepare("SELECT id FROM snmp_devices WHERE enabled = 1 AND next_poll_at <= ? LIMIT 20").all(Date.now());
     await Promise.all(dueSnmp.map(({ id }) => pollSnmpDevice(id)));
+    const dueCustom = db.prepare("SELECT id FROM custom_metric_items WHERE enabled = 1 AND item_type IN ('http', 'http_agent') AND next_poll_at <= ? LIMIT 20").all(Date.now());
+    await Promise.all(dueCustom.map(({ id }) => pollCustomMetricItem(id)));
     if (Date.now() >= nextDockerPoll) {
       nextDockerPoll = Date.now() + 30000;
       try { await pollDockerFleet(); } catch (error) { console.error("Docker fleet poll failed:", error.message); }
@@ -3203,6 +3559,15 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
     ...target,
     metrics: snmpAlertMetrics(target)
   }));
+  const snmpInterfaceTargets = db.prepare(`
+    SELECT snmp_interfaces.*, snmp_devices.name AS device_name
+    FROM snmp_interfaces JOIN snmp_devices ON snmp_devices.id = snmp_interfaces.device_id
+    ORDER BY snmp_devices.name, snmp_interfaces.interface_index
+  `).all().map((target) => ({
+    id: snmpInterfaceId(target.device_id, target.interface_index),
+    name: `${target.device_name} - ${target.alias || target.name || `Interface ${target.interface_index}`}`,
+    metrics: snmpInterfaceAlertMetrics(target)
+  }));
   const dockerTargets = db.prepare("SELECT container_id AS id, name FROM docker_containers WHERE state = 'running' ORDER BY name").all().map((target) => ({
     ...target,
     metrics: [
@@ -3222,12 +3587,17 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
     name: `${target.name} (${target.site_name || target.site_id})`,
     metrics: unifiAlertMetrics(target)
   }));
+  const protectTargets = db.prepare("SELECT protect_cameras.*, protect_hosts.name AS host_name FROM protect_cameras JOIN protect_hosts ON protect_hosts.id = protect_cameras.host_id ORDER BY protect_hosts.name, protect_cameras.name").all().map((target) => ({
+    id: target.id,
+    name: `${target.name} (${target.host_name})`,
+    metrics: protectAlertMetrics(target)
+  }));
   const hikvisionTargets = db.prepare("SELECT hikvision_cameras.*, hikvision_hosts.name AS host_name FROM hikvision_cameras JOIN hikvision_hosts ON hikvision_hosts.id = hikvision_cameras.host_id ORDER BY hikvision_hosts.name, hikvision_cameras.name").all().map((target) => ({
     id: target.id,
     name: `${target.name} (${target.host_name})`,
     metrics: hikvisionAlertMetrics(target)
   }));
-  res.json({ monitor: monitorTargets, snmp: snmpTargets, custom: customTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
+  res.json({ monitor: monitorTargets, snmp: snmpTargets, "snmp-interface": snmpInterfaceTargets, custom: customTargets, docker: dockerTargets, unifi: unifiTargets, protect: protectTargets, hikvision: hikvisionTargets });
 });
 app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
   res.json([
@@ -3304,7 +3674,7 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const operator = String(req.body.operator || "");
   const threshold = String(req.body.threshold ?? "").trim();
   const functionName = String(req.body.functionName || "last").toLowerCase();
-  const windowSeconds = Math.max(0, Math.min(2592000, Number(req.body.windowSeconds || 0)));
+  const windowSeconds = Math.max(0, Math.min(2592000, durationSecondsInput(req.body.windowSeconds || req.body.window || 0, 0)));
   const severity = String(req.body.severity || "warning");
   const description = String(req.body.description || "").trim().slice(0, 500);
   const actionText = String(req.body.actionText || "").trim().slice(0, 500);
@@ -3312,8 +3682,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker", "unifi", "hikvision", "monitor", "custom"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count", "nodata"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
-  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : targetType === "monitor" ? db.prepare("SELECT 1 FROM monitors WHERE id = ?").get(Number(targetId)) : targetType === "custom" ? db.prepare("SELECT 1 FROM custom_metric_items WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!["snmp", "snmp-interface", "docker", "unifi", "protect", "hikvision", "monitor", "custom"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count", "nodata"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "snmp-interface" ? snmpInterfaceRecord(targetId) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "protect" ? db.prepare("SELECT 1 FROM protect_cameras WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : targetType === "monitor" ? db.prepare("SELECT 1 FROM monitors WHERE id = ?").get(Number(targetId)) : targetType === "custom" ? db.prepare("SELECT 1 FROM custom_metric_items WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
@@ -3328,7 +3698,7 @@ app.put("/api/alert-rules/:id", requireAuth, async (req, res) => {
   const name = String(req.body.name || rule.name).trim();
   const severity = String(req.body.severity || rule.severity);
   const functionName = String(req.body.functionName || rule.function_name || "last").toLowerCase();
-  const windowSeconds = Math.max(0, Math.min(2592000, Number(req.body.windowSeconds ?? rule.window_seconds ?? 0)));
+  const windowSeconds = Math.max(0, Math.min(2592000, durationSecondsInput(req.body.windowSeconds ?? req.body.window ?? rule.window_seconds ?? 0, rule.window_seconds ?? 0)));
   const description = String(req.body.description ?? rule.description ?? "").trim().slice(0, 500);
   const actionText = String(req.body.actionText ?? rule.action_text ?? "").trim().slice(0, 500);
   const triggerCount = Math.max(1, Math.min(20, Number(req.body.triggerCount || rule.trigger_count)));
@@ -3416,7 +3786,8 @@ app.get("/api/hosts/:id", requireAuth, (req, res) => {
   `).all(id).map((problem) => ({ ...problem, targetName: alertRuleTargetName({ target_type: problem.targetType, target_id: problem.targetId }), metricLabel: alertRuleMetricLabel({ target_type: problem.targetType, target_id: problem.targetId, metric_key: problem.metricKey }) }));
   const status = summarizeHostStatus(items);
   if (status !== host.status) db.prepare("UPDATE hosts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
-  const macros = db.prepare("SELECT macro, value, description FROM host_macros WHERE host_id = ? ORDER BY macro").all(id);
+  const macros = db.prepare("SELECT macro, CASE WHEN is_secret = 1 THEN '' ELSE value END AS value, is_secret AS isSecret, CASE WHEN is_secret = 1 AND value_hash IS NOT NULL THEN 'configured' ELSE '' END AS secretState, description FROM host_macros WHERE host_id = ? ORDER BY macro").all(id)
+    .map((macro) => ({ ...macro, isSecret: Boolean(macro.isSecret) }));
   const hostTags = db.prepare("SELECT tag, value FROM host_tags WHERE host_id = ? ORDER BY tag, value").all(id);
   const webScenarios = db.prepare("SELECT id, external_id AS externalId, name, delay_seconds AS delaySeconds, status, updated_at AS updatedAt FROM zabbix_web_scenarios WHERE host_id = ? ORDER BY name").all(id);
   res.json({ ...host, status, itemCount: items.length, problemCount: problems.length, items, latestData, problems, macros, hostTags, webScenarios });
@@ -3529,13 +3900,60 @@ app.get("/api/custom-metrics", requireAuth, (req, res) => {
   const rows = hostId
     ? db.prepare("SELECT custom_metric_items.*, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id WHERE custom_metric_items.host_id = ? ORDER BY custom_metric_items.name LIMIT 5000").all(hostId)
     : db.prepare("SELECT custom_metric_items.*, hosts.name AS host_name FROM custom_metric_items LEFT JOIN hosts ON hosts.id = custom_metric_items.host_id ORDER BY hosts.name, custom_metric_items.name LIMIT 5000").all();
-  res.json(rows.map((item) => ({
+  res.json(rows.map((item) => {
+    const params = item.params_json ? JSON.parse(item.params_json) : {};
+    return ({
     id: item.id, hostId: item.host_id, hostName: item.host_name, source: item.source, externalId: item.external_id,
     name: item.name, key: item.key_name, itemType: item.item_type, valueType: item.value_type, units: item.units,
     delaySeconds: item.delay_seconds, enabled: Boolean(item.enabled), status: item.status,
     lastValue: item.last_value, lastError: item.last_error, lastPolledAt: item.last_polled_at,
-    params: item.params_json ? JSON.parse(item.params_json) : {}, preprocessing: item.preprocessing_json ? JSON.parse(item.preprocessing_json) : [], tags: item.tags_json ? JSON.parse(item.tags_json) : []
-  })));
+    params: maskSensitiveConfig(params), preprocessing: item.preprocessing_json ? JSON.parse(item.preprocessing_json) : [], tags: item.tags_json ? JSON.parse(item.tags_json) : []
+  });
+  }));
+});
+app.post("/api/custom-metrics", requireAuth, async (req, res) => {
+  let item;
+  try { item = validateCustomMetricInput(req.body); } catch (error) { return res.status(400).json({ error: error.message }); }
+  try {
+    const result = db.prepare(`INSERT INTO custom_metric_items (host_id, source, external_id, name, key_name, item_type, value_type, units, params_json, preprocessing_json, delay_seconds, enabled)
+      VALUES (?, 'manual', ?, ?, ?, 'http', ?, ?, ?, ?, ?, 1)`)
+      .run(item.hostId, `manual:${crypto.randomUUID()}`, item.name, item.keyName, item.valueType, item.units, JSON.stringify(item.params), JSON.stringify(item.preprocessing), item.intervalSeconds);
+    db.prepare("INSERT OR IGNORE INTO host_links (host_id, item_type, item_id, label) VALUES (?, 'custom', ?, ?)").run(item.hostId, String(result.lastInsertRowid), item.name);
+    await pollCustomMetricItem(Number(result.lastInsertRowid));
+    res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) return res.status(409).json({ error: "That host already has a custom item with this key." });
+    throw error;
+  }
+});
+app.put("/api/custom-metrics/:id", requireAuth, async (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM custom_metric_items WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Custom metric item not found." });
+  let currentParams = {};
+  try { currentParams = current.params_json ? JSON.parse(current.params_json) : {}; } catch {}
+  let item;
+  try { item = validateCustomMetricInput(req.body, { ...current, params: currentParams, preprocessing: current.preprocessing_json ? JSON.parse(current.preprocessing_json) : [] }); } catch (error) { return res.status(400).json({ error: error.message }); }
+  const enabled = req.body.enabled === false ? 0 : 1;
+  db.prepare("UPDATE custom_metric_items SET host_id = ?, name = ?, key_name = ?, value_type = ?, units = ?, params_json = ?, preprocessing_json = ?, delay_seconds = ?, enabled = ?, next_poll_at = 0, updated_at = CURRENT_TIMESTAMP WHERE id = ?")
+    .run(item.hostId, item.name, item.keyName, item.valueType, item.units, JSON.stringify(item.params), JSON.stringify(item.preprocessing), item.intervalSeconds, enabled, id);
+  db.prepare("INSERT OR IGNORE INTO host_links (host_id, item_type, item_id, label) VALUES (?, 'custom', ?, ?)").run(item.hostId, String(id), item.name);
+  if (enabled) await pollCustomMetricItem(id);
+  res.json({ ok: true });
+});
+app.delete("/api/custom-metrics/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  db.transaction(() => {
+    db.prepare("DELETE FROM alert_rules WHERE target_type = 'custom' AND target_id = ?").run(String(id));
+    db.prepare("DELETE FROM host_links WHERE item_type = 'custom' AND item_id = ?").run(String(id));
+    db.prepare("DELETE FROM custom_metric_items WHERE id = ?").run(id);
+  })();
+  res.json({ ok: true });
+});
+app.post("/api/custom-metrics/:id/poll", requireAuth, async (req, res) => {
+  const item = await pollCustomMetricItem(Number(req.params.id));
+  if (!item) return res.status(404).json({ error: "Custom metric item not found or disabled." });
+  res.json({ ok: true, status: item.status, value: item.last_value });
 });
 app.post("/api/custom-metrics/:id/value", requireAuth, async (req, res) => {
   const id = Number(req.params.id);
@@ -3591,6 +4009,8 @@ app.get("/api/metric-history", requireAuth, (req, res) => {
     const key = metricKey.slice(separator + 1);
     if (category === "device" && key === "response_ms") rows = db.prepare("SELECT response_ms AS value, polled_at AS recordedAt FROM snmp_metrics WHERE device_id = ? AND response_ms IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(Number(targetId), window);
     else rows = db.prepare("SELECT value, recorded_at AS recordedAt FROM snmp_profile_metric_history WHERE device_id = ? AND category = ? AND metric_key = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at LIMIT 2000").all(Number(targetId), category, key, window);
+  } else if (targetType === "snmp-interface") {
+    rows = alertMetricSamples({ target_type: "snmp-interface", target_id: targetId, metric_key: metricKey, window_seconds: Math.abs(Number(window.match(/\d+/)?.[0] || 24)) * (window.includes("hour") ? 3600 : window.includes("day") ? 86400 : 60) }).reverse().slice(-2000);
   } else if (targetType === "docker") {
     if (metricKey === "cpu_percent") rows = db.prepare("SELECT cpu_percent AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND cpu_percent IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(targetId, window);
     if (metricKey === "memory_percent") {
@@ -3599,6 +4019,10 @@ app.get("/api/metric-history", requireAuth, (req, res) => {
     }
   } else if (targetType === "monitor") {
     if (metricKey === "response_ms") rows = db.prepare("SELECT response_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "packet_loss_percent") rows = db.prepare("SELECT packet_loss_percent AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND packet_loss_percent IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "latency_avg_ms") rows = db.prepare("SELECT latency_avg_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_avg_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "latency_min_ms") rows = db.prepare("SELECT latency_min_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_min_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "latency_max_ms") rows = db.prepare("SELECT latency_max_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND latency_max_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
     if (metricKey === "api_value") rows = db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
   } else if (targetType === "custom") {
     if (metricKey === "value") rows = db.prepare("SELECT value, recorded_at AS recordedAt FROM custom_metric_history WHERE item_id = ? AND recorded_at >= datetime('now', ?) ORDER BY recorded_at LIMIT 2000").all(Number(targetId), window);

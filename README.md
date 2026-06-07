@@ -87,8 +87,8 @@ as Coming soon and are not hidden behind a paid tier.
 ## Network Auto-Discovery
 
 Select **Add monitor > Auto-scan network** or **Auto-scan network** above the
-monitored services list. Enter a private IPv4 CIDR such as `192.168.1.0/24`, a
-range such as `192.168.1.10-192.168.1.40`, or one address. Leave ports blank
+monitored services list. Enter your LAN IPv4 CIDR, an address range, or one
+address. Leave ports blank
 to scan common services, or enter up to 64 comma-separated ports/ranges. Enter
 `all` or `1-65535` to scan every TCP port on one private/local address.
 
@@ -142,7 +142,7 @@ or an exact release such as
 6. To enable Docker fleet monitoring, add host path `/var/run/docker.sock`
    mounted at container path `/var/run/docker.sock` as read-only.
 7. Set the restart policy to **Unless Stopped**.
-8. Save the app and open `http://TRUENAS-IP:30080`.
+8. Save the app and open the mapped dashboard URL for your TrueNAS host.
 
 Docker socket access lets NichHome Uptime read the local TrueNAS Docker Engine.
 Only mount it for this trusted local application. The socket grants powerful
@@ -159,6 +159,95 @@ For TrueNAS SNMP monitoring, enable **System > Services > SNMP**, configure a
 community, then add the TrueNAS hostname/IP as an SNMP device in NichHome.
 SNMP v3 can also be used by selecting v3 in the device form and entering the
 username, security level, and matching authentication/privacy credentials.
+
+## Public Configuration Model
+
+NichHome Uptime is designed for public reuse. Do not edit source files to add
+private addresses, tokens, passwords, webhook URLs, or hostnames. Configure
+integrations through the UI, environment variables, mounted `/data` storage, or
+import files. API keys and webhook URLs entered in the UI are stored in the
+local SQLite database under `/data`.
+
+## SNMP Setup
+
+1. Enable SNMP on the device you want to monitor.
+2. Prefer SNMP v3 where available. For v2c, use a read-only community string.
+3. In NichHome, open **SNMP Devices**, add the device hostname/IP, version,
+   port, timeout, and polling interval.
+4. Assign a built-in profile or import a Zabbix/NichHome XML SNMP template.
+5. Use the device details page to review system identity, custom profile
+   metrics, and interface counters.
+
+SNMP interface metrics can be used as alert-rule targets. Each discovered
+interface exposes inbound/outbound bps, admin/oper status, speed, errors, and
+discards. This supports WAN usage alerts, switch-port-down alerts, and
+error/discard increase alerts.
+
+## UniFi Network Setup
+
+Create a UniFi Network Integration API key with read access, then open
+**UniFi Network** in NichHome and add the controller/console base URL plus API
+key. NichHome polls sites, adopted gateways/switches/APs, firmware/update
+availability, device online/offline state, and connected clients. Alert rules
+can target update availability and device state.
+
+## UniFi Protect Setup
+
+Create a UniFi Protect API key with camera read access, then open
+**UniFi Protect** and add the console base URL plus API key. NichHome polls
+camera state, recording mode, last seen time, and last poll time. Alert rules
+can target camera `status`, Protect `state`, `recording_mode`,
+`last_seen_age_seconds`, and `last_poll_age_seconds`.
+
+## Custom HTTP/API Items
+
+Custom items are host-attached pollers for HTTP/HTTPS, REST/JSON APIs, XML/RSS
+feeds, and text endpoints. Create them through the API or UI forms that expose
+custom items. Each item supports:
+
+- host attachment, name, key, units, interval, and timeout
+- method, URL, headers, and optional request body
+- JSON path, XML path, regex, or raw-text extraction
+- history storage, latest value, graphing, and alert-rule targeting
+
+Use headers for bearer tokens or API keys. Do not put secrets in URLs.
+
+## Zabbix Import
+
+Use `POST /api/zabbix/import` with an authenticated session to import a Zabbix
+JSON export. The importer is idempotent: rerunning the same file updates
+existing hosts/items where possible instead of duplicating them.
+
+Mapped data includes hosts, descriptions, tags, macros, web scenarios, HTTP
+checks, SNMP items, graphable custom items, severity, operational data, and
+supported trigger expressions. Secret-like macro names such as token, key,
+password, or secret are not exposed in API responses; users should re-enter or
+remap missing secrets after import where an integration requires them.
+
+## Alert Rules
+
+Alert rules support Zabbix-style functions:
+
+- `last`, `min`, `max`, `avg`, `count`, `nodata`, and `change`
+- time windows such as 1 minute, 2 minutes, 5 minutes, and 30 minutes
+- `triggerCount` and `recoveryCount`
+- acknowledgement of current problems
+
+Targets include monitors, custom items, SNMP devices, SNMP interfaces, Docker
+containers, UniFi Network devices, UniFi Protect cameras, and Hikvision cameras.
+
+## Notifications
+
+Discord, Telegram, and email notifications include problem/resolved state,
+target name, metric name, severity, current value, expression/threshold, reason,
+and recommended action where configured. Discord supports a webhook URL and an
+optional thread ID from the Admin Settings notification tab.
+
+## Retention
+
+Admin Settings includes retention controls. The default is 30 days. Cleanup
+applies to heartbeat history, SNMP metrics, SNMP interface history, Docker
+metrics, custom metric history, and reporting rollups.
 
 ## SNMP Profiles and Walks
 

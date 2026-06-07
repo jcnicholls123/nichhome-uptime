@@ -294,6 +294,7 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .docker-detail-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
 .docker-detail-card { display: grid; gap: 8px; padding: 14px; border: 1px solid var(--line); border-radius: 9px; color: var(--ink); background: rgba(255,255,255,.35); text-align: left; }
 .docker-detail-card:hover { border-color: #86a9c7; background: rgba(220,233,243,.45); }
+.docker-detail-card.selected { border-color: rgba(255,107,82,.5); box-shadow: 0 0 0 2px rgba(255,107,82,.08); }
 .docker-detail-card.down, .rule-row.active, .topology-node.down { border-color: rgba(255,107,82,.45); background: rgba(255,107,82,.06); }
 .docker-detail-card > div:first-child { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
 .docker-detail-card strong { font-size: 12px; }
@@ -456,6 +457,9 @@ h1 { margin: 0; font-size: clamp(25px, 3vw, 37px); letter-spacing: -1.8px; line-
 .profile-row div { display: grid; gap: 3px; min-width: 0; }
 .profile-row strong { font-size: 12px; }
 .profile-row small { color: #8c9490; font-size: 10px; line-height: 1.5; }
+.host-workspace-grid { grid-template-columns: minmax(360px, 1fr) minmax(320px, .9fr); margin-bottom: 11px; }
+.host-workspace-grid .profile-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; }
+.host-workspace-grid .problem-list { min-height: 80px; }
 .full-width-action { width: 100%; margin-top: 12px; }
 .notification-event-list { max-height: 620px; overflow: auto; padding-right: 4px; }
 .v3-fields { display: grid; gap: 11px; padding: 12px; border: 1px solid var(--line); border-radius: 9px; background: rgba(113,167,220,.06); }

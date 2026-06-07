@@ -23,8 +23,11 @@ let protectStatus = { available: false };
 let hikvisionHosts = [];
 let hikvisionCameras = [];
 let hikvisionStatus = { available: false };
+let hosts = [];
+let hostAttachableItems = {};
+let selectedHostId = null;
 let alertRules = [];
-let alertRuleOptions = { snmp: [], docker: [], unifi: [], hikvision: [] };
+let alertRuleOptions = { monitor: [], snmp: [], docker: [], unifi: [], hikvision: [] };
 let alertTemplates = [];
 let currentProblems = [];
 let latestData = [];
@@ -41,13 +44,14 @@ let searchFilter = "";
 let lastOpenIncidentCount = null;
 
 function showWorkspace(name) {
-  const pages = { Overview: "overviewPage", "Current Problems": "currentProblemsPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
+  const pages = { Overview: "overviewPage", Hosts: "hostsPage", "Current Problems": "currentProblemsPage", "SNMP Devices": "snmpPage", Docker: "dockerPage", "UniFi Network": "unifiNetworkPage", Protect: "protectPage", Hikvision: "hikvisionPage", "Alert Rules": "alertRulesPage", "Network Map": "networkMapPage", Notifications: "notificationsPage", "Admin Settings": "adminSettingsPage" };
   if ((name === "SNMP Devices" && !featureEnabled("snmp")) || (name === "Docker" && !featureEnabled("docker")) || (name === "UniFi Network" && !featureEnabled("network")) || (name === "Protect" && !featureEnabled("protect")) || (name === "Hikvision" && !featureEnabled("hikvision")) || (name === "Network Map" && !featureEnabled("networkMap"))) name = "Overview";
   for (const id of Object.values(pages)) document.getElementById(id).hidden = id !== pages[name];
   pageName.textContent = name.toUpperCase();
   document.querySelector(".nav-item.active")?.classList.remove("active");
   document.querySelector(`[data-page="${name}"]`)?.classList.add("active");
   if (name === "SNMP Devices") renderSnmpWorkspace();
+  if (name === "Hosts") renderHostsWorkspace();
   if (name === "Docker") renderDockerWorkspace();
   if (name === "UniFi Network") renderUnifiNetworkWorkspace();
   if (name === "Protect") renderProtectWorkspace();
@@ -76,6 +80,12 @@ function featureEnabled(name) {
 
 function ensureAlertSourceOptions() {
   const select = document.querySelector("#alertRuleForm select[name=targetType]");
+  if (select && ![...select.options].some((option) => option.value === "monitor")) {
+    const option = document.createElement("option");
+    option.value = "monitor";
+    option.textContent = "Monitor / custom API item";
+    select.prepend(option);
+  }
   if (select && ![...select.options].some((option) => option.value === "hikvision")) {
     const option = document.createElement("option");
     option.value = "hikvision";
@@ -119,6 +129,7 @@ function renderSearchResults() {
   if (!searchFilter) return;
   const query = searchFilter.toLowerCase();
   const matches = [
+    ...hosts.filter((item) => `${item.name} ${item.hostType} ${item.description || ""} ${item.tags || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Host", name: item.name, detail: `${item.itemCount || 0} items`, open: () => { selectedHostId = item.id; showWorkspace("Hosts"); renderHostsWorkspace(); } })),
     ...monitors.filter((item) => `${item.name} ${item.target} ${item.type} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Monitor", name: item.name, detail: item.target, open: () => openMonitorDetails(item) })),
     ...(featureEnabled("snmp") ? snmpDevices.filter((item) => `${item.name} ${item.host} ${item.sysName || ""} ${item.sysDescription || ""} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "SNMP", name: item.name, detail: item.sysName || item.host, open: () => openSnmpDetails(item) })) : []),
     ...(featureEnabled("docker") ? dockerHosts.filter((item) => `${item.name} ${item.endpoint} ${item.status}`.toLowerCase().includes(query)).map((item) => ({ kind: "Docker host", name: item.name, detail: item.endpoint, open: () => openDockerHostForm(item) })) : []),
@@ -188,6 +199,10 @@ document.querySelectorAll(".nav-item").forEach((item) => {
     }
     if (item.dataset.page === "SNMP Devices") {
       showWorkspace("SNMP Devices");
+      return;
+    }
+    if (item.dataset.page === "Hosts") {
+      showWorkspace("Hosts");
       return;
     }
     if (item.dataset.page === "Docker") {
@@ -1288,6 +1303,164 @@ function renderDockerWorkspace() {
   }
 }
 
+async function loadHosts() {
+  hosts = await api("/api/hosts");
+  if (!selectedHostId && hosts.length) selectedHostId = hosts[0].id;
+  if (selectedHostId && !hosts.some((host) => String(host.id) === String(selectedHostId))) selectedHostId = hosts[0]?.id || null;
+  renderHostsWorkspace();
+}
+
+function hostStatusLabel(status) {
+  const value = String(status || "unknown").toLowerCase();
+  if (value === "up") return "up";
+  if (value === "down") return "warn";
+  return "warn";
+}
+
+function renderHostLatestRows(rows, targetId = "hostLatestDataList") {
+  const list = document.getElementById(targetId);
+  if (!list) return;
+  list.replaceChildren();
+  if (!rows.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No item data is attached to this host yet."; list.append(empty); return; }
+  for (const item of rows.slice(0, 140)) {
+    const row = document.createElement("article"); row.className = "latest-data-row";
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = `${item.targetName} - ${item.metricLabel}`;
+    const detail = document.createElement("small"); detail.textContent = `${item.targetType.toUpperCase()} - ${item.metricKey} - updated ${formatDate(item.updatedAt)}`; copy.append(name, detail);
+    const value = document.createElement("span"); value.className = "latest-data-value"; value.textContent = `${item.value ?? "--"}${item.unit ? ` ${item.unit}` : ""}`;
+    const graph = document.createElement("button"); graph.className = "monitor-action"; graph.textContent = "graph"; graph.disabled = !item.graphable; graph.addEventListener("click", () => renderHostMetricGraph(item));
+    row.append(copy, value, graph); list.append(row);
+  }
+}
+
+async function renderHostMetricGraph(item) {
+  const chart = document.getElementById("hostMetricChart");
+  chart.replaceChildren();
+  const range = document.getElementById("hostLatestRange").value;
+  const points = await api(`/api/metric-history?targetType=${encodeURIComponent(item.targetType)}&targetId=${encodeURIComponent(item.targetId)}&metricKey=${encodeURIComponent(item.metricKey)}&range=${encodeURIComponent(range)}`);
+  const numeric = points.map((point) => ({ ...point, value: Number(point.value) })).filter((point) => Number.isFinite(point.value));
+  if (numeric.length < 2) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "Not enough numeric history for this host graph yet."; chart.append(empty); return; }
+  const ns = "http://www.w3.org/2000/svg"; const svg = document.createElementNS(ns, "svg"); svg.setAttribute("viewBox", "0 0 860 280"); const left = 62; const top = 20; const width = 746; const height = 220;
+  const max = Math.max(...numeric.map((point) => point.value), 1); const min = Math.min(...numeric.map((point) => point.value), 0);
+  for (let index = 0; index <= 4; index += 1) { const y = top + (height / 4) * index; const line = document.createElementNS(ns, "line"); line.setAttribute("x1", left); line.setAttribute("x2", left + width); line.setAttribute("y1", y); line.setAttribute("y2", y); line.setAttribute("class", "chart-grid"); svg.append(line); chartText(svg, left - 8, y + 3, `${(max - ((max - min) / 4) * index).toFixed(1)}${item.unit ? ` ${item.unit}` : ""}`, "end"); }
+  chartText(svg, left, 262, `${item.targetName} - ${item.metricLabel}`, "start");
+  const path = document.createElementNS(ns, "path"); path.setAttribute("class", "response-path"); path.setAttribute("d", makePath(numeric.map((point) => point.value), width, height, min, max, left, top)); svg.append(path); chart.append(svg);
+}
+
+async function renderSelectedHost(hostId = selectedHostId) {
+  const title = document.getElementById("hostDetailTitle");
+  const help = document.getElementById("hostDetailHelp");
+  const itemList = document.getElementById("hostItemList");
+  const problemList = document.getElementById("hostProblemList");
+  const latestList = document.getElementById("hostLatestDataList");
+  document.getElementById("hostMetricChart")?.replaceChildren();
+  if (!title || !itemList || !problemList || !latestList) return;
+  if (!hostId) {
+    title.textContent = "Select a host";
+    help.textContent = "Pick a host to see its items, current problems, and latest data.";
+    for (const list of [itemList, problemList, latestList]) list.replaceChildren();
+    const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No host selected.";
+    itemList.append(empty);
+    return;
+  }
+  const host = await api(`/api/hosts/${hostId}`);
+  title.textContent = host.name;
+  help.textContent = `${host.hostType} - ${host.itemCount} item${host.itemCount === 1 ? "" : "s"} - ${host.problemCount} current problem${host.problemCount === 1 ? "" : "s"}`;
+  itemList.replaceChildren();
+  if (!host.items.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No items attached yet. Add ping, API, SNMP, Docker, or UniFi items to build this host."; itemList.append(empty); }
+  for (const item of host.items) {
+    const row = document.createElement("article"); row.className = "profile-row";
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = item.name; const detail = document.createElement("small"); detail.textContent = `${item.typeLabel} - ${item.target || "no target"} - ${formatDate(item.updatedAt)}`; copy.append(name, detail);
+    const status = document.createElement("span"); status.className = `status-label ${hostStatusLabel(item.status)}`; status.textContent = item.missing ? "MISSING" : item.status.toUpperCase();
+    const remove = document.createElement("button"); remove.className = "monitor-action delete"; remove.textContent = "x"; remove.addEventListener("click", async () => { await api(`/api/hosts/${host.id}/items/${encodeURIComponent(item.itemType)}/${encodeURIComponent(item.itemId)}`, { method: "DELETE" }); await Promise.all([loadHosts(), loadNetworkMap(), loadAlertRules()]); selectedHostId = host.id; await renderSelectedHost(host.id); });
+    row.append(copy, status, remove); itemList.append(row);
+  }
+  problemList.replaceChildren();
+  if (!host.problems.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No current problems for this host."; problemList.append(empty); }
+  for (const problem of host.problems) {
+    const row = document.createElement("article"); row.className = `rule-row active severity-${problem.severity}`;
+    const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = problem.name; const detail = document.createElement("small"); detail.textContent = `${problem.targetName} - ${problem.metricLabel} - ${problem.cause || "trigger is true"}`; copy.append(name, detail);
+    const state = document.createElement("span"); state.className = "status-label warn"; state.textContent = problem.severity.toUpperCase(); row.append(copy, state); problemList.append(row);
+  }
+  renderHostLatestRows(host.latestData);
+}
+
+function renderHostsWorkspace() {
+  const metrics = document.getElementById("hostsMetrics");
+  const list = document.getElementById("hostList");
+  const nav = document.getElementById("hostsNavCount");
+  if (!metrics || !list) return;
+  const problems = hosts.reduce((sum, host) => sum + Number(host.problemCount || 0), 0);
+  if (nav) nav.textContent = hosts.length;
+  metrics.replaceChildren(metricCard("Hosts", hosts.length, "managed groups"), metricCard("Linked items", hosts.reduce((sum, host) => sum + Number(host.itemCount || 0), 0), "monitors, APIs, SNMP, Docker"), metricCard("Healthy", hosts.filter((host) => host.status === "up").length, "host rollups"), metricCard("Problems", problems, "triggered host items", problems > 0));
+  list.replaceChildren();
+  if (!hosts.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No hosts yet. Create Home Assistant, TrueNAS Apps, or a UniFi switch, then attach items to it."; list.append(empty); renderSelectedHost(null); return; }
+  for (const host of hosts) {
+    const card = document.createElement("button"); card.className = `docker-detail-card ${String(host.status).toLowerCase() === "down" ? "down" : ""} ${String(host.id) === String(selectedHostId) ? "selected" : ""}`;
+    const header = document.createElement("div"); const name = document.createElement("strong"); name.textContent = host.name; const status = document.createElement("span"); status.className = `status-label ${hostStatusLabel(host.status)}`; status.textContent = String(host.status || "unknown").toUpperCase(); header.append(name, status);
+    const detail = document.createElement("small"); detail.textContent = `${host.hostType} - ${host.itemCount} items - ${host.problemCount} problems${host.tags ? ` - ${host.tags}` : ""}`;
+    const actions = document.createElement("div"); actions.className = "monitor-actions";
+    const add = document.createElement("button"); add.type = "button"; add.className = "monitor-action"; add.textContent = "+"; add.title = "Attach item"; add.addEventListener("click", (event) => { event.stopPropagation(); openHostItemForm(host); });
+    const edit = document.createElement("button"); edit.type = "button"; edit.className = "monitor-action"; edit.textContent = "i"; edit.title = "Edit host"; edit.addEventListener("click", (event) => { event.stopPropagation(); openHostForm(host); });
+    const remove = document.createElement("button"); remove.type = "button"; remove.className = "monitor-action delete"; remove.textContent = "x"; remove.title = "Delete host"; remove.addEventListener("click", async (event) => { event.stopPropagation(); if (window.confirm(`Delete host ${host.name}? This removes host grouping only, not monitors/devices.`)) { await api(`/api/hosts/${host.id}`, { method: "DELETE" }); selectedHostId = null; await Promise.all([loadHosts(), loadNetworkMap()]); } });
+    actions.append(add, edit, remove);
+    card.append(header, detail, actions);
+    card.addEventListener("click", async () => { selectedHostId = host.id; renderHostsWorkspace(); await renderSelectedHost(host.id); });
+    list.append(card);
+  }
+  renderSelectedHost(selectedHostId);
+}
+
+function openHostForm(host = null) {
+  const form = document.getElementById("hostForm");
+  form.reset();
+  form.elements.id.value = host?.id || "";
+  form.elements.name.value = host?.name || "";
+  form.elements.hostType.value = host?.hostType || "server";
+  form.elements.description.value = host?.description || "";
+  form.elements.tags.value = host?.tags || "";
+  document.getElementById("hostFormTitle").textContent = host ? `Edit ${host.name}` : "Add host";
+  document.getElementById("hostFormError").textContent = "";
+  document.getElementById("hostModal").hidden = false;
+}
+
+async function loadHostAttachableItems() {
+  hostAttachableItems = await api("/api/hosts/attachable-items");
+}
+
+function updateHostItemSelect() {
+  const form = document.getElementById("hostItemForm");
+  const select = form.elements.itemId;
+  const type = form.elements.itemType.value;
+  select.replaceChildren();
+  for (const item of hostAttachableItems[type] || []) {
+    const option = document.createElement("option"); option.value = item.id; option.textContent = `${item.name} - ${item.detail || item.status || item.id}`; select.append(option);
+  }
+  if (!select.children.length) { const option = document.createElement("option"); option.value = ""; option.textContent = "No items available yet"; select.append(option); }
+}
+
+async function openHostItemForm(host) {
+  if (!Object.keys(hostAttachableItems).length) await loadHostAttachableItems();
+  const form = document.getElementById("hostItemForm");
+  form.reset();
+  form.elements.hostId.value = host.id;
+  document.getElementById("hostItemTitle").textContent = `Attach item to ${host.name}`;
+  updateHostItemSelect();
+  document.getElementById("hostItemError").textContent = "";
+  document.getElementById("hostItemModal").hidden = false;
+}
+
+async function openAutomationApi() {
+  const data = await api("/api/automation/capabilities");
+  const list = document.getElementById("automationApiList");
+  list.replaceChildren();
+  for (const [name, endpoints] of Object.entries(data.resources || {})) {
+    const row = document.createElement("article"); row.className = "profile-row";
+    const copy = document.createElement("div"); const title = document.createElement("strong"); title.textContent = name; const detail = document.createElement("small"); detail.textContent = endpoints.join(" | "); copy.append(title, detail);
+    row.append(copy); list.append(row);
+  }
+  document.getElementById("automationApiModal").hidden = false;
+}
+
 async function loadAlertRules() {
   [alertRules, alertRuleOptions, currentProblems, latestData] = await Promise.all([api("/api/alert-rules"), api("/api/alert-rules/options"), api("/api/problems"), api("/api/latest-data")]);
   renderAlertRules();
@@ -1413,12 +1586,12 @@ function renderLatestData() {
   if (!list) return;
   const query = (document.getElementById("latestDataSearch")?.value || "").toLowerCase();
   list.replaceChildren();
-  const rows = latestData.filter((row) => `${row.targetName} ${row.metricLabel} ${row.metricKey} ${row.value}`.toLowerCase().includes(query)).slice(0, 160);
+  const rows = latestData.filter((row) => `${row.hostName || ""} ${row.targetName} ${row.metricLabel} ${row.metricKey} ${row.value}`.toLowerCase().includes(query)).slice(0, 160);
   if (!rows.length) { const empty = document.createElement("p"); empty.className = "empty-state"; empty.textContent = "No latest data matches your search yet."; list.append(empty); return; }
   for (const item of rows) {
     const row = document.createElement("article"); row.className = "latest-data-row";
     const copy = document.createElement("div"); const name = document.createElement("strong"); name.textContent = `${item.targetName} - ${item.metricLabel}`;
-    const detail = document.createElement("small"); detail.textContent = `${item.targetType.toUpperCase()} - ${item.metricKey} - updated ${formatDate(item.updatedAt)}`; copy.append(name, detail);
+    const detail = document.createElement("small"); detail.textContent = `${item.hostName ? `${item.hostName} - ` : ""}${item.targetType.toUpperCase()} - ${item.metricKey} - updated ${formatDate(item.updatedAt)}`; copy.append(name, detail);
     const value = document.createElement("span"); value.className = "latest-data-value"; value.textContent = `${item.value ?? "--"}${item.unit ? ` ${item.unit}` : ""}`;
     const graph = document.createElement("button"); graph.className = "monitor-action"; graph.textContent = "graph"; graph.disabled = !item.graphable; graph.addEventListener("click", () => renderLatestMetricGraph(item));
     row.append(copy, value, graph); list.append(row);
@@ -1584,7 +1757,7 @@ function defaultTopologyPositions(nodes, edges) {
     if (!grouped.has(level)) grouped.set(level, []);
     grouped.get(level).push(node);
   }
-  const typeRank = { subnet: 0, "unifi-network-host": 1, "protect-host": 1, "docker-host": 1, snmp: 2, "unifi-site": 2, "unifi-device": 3, protect: 3, monitor: 4, manual: 5 };
+  const typeRank = { subnet: 0, host: 1, "unifi-network-host": 1, "protect-host": 1, "docker-host": 1, snmp: 2, "unifi-site": 2, "unifi-device": 3, protect: 3, monitor: 4, manual: 5 };
   const positions = new Map();
   const sortedLevels = [...grouped.keys()].sort((a, b) => a - b);
   for (const level of sortedLevels) {
@@ -1611,7 +1784,7 @@ function renderNetworkMap() {
   canvas.append(svg);
   for (const node of canvasNodes) { const position = positions.get(node.id); const button = document.createElement("button"); button.className = `topology-canvas-node ${node.status === "down" ? "down" : ""} ${node.manual ? "manual" : ""} ${node.customised ? "customised" : ""}`; button.style.left = `${position.x}%`; button.style.top = `${position.y}%`; button.title = `${node.type}: ${node.detail} - click to edit, use Line on the card below to correct parent links`; const label = document.createElement("span"); label.className = "topology-node-label"; label.textContent = node.name; button.append(makeIconBadge(node, "node-glyph"), label); enableTopologyDrag(button, node, canvas, position); button.addEventListener("click", () => { if (!button.dataset.dragged) openMapNode(node); }); canvas.append(button); }
   map.append(canvas);
-  for (const type of [...new Set(["subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
+  for (const type of [...new Set(["host", "subnet", "snmp", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client", "docker-host", "docker", "protect-host", "protect", "monitor", ...networkMap.nodes.map((node) => node.type)])]) {
     const nodes = networkMap.nodes.filter((node) => node.type === type); if (!nodes.length) continue;
     const group = document.createElement("section"); group.className = "topology-group"; const title = document.createElement("h2"); title.textContent = type.replace("-", " "); const cards = document.createElement("div"); cards.className = "topology-nodes";
     for (const node of nodes) { const card = document.createElement("article"); card.className = `topology-node ${node.status === "down" ? "down" : ""}`; const header = document.createElement("div"); header.className = "topology-node-header"; const name = document.createElement("strong"); name.textContent = node.name; header.append(makeIconBadge(node, "node-glyph"), name); const detail = document.createElement("small"); detail.textContent = node.detail; const links = document.createElement("span"); links.textContent = `${networkMap.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length} mapped links`; card.append(header, detail, links); cards.append(card); }
@@ -2302,6 +2475,36 @@ document.getElementById("alertRuleForm").addEventListener("submit", async (event
 });
 document.getElementById("dockerPageAddHost").addEventListener("click", () => openDockerHostForm());
 document.getElementById("dockerPageRefresh").addEventListener("click", async () => { await api("/api/docker/refresh", { method: "POST", body: "{}" }); await Promise.all([loadDockerFleet(), loadAlertRules(), loadIncidents()]); });
+document.getElementById("addHost").addEventListener("click", () => openHostForm());
+document.getElementById("showAutomationApi").addEventListener("click", openAutomationApi);
+document.getElementById("hostLatestRange").addEventListener("change", () => { document.getElementById("hostMetricChart").replaceChildren(); });
+document.getElementById("hostItemType").addEventListener("change", updateHostItemSelect);
+document.getElementById("hostForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("hostFormError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form));
+  try {
+    const result = await api(values.id ? `/api/hosts/${values.id}` : "/api/hosts", { method: values.id ? "PUT" : "POST", body: JSON.stringify(values) });
+    selectedHostId = values.id || result.id;
+    document.getElementById("hostModal").hidden = true;
+    await Promise.all([loadHosts(), loadNetworkMap()]);
+    showToast("Host saved", values.name);
+  } catch (err) { error.textContent = err.message; }
+});
+document.getElementById("hostItemForm").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const form = event.currentTarget; const error = document.getElementById("hostItemError"); error.textContent = "";
+  const values = Object.fromEntries(new FormData(form));
+  try {
+    if (!values.itemId) throw new Error("Choose an item to attach.");
+    await api(`/api/hosts/${values.hostId}/items`, { method: "POST", body: JSON.stringify(values) });
+    selectedHostId = Number(values.hostId);
+    document.getElementById("hostItemModal").hidden = true;
+    await Promise.all([loadHosts(), loadNetworkMap(), loadAlertRules()]);
+    await renderSelectedHost(selectedHostId);
+    showToast("Item attached", "Host latest data and topology updated");
+  } catch (err) { error.textContent = err.message; }
+});
 document.getElementById("unifiNetworkPageAddHost").addEventListener("click", () => openUnifiNetworkHostForm());
 document.getElementById("addUnifiNetworkHost").addEventListener("click", () => openUnifiNetworkHostForm());
 document.getElementById("unifiNetworkPageRefresh").addEventListener("click", async () => {
@@ -2505,6 +2708,7 @@ loadGraph();
 loadSnmpDevices();
 loadSnmpProfiles();
 loadDockerFleet();
+loadHosts();
 loadUnifiNetworkFleet();
 loadProtectFleet();
 loadHikvisionFleet();
@@ -2516,5 +2720,5 @@ document.querySelector('[data-page="Network Map"] .nav-pill')?.remove();
 const dockerPanelActions = document.querySelector(".docker-panel .modal-heading-actions");
 if (dockerPanelActions) { const viewAll = document.createElement("button"); viewAll.className = "text-button"; viewAll.textContent = "View all"; viewAll.addEventListener("click", () => showWorkspace("Docker")); dockerPanelActions.prepend(viewAll); }
 setInterval(() => {
-  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadUnifiNetworkFleet(), loadProtectFleet(), loadHikvisionFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
+  Promise.all([loadMonitors(), loadSnmpDevices(), loadDockerFleet(), loadHosts(), loadUnifiNetworkFleet(), loadProtectFleet(), loadHikvisionFleet(), loadAlertRules(), loadNetworkMap(), loadIncidents(), loadGraph()]).catch(() => {});
 }, 30000);

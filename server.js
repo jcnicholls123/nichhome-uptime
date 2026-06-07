@@ -377,6 +377,24 @@ db.exec(`
     started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     resolved_at TEXT
   );
+  CREATE TABLE IF NOT EXISTS hosts (
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    host_type TEXT NOT NULL DEFAULT 'generic',
+    description TEXT,
+    tags TEXT,
+    status TEXT NOT NULL DEFAULT 'unknown',
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+  );
+  CREATE TABLE IF NOT EXISTS host_links (
+    host_id INTEGER NOT NULL REFERENCES hosts(id) ON DELETE CASCADE,
+    item_type TEXT NOT NULL,
+    item_id TEXT NOT NULL,
+    label TEXT,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY(host_id, item_type, item_id)
+  );
   CREATE TABLE IF NOT EXISTS map_nodes (
     id INTEGER PRIMARY KEY,
     name TEXT NOT NULL,
@@ -454,6 +472,11 @@ ensureColumn("unifi_network_devices", "firmware_version", "TEXT");
 ensureColumn("unifi_network_devices", "latest_firmware_version", "TEXT");
 ensureColumn("unifi_network_devices", "update_available", "INTEGER NOT NULL DEFAULT 0");
 ensureColumn("map_links", "link_mode", "TEXT NOT NULL DEFAULT 'manual'");
+ensureColumn("hosts", "host_type", "TEXT NOT NULL DEFAULT 'generic'");
+ensureColumn("hosts", "description", "TEXT");
+ensureColumn("hosts", "tags", "TEXT");
+ensureColumn("hosts", "status", "TEXT NOT NULL DEFAULT 'unknown'");
+ensureColumn("hosts", "updated_at", "TEXT");
 
 function migrateAlertRuleTargets() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
@@ -507,6 +530,59 @@ function migrateAlertRuleTargets() {
 }
 
 migrateAlertRuleTargets();
+
+function migrateAlertRuleMonitorTargets() {
+  const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'alert_rules'").get();
+  if (!table?.sql || table.sql.includes("'monitor'")) return;
+  db.exec("PRAGMA foreign_keys = OFF");
+  db.transaction(() => {
+    db.exec(`
+      ALTER TABLE alert_rule_incidents RENAME TO alert_rule_incidents_old;
+      ALTER TABLE alert_rules RENAME TO alert_rules_old;
+      CREATE TABLE alert_rules (
+        id INTEGER PRIMARY KEY,
+        name TEXT NOT NULL,
+        target_type TEXT NOT NULL CHECK(target_type IN ('snmp', 'docker', 'unifi', 'hikvision', 'monitor')),
+        target_id TEXT NOT NULL,
+        metric_key TEXT NOT NULL,
+        operator TEXT NOT NULL,
+        threshold TEXT NOT NULL,
+        function_name TEXT NOT NULL DEFAULT 'last',
+        window_seconds INTEGER NOT NULL DEFAULT 0,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        severity TEXT NOT NULL DEFAULT 'warning',
+        description TEXT,
+        action_text TEXT,
+        trigger_count INTEGER NOT NULL DEFAULT 1,
+        recovery_count INTEGER NOT NULL DEFAULT 1,
+        failure_streak INTEGER NOT NULL DEFAULT 0,
+        recovery_streak INTEGER NOT NULL DEFAULT 0,
+        last_evaluated_at TEXT,
+        dependency_rule_id INTEGER
+      );
+      CREATE TABLE alert_rule_incidents (
+        id INTEGER PRIMARY KEY,
+        rule_id INTEGER NOT NULL REFERENCES alert_rules(id) ON DELETE CASCADE,
+        current_value TEXT,
+        cause TEXT,
+        acknowledged_at TEXT,
+        acknowledged_by TEXT,
+        started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+        resolved_at TEXT
+      );
+      INSERT INTO alert_rules (id, name, target_type, target_id, metric_key, operator, threshold, function_name, window_seconds, enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id)
+      SELECT id, name, target_type, target_id, metric_key, operator, threshold, COALESCE(function_name, 'last'), COALESCE(window_seconds, 0), enabled, created_at, severity, description, action_text, trigger_count, recovery_count, failure_streak, recovery_streak, last_evaluated_at, dependency_rule_id FROM alert_rules_old;
+      INSERT INTO alert_rule_incidents (id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at)
+      SELECT id, rule_id, current_value, cause, acknowledged_at, acknowledged_by, started_at, resolved_at FROM alert_rule_incidents_old WHERE rule_id IN (SELECT id FROM alert_rules);
+      DROP TABLE alert_rule_incidents_old;
+      DROP TABLE alert_rules_old;
+    `);
+  })();
+  db.exec("PRAGMA foreign_keys = ON");
+}
+
+migrateAlertRuleMonitorTargets();
 
 function migrateMonitorTypes() {
   const table = db.prepare("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'monitors'").get();
@@ -974,6 +1050,127 @@ function hikvisionAlertMetrics(camera) {
   ];
 }
 
+function monitorAlertMetrics(monitor) {
+  return [
+    { key: "status", label: "Monitor status", value: monitor.status, unit: "" },
+    { key: "response_ms", label: "Response time", value: monitor.response_ms, unit: "ms" },
+    { key: "last_error", label: "Last error", value: monitor.last_error || "", unit: "" },
+    { key: "api_value", label: "API extracted value", value: monitor.api_value || "", unit: "" }
+  ];
+}
+
+const hostItemTypeLabels = {
+  monitor: "Monitor/API/Ping",
+  snmp: "SNMP device",
+  docker: "Docker container",
+  "docker-host": "Docker host",
+  unifi: "UniFi Network device",
+  protect: "UniFi Protect camera",
+  hikvision: "Hikvision camera"
+};
+
+function validHostItemType(type) {
+  return Object.prototype.hasOwnProperty.call(hostItemTypeLabels, type);
+}
+
+function hostItemRecord(itemType, itemId) {
+  const id = String(itemId || "");
+  if (itemType === "monitor") return db.prepare("SELECT id, name, type, target, status, last_checked_at AS updatedAt FROM monitors WHERE id = ?").get(Number(id));
+  if (itemType === "snmp") return db.prepare("SELECT id, name, host AS target, status, last_polled_at AS updatedAt FROM snmp_devices WHERE id = ?").get(Number(id));
+  if (itemType === "docker") return db.prepare("SELECT container_id AS id, name, image AS target, CASE WHEN health = 'unhealthy' THEN 'down' ELSE 'up' END AS status, last_seen_at AS updatedAt FROM docker_containers WHERE container_id = ?").get(id);
+  if (itemType === "docker-host") return db.prepare("SELECT id, name, endpoint AS target, status, last_polled_at AS updatedAt FROM docker_hosts WHERE id = ?").get(Number(id));
+  if (itemType === "unifi") return db.prepare("SELECT id, name, COALESCE(address, model, device_type) AS target, status, last_polled_at AS updatedAt FROM unifi_network_devices WHERE id = ?").get(id);
+  if (itemType === "protect") return db.prepare("SELECT id, name, COALESCE(address, model) AS target, status, last_polled_at AS updatedAt FROM protect_cameras WHERE id = ?").get(id);
+  if (itemType === "hikvision") return db.prepare("SELECT id, name, COALESCE(address, model) AS target, status, last_polled_at AS updatedAt FROM hikvision_cameras WHERE id = ?").get(id);
+  return null;
+}
+
+function hostItemStatus(record) {
+  const status = String(record?.status || "unknown").toLowerCase();
+  if (["down", "unhealthy", "offline", "error", "failed"].includes(status)) return "down";
+  if (["up", "healthy", "online", "ok", "running"].includes(status)) return "up";
+  return "unknown";
+}
+
+function summarizeHostStatus(items) {
+  if (!items.length) return "unknown";
+  if (items.some((item) => item.status === "down")) return "down";
+  if (items.some((item) => item.status === "up")) return "up";
+  return "unknown";
+}
+
+function hostLinksFor(hostId) {
+  return db.prepare("SELECT item_type AS itemType, item_id AS itemId, label FROM host_links WHERE host_id = ? ORDER BY item_type, label, item_id").all(Number(hostId));
+}
+
+function hostItems(hostId) {
+  return hostLinksFor(hostId).map((link) => {
+    const record = hostItemRecord(link.itemType, link.itemId);
+    return {
+      ...link,
+      typeLabel: hostItemTypeLabels[link.itemType] || link.itemType,
+      name: link.label || record?.name || `${link.itemType} ${link.itemId}`,
+      target: record?.target || "",
+      status: hostItemStatus(record),
+      updatedAt: record?.updatedAt || null,
+      missing: !record
+    };
+  });
+}
+
+function hostProblemCount(hostId) {
+  return db.prepare(`
+    SELECT COUNT(*) AS count
+    FROM alert_rule_incidents
+    JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
+    JOIN host_links ON host_links.item_type = alert_rules.target_type AND host_links.item_id = alert_rules.target_id
+    WHERE host_links.host_id = ? AND alert_rule_incidents.resolved_at IS NULL
+  `).get(Number(hostId)).count;
+}
+
+function hostDecorations() {
+  return new Map(db.prepare(`
+    SELECT host_links.item_type AS itemType, host_links.item_id AS itemId, hosts.id AS hostId, hosts.name AS hostName, hosts.host_type AS hostType, hosts.tags
+    FROM host_links JOIN hosts ON hosts.id = host_links.host_id
+  `).all().map((item) => [`${item.itemType}:${item.itemId}`, item]));
+}
+
+function decorateLatestRows(rows) {
+  const hosts = hostDecorations();
+  return rows.map((row) => ({ ...row, ...(hosts.get(`${row.targetType}:${row.targetId}`) || { hostId: null, hostName: "", hostType: "", tags: "" }) }));
+}
+
+function latestDataRows() {
+  const rows = [];
+  for (const monitor of db.prepare("SELECT * FROM monitors ORDER BY name").all()) {
+    rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "status", metricLabel: "Monitor status", value: monitor.status, unit: "", updatedAt: monitor.last_checked_at, graphable: false });
+    rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "response_ms", metricLabel: "Response time", value: monitor.response_ms, unit: "ms", updatedAt: monitor.last_checked_at, graphable: true });
+    if (monitor.type === "api") rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "api_value", metricLabel: "API extracted value", value: monitor.api_value || "", unit: "", updatedAt: monitor.last_checked_at, graphable: Number.isFinite(Number(monitor.api_value)) });
+    if (monitor.last_error) rows.push({ targetType: "monitor", targetId: String(monitor.id), targetName: monitor.name, metricKey: "last_error", metricLabel: "Last error", value: monitor.last_error, unit: "", updatedAt: monitor.last_checked_at, graphable: false });
+  }
+  for (const device of db.prepare("SELECT * FROM snmp_devices ORDER BY name").all()) {
+    for (const metric of snmpAlertMetrics(device)) rows.push({
+      targetType: "snmp", targetId: String(device.id), targetName: device.name,
+      metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "",
+      updatedAt: metric.key.startsWith("device|") ? device.last_polled_at : db.prepare("SELECT updated_at FROM snmp_profile_metrics WHERE device_id = ? AND category || '|' || metric_key = ?").get(device.id, metric.key)?.updated_at || device.last_polled_at,
+      graphable: metric.key === "device|response_ms" || Boolean(db.prepare("SELECT 1 FROM snmp_profile_metric_history WHERE device_id = ? AND category || '|' || metric_key = ? LIMIT 1").get(device.id, metric.key))
+    });
+  }
+  for (const container of db.prepare("SELECT container_id AS id, name, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, memory_limit_bytes AS memoryLimitBytes, restart_count AS restartCount, health, last_seen_at AS updatedAt FROM docker_containers ORDER BY name").all()) {
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "cpu_percent", metricLabel: "CPU usage", value: container.cpuPercent, unit: "%", updatedAt: container.updatedAt, graphable: true });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "memory_percent", metricLabel: "Memory usage", value: container.memoryLimitBytes > 0 ? ((container.memoryBytes / container.memoryLimitBytes) * 100).toFixed(2) : null, unit: "%", updatedAt: container.updatedAt, graphable: true });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "restart_count", metricLabel: "Restart count", value: container.restartCount, unit: "", updatedAt: container.updatedAt, graphable: false });
+    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "health", metricLabel: "Container health", value: container.health, unit: "", updatedAt: container.updatedAt, graphable: false });
+  }
+  for (const device of db.prepare("SELECT * FROM unifi_network_devices ORDER BY name").all()) {
+    for (const metric of unifiAlertMetrics(device)) rows.push({ targetType: "unifi", targetId: device.id, targetName: device.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: device.last_polled_at, graphable: false });
+  }
+  for (const camera of db.prepare("SELECT * FROM hikvision_cameras ORDER BY name").all()) {
+    for (const metric of hikvisionAlertMetrics(camera)) rows.push({ targetType: "hikvision", targetId: camera.id, targetName: camera.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: camera.last_polled_at, graphable: false });
+  }
+  return decorateLatestRows(rows);
+}
+
 function alertRuleValue(rule) {
   if (rule.target_type === "snmp") {
     const separator = rule.metric_key.indexOf("|");
@@ -1002,6 +1199,15 @@ function alertRuleValue(rule) {
     if (!camera) return null;
     return camera[rule.metric_key] ?? null;
   }
+  if (rule.target_type === "monitor") {
+    const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(Number(rule.target_id));
+    if (!monitor) return null;
+    if (rule.metric_key === "status") return monitor.status;
+    if (rule.metric_key === "response_ms") return monitor.response_ms;
+    if (rule.metric_key === "api_value") return monitor.api_value ?? "";
+    if (rule.metric_key === "last_error") return monitor.last_error ?? "";
+    return monitor[rule.metric_key] ?? null;
+  }
   const container = db.prepare("SELECT * FROM docker_containers WHERE container_id = ?").get(rule.target_id);
   if (!container) return null;
   if (rule.metric_key === "memory_percent") return container.memory_limit_bytes > 0 ? (container.memory_bytes / container.memory_limit_bytes) * 100 : null;
@@ -1021,6 +1227,10 @@ function alertRuleMetricLabel(rule) {
     const camera = db.prepare("SELECT * FROM hikvision_cameras WHERE id = ?").get(rule.target_id);
     return camera ? hikvisionAlertMetrics(camera).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
   }
+  if (rule.target_type === "monitor") {
+    const monitor = db.prepare("SELECT * FROM monitors WHERE id = ?").get(Number(rule.target_id));
+    return monitor ? monitorAlertMetrics(monitor).find((metric) => metric.key === rule.metric_key)?.label || rule.metric_key : rule.metric_key;
+  }
   const labels = { cpu_percent: "CPU usage", memory_percent: "Memory usage", restart_count: "Restart count", health: "Container health" };
   return labels[rule.metric_key] || rule.metric_key;
 }
@@ -1029,6 +1239,7 @@ function alertRuleTargetName(rule) {
   if (rule.target_type === "snmp") return db.prepare("SELECT name FROM snmp_devices WHERE id = ?").get(Number(rule.target_id))?.name || `SNMP ${rule.target_id}`;
   if (rule.target_type === "unifi") return db.prepare("SELECT name FROM unifi_network_devices WHERE id = ?").get(rule.target_id)?.name || `UniFi ${rule.target_id}`;
   if (rule.target_type === "hikvision") return db.prepare("SELECT name FROM hikvision_cameras WHERE id = ?").get(rule.target_id)?.name || `Hikvision ${rule.target_id}`;
+  if (rule.target_type === "monitor") return db.prepare("SELECT name FROM monitors WHERE id = ?").get(Number(rule.target_id))?.name || `Monitor ${rule.target_id}`;
   return db.prepare("SELECT name FROM docker_containers WHERE container_id = ?").get(rule.target_id)?.name || `Docker ${rule.target_id}`;
 }
 
@@ -1064,6 +1275,11 @@ function alertMetricSamples(rule) {
       return db.prepare("SELECT (memory_bytes * 100.0 / ?) AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND memory_bytes IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at DESC LIMIT 500").all(limit, rule.target_id, window);
     }
     if (rule.metric_key === "health") return [];
+  }
+  if (rule.target_type === "monitor") {
+    if (rule.metric_key === "response_ms") return db.prepare("SELECT response_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "status") return db.prepare("SELECT status AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
+    if (rule.metric_key === "api_value") return db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at DESC LIMIT 500").all(Number(rule.target_id), window);
   }
   const current = alertRuleValue(rule);
   return current == null ? [] : [{ value: current, recordedAt: new Date().toISOString() }];
@@ -2563,6 +2779,11 @@ app.get("/api/alert-rules", requireAuth, (req, res) => {
   })));
 });
 app.get("/api/alert-rules/options", requireAuth, (req, res) => {
+  const monitorTargets = db.prepare("SELECT * FROM monitors ORDER BY name").all().map((target) => ({
+    id: String(target.id),
+    name: `${target.name} (${target.type.toUpperCase()})`,
+    metrics: monitorAlertMetrics(target)
+  }));
   const snmpTargets = db.prepare("SELECT * FROM snmp_devices ORDER BY name").all().map((target) => ({
     ...target,
     metrics: snmpAlertMetrics(target)
@@ -2586,7 +2807,7 @@ app.get("/api/alert-rules/options", requireAuth, (req, res) => {
     name: `${target.name} (${target.host_name})`,
     metrics: hikvisionAlertMetrics(target)
   }));
-  res.json({ snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
+  res.json({ monitor: monitorTargets, snmp: snmpTargets, docker: dockerTargets, unifi: unifiTargets, hikvision: hikvisionTargets });
 });
 app.get("/api/alert-rules/templates", requireAuth, (req, res) => {
   res.json([
@@ -2671,8 +2892,8 @@ app.post("/api/alert-rules", requireAuth, async (req, res) => {
   const recoveryCount = Math.max(1, Math.min(20, Number(req.body.recoveryCount || 1)));
   const dependencyRuleId = req.body.dependencyRuleId ? Number(req.body.dependencyRuleId) : null;
   if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Alert rule name must be between 2 and 100 characters." });
-  if (!["snmp", "docker", "unifi", "hikvision"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
-  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
+  if (!["snmp", "docker", "unifi", "hikvision", "monitor"].includes(targetType) || !targetId || !metricKey || !["last", "avg", "min", "max", "change", "count"].includes(functionName) || !["<", "<=", ">", ">=", "==", "!=", "contains", "not_contains"].includes(operator) || !threshold || !["information", "warning", "average", "high", "disaster"].includes(severity)) return res.status(400).json({ error: "Choose a valid target, metric, function, severity, operator, and threshold." });
+  const exists = targetType === "snmp" ? db.prepare("SELECT 1 FROM snmp_devices WHERE id = ?").get(Number(targetId)) : targetType === "unifi" ? db.prepare("SELECT 1 FROM unifi_network_devices WHERE id = ?").get(targetId) : targetType === "hikvision" ? db.prepare("SELECT 1 FROM hikvision_cameras WHERE id = ?").get(targetId) : targetType === "monitor" ? db.prepare("SELECT 1 FROM monitors WHERE id = ?").get(Number(targetId)) : db.prepare("SELECT 1 FROM docker_containers WHERE container_id = ?").get(targetId);
   if (!exists) return res.status(400).json({ error: "The selected alert target no longer exists." });
   if (dependencyRuleId && !db.prepare("SELECT 1 FROM alert_rules WHERE id = ?").get(dependencyRuleId)) return res.status(400).json({ error: "Choose a valid dependency rule." });
   if (alertRuleValue({ target_type: targetType, target_id: targetId, metric_key: metricKey }) == null) return res.status(400).json({ error: "The selected metric is not currently available." });
@@ -2735,29 +2956,116 @@ app.get("/api/problems", requireAuth, (req, res) => {
     acknowledged: Boolean(problem.acknowledgedAt)
   })));
 });
+app.get("/api/hosts", requireAuth, (req, res) => {
+  const hosts = db.prepare("SELECT id, name, host_type AS hostType, description, tags, status, created_at AS createdAt, updated_at AS updatedAt FROM hosts ORDER BY name").all();
+  res.json(hosts.map((host) => {
+    const items = hostItems(host.id);
+    const status = summarizeHostStatus(items);
+    if (status !== host.status) db.prepare("UPDATE hosts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, host.id);
+    return { ...host, status, itemCount: items.length, problemCount: hostProblemCount(host.id), items };
+  }));
+});
+app.get("/api/hosts/attachable-items", requireAuth, (req, res) => {
+  res.json({
+    monitor: db.prepare("SELECT id, name, type, target, status FROM monitors ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: `${item.type.toUpperCase()} - ${item.target}`, status: item.status })),
+    snmp: db.prepare("SELECT id, name, host, status FROM snmp_devices ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: item.host, status: item.status })),
+    docker: db.prepare("SELECT container_id AS id, name, image, health FROM docker_containers ORDER BY name").all().map((item) => ({ id: item.id, name: item.name, detail: item.image || "Docker container", status: item.health === "unhealthy" ? "down" : "up" })),
+    "docker-host": db.prepare("SELECT id, name, endpoint, status FROM docker_hosts ORDER BY name").all().map((item) => ({ id: String(item.id), name: item.name, detail: item.endpoint, status: item.status })),
+    unifi: db.prepare("SELECT id, name, COALESCE(address, model, device_type) AS detail, status FROM unifi_network_devices ORDER BY name").all(),
+    protect: db.prepare("SELECT id, name, COALESCE(address, model) AS detail, status FROM protect_cameras ORDER BY name").all(),
+    hikvision: db.prepare("SELECT id, name, COALESCE(address, model) AS detail, status FROM hikvision_cameras ORDER BY name").all()
+  });
+});
+app.get("/api/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const host = db.prepare("SELECT id, name, host_type AS hostType, description, tags, status, created_at AS createdAt, updated_at AS updatedAt FROM hosts WHERE id = ?").get(id);
+  if (!host) return res.status(404).json({ error: "Host not found." });
+  const items = hostItems(id);
+  const links = new Set(items.map((item) => `${item.itemType}:${item.itemId}`));
+  const latestData = latestDataRows().filter((row) => links.has(`${row.targetType}:${row.targetId}`)).slice(0, 500);
+  const problems = db.prepare(`
+    SELECT alert_rule_incidents.id, alert_rule_incidents.started_at AS startedAt, alert_rule_incidents.current_value AS currentValue,
+      alert_rule_incidents.cause, alert_rules.id AS ruleId, alert_rules.name, alert_rules.target_type AS targetType,
+      alert_rules.target_id AS targetId, alert_rules.metric_key AS metricKey, alert_rules.severity
+    FROM alert_rule_incidents
+    JOIN alert_rules ON alert_rules.id = alert_rule_incidents.rule_id
+    JOIN host_links ON host_links.item_type = alert_rules.target_type AND host_links.item_id = alert_rules.target_id
+    WHERE host_links.host_id = ? AND alert_rule_incidents.resolved_at IS NULL
+    ORDER BY alert_rule_incidents.started_at DESC
+  `).all(id).map((problem) => ({ ...problem, targetName: alertRuleTargetName({ target_type: problem.targetType, target_id: problem.targetId }), metricLabel: alertRuleMetricLabel({ target_type: problem.targetType, target_id: problem.targetId, metric_key: problem.metricKey }) }));
+  const status = summarizeHostStatus(items);
+  if (status !== host.status) db.prepare("UPDATE hosts SET status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(status, id);
+  res.json({ ...host, status, itemCount: items.length, problemCount: problems.length, items, latestData, problems });
+});
+app.post("/api/hosts", requireAuth, (req, res) => {
+  const name = String(req.body.name || "").trim();
+  const hostType = String(req.body.hostType || "generic").trim().slice(0, 40) || "generic";
+  const description = String(req.body.description || "").trim().slice(0, 500);
+  const tags = String(req.body.tags || "").trim().slice(0, 500);
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Host name must be between 2 and 100 characters." });
+  try {
+    const result = db.prepare("INSERT INTO hosts (name, host_type, description, tags, updated_at) VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)").run(name, hostType, description, tags);
+    res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
+  } catch (error) {
+    if (String(error.message).includes("UNIQUE")) return res.status(409).json({ error: "A host with that name already exists." });
+    throw error;
+  }
+});
+app.put("/api/hosts/:id", requireAuth, (req, res) => {
+  const id = Number(req.params.id);
+  const current = db.prepare("SELECT * FROM hosts WHERE id = ?").get(id);
+  if (!current) return res.status(404).json({ error: "Host not found." });
+  const name = String(req.body.name || current.name).trim();
+  const hostType = String(req.body.hostType || current.host_type || "generic").trim().slice(0, 40) || "generic";
+  const description = String(req.body.description ?? current.description ?? "").trim().slice(0, 500);
+  const tags = String(req.body.tags ?? current.tags ?? "").trim().slice(0, 500);
+  if (name.length < 2 || name.length > 100) return res.status(400).json({ error: "Host name must be between 2 and 100 characters." });
+  db.prepare("UPDATE hosts SET name = ?, host_type = ?, description = ?, tags = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(name, hostType, description, tags, id);
+  res.json({ ok: true });
+});
+app.delete("/api/hosts/:id", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM hosts WHERE id = ?").run(Number(req.params.id));
+  if (!result.changes) return res.status(404).json({ error: "Host not found." });
+  res.json({ ok: true });
+});
+app.post("/api/hosts/:id/items", requireAuth, (req, res) => {
+  const hostId = Number(req.params.id);
+  if (!db.prepare("SELECT 1 FROM hosts WHERE id = ?").get(hostId)) return res.status(404).json({ error: "Host not found." });
+  const itemType = String(req.body.itemType || "").trim();
+  const itemId = String(req.body.itemId || "").trim();
+  const label = String(req.body.label || "").trim().slice(0, 100);
+  if (!validHostItemType(itemType) || !itemId) return res.status(400).json({ error: "Choose a valid host item type and item." });
+  if (!hostItemRecord(itemType, itemId)) return res.status(404).json({ error: "That item no longer exists." });
+  db.prepare(`
+    INSERT INTO host_links (host_id, item_type, item_id, label)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(host_id, item_type, item_id) DO UPDATE SET label=excluded.label
+  `).run(hostId, itemType, itemId, label);
+  db.prepare("UPDATE hosts SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(hostId);
+  res.status(201).json({ ok: true });
+});
+app.delete("/api/hosts/:id/items/:itemType/:itemId", requireAuth, (req, res) => {
+  const result = db.prepare("DELETE FROM host_links WHERE host_id = ? AND item_type = ? AND item_id = ?").run(Number(req.params.id), String(req.params.itemType), String(req.params.itemId));
+  if (!result.changes) return res.status(404).json({ error: "Host item link not found." });
+  db.prepare("UPDATE hosts SET updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(Number(req.params.id));
+  res.json({ ok: true });
+});
+app.get("/api/automation/capabilities", requireAuth, (req, res) => {
+  res.json({
+    name: "NichHome Uptime local automation API",
+    auth: "Cookie session from the NichHome web login",
+    version: packageInfo.version,
+    resources: {
+      hosts: ["GET /api/hosts", "POST /api/hosts", "GET /api/hosts/:id", "PUT /api/hosts/:id", "DELETE /api/hosts/:id", "POST /api/hosts/:id/items", "DELETE /api/hosts/:id/items/:itemType/:itemId"],
+      items: ["GET /api/hosts/attachable-items", "GET /api/latest-data", "GET /api/metric-history"],
+      monitors: ["GET /api/monitors", "POST /api/monitors", "PUT /api/monitors/:id", "POST /api/monitors/:id/check"],
+      triggers: ["GET /api/alert-rules", "GET /api/alert-rules/options", "POST /api/alert-rules", "PUT /api/alert-rules/:id"],
+      topology: ["GET /api/network-map", "POST /api/network-map/links", "PUT /api/network-map/overrides"]
+    }
+  });
+});
 app.get("/api/latest-data", requireAuth, (req, res) => {
-  const rows = [];
-  for (const device of db.prepare("SELECT * FROM snmp_devices ORDER BY name").all()) {
-    for (const metric of snmpAlertMetrics(device)) rows.push({
-      targetType: "snmp", targetId: String(device.id), targetName: device.name,
-      metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "",
-      updatedAt: metric.key.startsWith("device|") ? device.last_polled_at : db.prepare("SELECT updated_at FROM snmp_profile_metrics WHERE device_id = ? AND category || '|' || metric_key = ?").get(device.id, metric.key)?.updated_at || device.last_polled_at,
-      graphable: metric.key === "device|response_ms" || Boolean(db.prepare("SELECT 1 FROM snmp_profile_metric_history WHERE device_id = ? AND category || '|' || metric_key = ? LIMIT 1").get(device.id, metric.key))
-    });
-  }
-  for (const container of db.prepare("SELECT container_id AS id, name, cpu_percent AS cpuPercent, memory_bytes AS memoryBytes, memory_limit_bytes AS memoryLimitBytes, restart_count AS restartCount, health, last_seen_at AS updatedAt FROM docker_containers ORDER BY name").all()) {
-    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "cpu_percent", metricLabel: "CPU usage", value: container.cpuPercent, unit: "%", updatedAt: container.updatedAt, graphable: true });
-    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "memory_percent", metricLabel: "Memory usage", value: container.memoryLimitBytes > 0 ? ((container.memoryBytes / container.memoryLimitBytes) * 100).toFixed(2) : null, unit: "%", updatedAt: container.updatedAt, graphable: true });
-    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "restart_count", metricLabel: "Restart count", value: container.restartCount, unit: "", updatedAt: container.updatedAt, graphable: false });
-    rows.push({ targetType: "docker", targetId: container.id, targetName: container.name, metricKey: "health", metricLabel: "Container health", value: container.health, unit: "", updatedAt: container.updatedAt, graphable: false });
-  }
-  for (const device of db.prepare("SELECT * FROM unifi_network_devices ORDER BY name").all()) {
-    for (const metric of unifiAlertMetrics(device)) rows.push({ targetType: "unifi", targetId: device.id, targetName: device.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: device.last_polled_at, graphable: false });
-  }
-  for (const camera of db.prepare("SELECT * FROM hikvision_cameras ORDER BY name").all()) {
-    for (const metric of hikvisionAlertMetrics(camera)) rows.push({ targetType: "hikvision", targetId: camera.id, targetName: camera.name, metricKey: metric.key, metricLabel: metric.label, value: metric.value, unit: metric.unit || "", updatedAt: camera.last_polled_at, graphable: false });
-  }
-  res.json(rows.slice(0, 5000));
+  res.json(latestDataRows().slice(0, 5000));
 });
 app.get("/api/metric-history", requireAuth, (req, res) => {
   const targetType = String(req.query.targetType || "");
@@ -2778,6 +3086,9 @@ app.get("/api/metric-history", requireAuth, (req, res) => {
       const limit = Number(db.prepare("SELECT memory_limit_bytes AS value FROM docker_containers WHERE container_id = ?").get(targetId)?.value || 0);
       if (limit > 0) rows = db.prepare("SELECT (memory_bytes * 100.0 / ?) AS value, polled_at AS recordedAt FROM docker_metrics WHERE container_id = ? AND memory_bytes IS NOT NULL AND polled_at >= datetime('now', ?) ORDER BY polled_at LIMIT 2000").all(limit, targetId, window);
     }
+  } else if (targetType === "monitor") {
+    if (metricKey === "response_ms") rows = db.prepare("SELECT response_ms AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND response_ms IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
+    if (metricKey === "api_value") rows = db.prepare("SELECT message AS value, checked_at AS recordedAt FROM heartbeats WHERE monitor_id = ? AND message IS NOT NULL AND checked_at >= datetime('now', ?) ORDER BY checked_at LIMIT 2000").all(Number(targetId), window);
   }
   res.json(rows.map((row) => ({ ...row, value: Number.isFinite(Number(row.value)) ? Number(row.value) : row.value })));
 });
@@ -3338,6 +3649,19 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     }
     addEdge(id, childId);
   };
+  const hostNodeIdForItem = (itemType, itemId) => {
+    if (itemType === "snmp") return `snmp:${itemId}`;
+    if (itemType === "monitor") return `monitor:${itemId}`;
+    if (itemType === "docker") return `docker:${itemId}`;
+    if (itemType === "docker-host") return `docker-host:${itemId}`;
+    if (itemType === "unifi") return `unifi-device:${itemId}`;
+    if (itemType === "protect") return `protect:${itemId}`;
+    if (itemType === "hikvision") return `hikvision:${itemId}`;
+    return null;
+  };
+  for (const host of db.prepare("SELECT id, name, host_type, description, tags, status FROM hosts ORDER BY name").all()) {
+    nodes.push({ id: `host:${host.id}`, type: "host", name: host.name, status: host.status, detail: host.description || host.tags || "NichHome host", icon: host.host_type || "server" });
+  }
   for (const device of db.prepare("SELECT id, name, host, status, sys_description FROM snmp_devices ORDER BY name").all()) {
     const id = `snmp:${device.id}`;
     nodes.push({ id, type: "snmp", name: device.name, status: device.status, detail: device.sys_description || device.host });
@@ -3398,6 +3722,10 @@ app.get("/api/network-map", requireAuth, (req, res) => {
     if (hostLinks.has(address)) addEdge(hostLinks.get(address), id, "monitors");
     else addSubnet(address, id);
   }
+  for (const link of db.prepare("SELECT host_id, item_type, item_id FROM host_links ORDER BY host_id").all()) {
+    const itemNodeId = hostNodeIdForItem(link.item_type, link.item_id);
+    if (itemNodeId) addEdge(`host:${link.host_id}`, itemNodeId, "host-item");
+  }
   for (const node of db.prepare("SELECT id, name, node_type, detail, status, x, y FROM map_nodes ORDER BY name").all()) nodes.push({ id: `manual:${node.id}`, type: node.node_type, name: node.name, detail: node.detail || "Manual map node", status: node.status, x: node.x, y: node.y, manual: true });
   const overrides = new Map(db.prepare("SELECT node_id, name, detail, icon, x, y FROM map_node_overrides").all().map((item) => [item.node_id, item]));
   for (const node of nodes) {
@@ -3423,7 +3751,7 @@ app.post("/api/network-map/nodes", requireAuth, (req, res) => {
   const nodeType = String(req.body.nodeType || "manual").trim();
   const detail = String(req.body.detail || "").trim().slice(0, 300);
   const status = String(req.body.status || "up");
-  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service", "subnet", "snmp", "docker-host", "docker", "monitor", "protect-host", "protect", "hikvision-host", "hikvision", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
+  if (name.length < 2 || name.length > 80 || !["manual", "site", "cloud", "router", "switch", "server", "service", "subnet", "host", "snmp", "docker-host", "docker", "monitor", "protect-host", "protect", "hikvision-host", "hikvision", "unifi-network-host", "unifi-site", "unifi-device", "unifi-client"].includes(nodeType) || !["up", "down", "unknown"].includes(status)) return res.status(400).json({ error: "Enter a valid map node." });
   const result = db.prepare("INSERT INTO map_nodes (name, node_type, detail, status, x, y) VALUES (?, ?, ?, ?, ?, ?)").run(name, nodeType, detail, status, Math.max(0, Math.min(100, Number(req.body.x || 50))), Math.max(0, Math.min(100, Number(req.body.y || 50))));
   res.status(201).json({ ok: true, id: Number(result.lastInsertRowid) });
 });
@@ -3446,7 +3774,7 @@ app.put("/api/network-map/overrides", requireAuth, (req, res) => {
   const icon = String(req.body.icon || "auto").trim().slice(0, 30);
   const x = Math.max(0, Math.min(100, Number(req.body.x ?? 50)));
   const y = Math.max(0, Math.min(100, Number(req.body.y ?? 50)));
-  if (!/^(manual|subnet|snmp|docker-host|docker|monitor|protect-host|protect|hikvision-host|hikvision|unifi-network-host|unifi-site|unifi-device|unifi-client):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
+  if (!/^(manual|subnet|host|snmp|docker-host|docker|monitor|protect-host|protect|hikvision-host|hikvision|unifi-network-host|unifi-site|unifi-device|unifi-client):/.test(nodeId) || name.length < 2 || !Number.isFinite(x) || !Number.isFinite(y)) return res.status(400).json({ error: "Enter a valid map node override." });
   db.prepare(`
     INSERT INTO map_node_overrides (node_id, name, detail, icon, x, y, updated_at)
     VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)

@@ -12,6 +12,21 @@ include breaking changes while the monitoring engine and integrations mature.
 - Additional historical reporting ranges
 - Public status pages
 
+## [1.1.0] - 2026-06-07
+
+### Added
+
+- Zabbix-style Hosts workspace for grouping monitors, custom API checks, SNMP
+  devices, UniFi Network devices, Docker hosts/containers, and cameras under
+  one managed host
+- Host detail view with attached items, current problems, latest data, and
+  graphable host item metrics
+- Host REST API plus an automation capabilities endpoint for scripts/agents to
+  create hosts, attach items, update triggers, and correct maps safely
+- Alert rules can now target monitor/custom API items, including response time,
+  status, extracted API values, and last error
+- Network Map now includes NichHome host nodes and host-item relationships
+
 ## [1.0.6] - 2026-06-07
 
 ### Changed
